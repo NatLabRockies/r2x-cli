@@ -1,0 +1,57 @@
+[package]
+name = "r2x"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["r2x contributors"]
+description = "Rust CLI wrapper for r2x-core Python plugins"
+license = "BSD-3-Clause"
+repository = "https://github.com/NREL/r2x-cli"
+readme = "README.md"
+
+[dependencies]
+# CLI framework
+clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+
+# Python embedding
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# System utilities
+dirs = "5.0"
+
+# Config file support
+toml = "0.8"
+serde_yaml = "0.9"
+
+# HTTP client for UV download
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
+# Archive extraction
+flate2 = "1.0"
+tar = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+pyo3-build-config = "0.22"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"  # Optimize for size
