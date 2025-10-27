@@ -33,17 +33,17 @@ pub struct ReadArgs {
 }
 
 pub fn execute(args: ReadArgs, verbose: u8, quiet: bool) -> Result<()> {
-    crate::python::init()?;
+    //crate::python::init()?;
 
     let schema = get_plugin_schema(&args.model)?;
-    
+
     if args.model_help {
         print_model_help(&args.model, &schema);
         return Ok(());
     }
 
     info!("Reading {} model from: {:?}", args.model, args.input);
-    
+
     let matches = parse_model_args(&args.model, &schema, &args.model_args)?;
 
     Python::with_gil(|py| -> Result<()> {
@@ -113,10 +113,10 @@ pub fn execute(args: ReadArgs, verbose: u8, quiet: bool) -> Result<()> {
                     .ok_or(R2xError::NoCacheDir)?
                     .join("r2x")
                     .join("systems");
-                
+
                 // Create systems directory if it doesn't exist
                 std::fs::create_dir_all(&cache_dir)?;
-                
+
                 cache_dir.join(format!("{}_system.json", args.model))
             };
 
@@ -138,7 +138,7 @@ fn parse_model_args(
     args: &[String],
 ) -> Result<std::collections::HashMap<String, String>> {
     use std::collections::HashMap;
-    
+
     let mut result = HashMap::new();
     let mut iter = args.iter();
 
@@ -175,7 +175,7 @@ fn parse_model_args(
 
 fn print_model_help(model: &str, schema: &[crate::schema::FieldSchema]) {
     println!("Model-specific options for {}:\n", model);
-    
+
     for field in schema {
         let arg_name = field.name.replace('_', "-");
         let required = if field.required { " (required)" } else { "" };
@@ -184,9 +184,10 @@ fn print_model_help(model: &str, schema: &[crate::schema::FieldSchema]) {
         } else {
             String::new()
         };
-        
-        println!("  --{:<20} {}{}{}", 
-            arg_name, 
+
+        println!(
+            "  --{:<20} {}{}{}",
+            arg_name,
             field.description.as_deref().unwrap_or(""),
             required,
             default

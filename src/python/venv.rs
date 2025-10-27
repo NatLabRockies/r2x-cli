@@ -104,3 +104,8 @@ pub fn get_venv_python(venv_path: &Path) -> Result<PathBuf> {
 
     Ok(python_exe)
 }
+
+pub fn get_uv_python_path() -> Result<PathBuf> {
+    let venv_path = get_venv_path()?;
+    get_venv_python(&venv_path)
+}

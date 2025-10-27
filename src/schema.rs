@@ -1,7 +1,6 @@
-use crate::Result;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use crate::{R2xError, Result};
 use serde_json::Value;
+use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct FieldSchema {
@@ -50,27 +49,60 @@ impl FieldType {
 }
 
 pub fn get_plugin_schema(plugin_name: &str) -> Result<Vec<FieldSchema>> {
-    Python::with_gil(|py| {
-        let r2x_core = py.import_bound("r2x_core")?;
-        let plugin_manager = r2x_core.getattr("PluginManager")?.call0()?;
+    println!("Getting plugin schema for {}", plugin_name);
+    let uv_path = crate::python::uv::ensure_uv()?;
+    let python_path = crate::python::venv::get_uv_python_path()?;
 
-        let config_class = plugin_manager.call_method1("load_config_class", (plugin_name,))?;
-        if config_class.is_none() {
-            return Ok(vec![]);
-        }
+    let python_script = format!(
+        r#"
+        import json
+        import r2x_core
 
-        let schema_dict = config_class.call_method0("model_json_schema")?;
-        let schema_json: String = py
-            .import_bound("json")?
-            .call_method1("dumps", (schema_dict,))?
-            .extract()?;
+        manager = r2x_core.PluginManager()
+        config_class = manager.load_config_class('{}')
+        if config_class is None:
+            print('{{}}')
+        else:
+            schema = config_class.model_json_schema()
+            print(json.dumps(schema))
+        "#,
+        plugin_name
+    );
 
-        let schema: Value = serde_json::from_str(&schema_json)?;
-        parse_schema(&schema)
-    })
+    let output = Command::new(&uv_path)
+        .args([
+            "run",
+            "--python",
+            &python_path.to_string_lossy(),
+            "python",
+            &python_script,
+        ])
+        .output()
+        .map_err(|e| R2xError::PythonInit(format!("Failed to run schema retrieval: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(R2xError::PythonInit(format!(
+            "Schema retrieval failed with status {}",
+            output.status
+        )));
+    }
+
+    let schema_json = String::from_utf8(output.stdout).map_err(|e| {
+        R2xError::PythonInit(format!("Failed to parse schema JSON to UTF-8: {}", e))
+    })?;
+
+    if schema_json.trim().is_empty() {
+        return Err(R2xError::PythonInit("Schema JSON is empty".to_string()));
+    }
+
+    let schema: Value = serde_json::from_str(&schema_json)
+        .map_err(|e| R2xError::PythonInit(format!("Invalid JSON output: {}", e)))?;
+
+    parse_schema(&schema)
 }
 
 fn parse_schema(schema: &Value) -> Result<Vec<FieldSchema>> {
+    println!("Parsing schema");
     let mut fields = Vec::new();
 
     let properties = schema
@@ -118,69 +150,71 @@ fn parse_schema(schema: &Value) -> Result<Vec<FieldSchema>> {
     Ok(fields)
 }
 
-pub fn build_config_dict<'py>(
-    py: Python<'py>,
+pub fn build_config_dict(
     fields: &[FieldSchema],
     args: &std::collections::HashMap<String, String>,
-) -> Result<Bound<'py, PyDict>> {
-    let config_dict = PyDict::new_bound(py);
+) -> Result<String> {
+    // Return JSON string instead of PyDict
+    use serde_json::json;
+
+    let mut config = serde_json::Map::new();
 
     for field in fields {
         if let Some(value_str) = args.get(&field.name) {
             match &field.field_type {
                 FieldType::String => {
-                    config_dict.set_item(&field.name, value_str)?;
+                    config.insert(field.name.clone(), json!(value_str));
                 }
                 FieldType::Integer => {
                     let value: i64 = value_str.parse().map_err(|_| {
-                        crate::R2xError::ConfigError(format!(
+                        R2xError::ConfigError(format!(
                             "Invalid integer value for {}: {}",
                             field.name, value_str
                         ))
                     })?;
-                    config_dict.set_item(&field.name, value)?;
+                    config.insert(field.name.clone(), json!(value));
                 }
                 FieldType::Float => {
                     let value: f64 = value_str.parse().map_err(|_| {
-                        crate::R2xError::ConfigError(format!(
+                        R2xError::ConfigError(format!(
                             "Invalid float value for {}: {}",
                             field.name, value_str
                         ))
                     })?;
-                    config_dict.set_item(&field.name, value)?;
+                    config.insert(field.name.clone(), json!(value));
                 }
                 FieldType::Boolean => {
                     let value: bool = value_str.parse().map_err(|_| {
-                        crate::R2xError::ConfigError(format!(
+                        R2xError::ConfigError(format!(
                             "Invalid boolean value for {}: {}",
                             field.name, value_str
                         ))
                     })?;
-                    config_dict.set_item(&field.name, value)?;
+                    config.insert(field.name.clone(), json!(value));
                 }
                 FieldType::IntegerArray => {
                     let values: Vec<i64> = value_str
                         .split(',')
                         .map(|s| {
                             s.trim().parse().map_err(|_| {
-                                crate::R2xError::ConfigError(format!(
+                                R2xError::ConfigError(format!(
                                     "Invalid integer in array for {}: {}",
                                     field.name, s
                                 ))
                             })
                         })
                         .collect::<Result<Vec<_>>>()?;
-                    let py_list = PyList::new_bound(py, values);
-                    config_dict.set_item(&field.name, py_list)?;
+                    config.insert(field.name.clone(), json!(values));
                 }
                 FieldType::StringArray => {
-                    let values: Vec<&str> = value_str.split(',').map(|s| s.trim()).collect();
-                    let py_list = PyList::new_bound(py, values);
-                    config_dict.set_item(&field.name, py_list)?;
+                    let values: Vec<String> =
+                        value_str.split(',').map(|s| s.trim().to_string()).collect();
+                    config.insert(field.name.clone(), json!(values));
                 }
             }
         }
     }
 
-    Ok(config_dict)
+    Ok(serde_json::to_string(&config)
+        .map_err(|e| R2xError::ConfigError(format!("JSON serialization failed: {}", e)))?)
 }

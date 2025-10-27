@@ -3,9 +3,8 @@
 use crate::schema::{build_config_dict, get_plugin_schema};
 use crate::{R2xError, Result};
 use clap::Args;
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use std::path::PathBuf;
+use std::process::Command;
 use std::process::Command;
 
 #[derive(Args)]
@@ -153,10 +152,7 @@ pub fn execute(args: ShellArgs, verbose: u8, quiet: bool) -> Result<()> {
         let temp_system_path = temp_dir.join("r2x_shell_system.json");
 
         println!("Preparing IPython environment...");
-        system.call_method1("to_json", (temp_system_path.to_str().unwrap(),))?;
 
-        Ok(temp_system_path)
-    })?;
 
     // Now spawn IPython as a subprocess with the system pre-loaded
     launch_ipython_subprocess(&args.plugin, &temp_system_path)?;
@@ -229,39 +225,39 @@ def info():
     print("\n" + "=" * 70)
     print("System Information")
     print("=" * 70)
-    
+
     # Get all component types
     comp_types = system.get_component_types()
-    
+
     print(f"\nTotal Component Types: {{len(comp_types)}}")
     print("\nComponents by Type:")
     print("-" * 70)
-    
+
     for comp_type in sorted(comp_types):
         components = list(system.get_components_by_type(comp_type))
         print(f"  {{comp_type:<40}} {{len(components):>6}}")
-    
+
     print("-" * 70)
-    
+
     # Time series info
     ts_metadata = system.list_time_series_metadata()
     print(f"\nTime Series: {{len(ts_metadata)}} datasets")
-    
+
     print("=" * 70 + "\n")
 
 def show_components(component_type: str, limit: int = 10):
     """
     Show components of a specific type.
-    
+
     Args:
         component_type: Type of component (e.g., 'Generator', 'Bus', 'Load')
         limit: Maximum number to display (default: 10)
     """
     components = list(system.get_components_by_type(component_type))
-    
+
     print(f"\n{{component_type}} (showing {{min(limit, len(components))}} of {{len(components)}}):")
     print("-" * 70)
-    
+
     for i, comp in enumerate(components[:limit]):
         print(f"  {{i+1:>3}}. {{comp.name}}")
         # Show a few key attributes if available
@@ -272,32 +268,32 @@ def show_components(component_type: str, limit: int = 10):
             attrs.append(f"tech={{comp.technology}}")
         if hasattr(comp, 'category') and comp.category:
             attrs.append(f"category={{comp.category}}")
-        
+
         if attrs:
             print(f"      {{', '.join(attrs)}}")
-    
+
     if len(components) > limit:
         print(f"\n  ... and {{len(components) - limit}} more")
-    
+
     print("-" * 70 + "\n")
 
 def get_component(component_type: str, name: str):
     """
     Get a specific component by type and name.
-    
+
     Args:
         component_type: Type of component
         name: Name of the component
-    
+
     Returns:
         The component object or None if not found
     """
     components = list(system.get_components_by_type(component_type))
-    
+
     for comp in components:
         if comp.name == name:
             return comp
-    
+
     print(f"Component '{{name}}' of type '{{component_type}}' not found")
     print(f"Available components: {{len(components)}}")
     return None
@@ -305,7 +301,7 @@ def get_component(component_type: str, name: str):
 def list_types():
     """List all available component types."""
     comp_types = sorted(system.get_component_types())
-    
+
     print("\nAvailable Component Types:")
     print("-" * 70)
     for comp_type in comp_types:
@@ -316,7 +312,7 @@ def list_types():
 def export(filename: str = "system_export.json"):
     """
     Export the system to a JSON file.
-    
+
     Args:
         filename: Output filename (default: 'system_export.json')
     """
@@ -327,36 +323,36 @@ def export(filename: str = "system_export.json"):
 def search(query: str, component_type: Optional[str] = None):
     """
     Search for components by name.
-    
+
     Args:
         query: Search string (case-insensitive)
         component_type: Optional component type to filter by
     """
     query_lower = query.lower()
     results = []
-    
+
     if component_type:
         types_to_search = [component_type]
     else:
         types_to_search = system.get_component_types()
-    
+
     for comp_type in types_to_search:
         components = list(system.get_components_by_type(comp_type))
         for comp in components:
             if query_lower in comp.name.lower():
                 results.append((comp_type, comp))
-    
+
     print(f"\nSearch results for '{{query}}' ({{len(results)}} found):")
     print("-" * 70)
-    
+
     for comp_type, comp in results[:20]:  # Limit to 20 results
         print(f"  [{{comp_type}}] {{comp.name}}")
-    
+
     if len(results) > 20:
         print(f"\n  ... and {{len(results) - 20}} more results")
-    
+
     print("-" * 70 + "\n")
-    
+
     return results
 
 # Print welcome message

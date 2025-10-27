@@ -59,7 +59,8 @@ impl EntryPoint {
 }
 
 pub fn discover_all_entry_points() -> Result<Vec<EntryPoint>> {
-    crate::python::init()?;
+    //crate::python::init()?;
+    println!("Discovering all entry points...");
     let registry = crate::python::plugin::discover_plugins()?;
 
     let mut entry_points = Vec::new();
@@ -175,7 +176,10 @@ pub fn remove_wrapper(entry_point: &EntryPoint) -> Result<()> {
 
     if wrapper_path.exists() || wrapper_path.symlink_metadata().is_ok() {
         std::fs::remove_file(&wrapper_path).map_err(|e| {
-            R2xError::ConfigError(format!("Failed to remove wrapper {:?}: {}", wrapper_path, e))
+            R2xError::ConfigError(format!(
+                "Failed to remove wrapper {:?}: {}",
+                wrapper_path, e
+            ))
         })?;
     }
 

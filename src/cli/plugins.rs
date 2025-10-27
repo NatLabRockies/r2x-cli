@@ -64,7 +64,7 @@ fn execute_list() -> Result<()> {
     }
 
     // Cache miss or error - discover plugins via Python
-    crate::python::init()?;
+    //crate::python::init()?;
     let registry = crate::python::plugin::discover_plugins()?;
 
     // Save to cache for next time
@@ -143,18 +143,18 @@ fn display_plugins(registry: &crate::python::plugin::PluginRegistry) {
 
 fn execute_install(args: InstallArgs) -> Result<()> {
     let uv_path = crate::python::uv::ensure_uv()?;
-    let venv_path = crate::python::venv::get_venv_path()?;
-    let python_exe = crate::python::venv::get_venv_python(&venv_path)?;
+    let python_exe_path = crate::python::venv::get_uv_python_path()?;
 
-    println!("Installing plugin: {}", args.plugin);
+    println!("Installing plugins: {}", args.plugin);
 
+    // Build args: pip install {plugin} --python <venv_path>
     let status = std::process::Command::new(&uv_path)
         .args([
             "pip",
             "install",
             &args.plugin,
             "--python",
-            python_exe.to_str().unwrap(),
+            &python_exe_path.to_str().unwrap(),
         ])
         .status()
         .map_err(|e| R2xError::VenvError(format!("Failed to run UV: {}", e)))?;
@@ -214,17 +214,24 @@ fn execute_uninstall(args: UninstallArgs) -> Result<()> {
         .map_err(|e| R2xError::VenvError(format!("Failed to run UV: {}", e)))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let package_not_found = stderr.contains("No packages to uninstall") || stderr.contains("Skipping");
+    let package_not_found =
+        stderr.contains("No packages to uninstall") || stderr.contains("Skipping");
 
     // If first attempt failed, try to find package name from registry
     if package_not_found {
-        debug!("Package '{}' not found, checking plugin registry", args.plugin);
+        debug!(
+            "Package '{}' not found, checking plugin registry",
+            args.plugin
+        );
 
         // Discover plugins to get package mapping
         crate::python::init()?;
         if let Ok(registry) = crate::python::plugin::discover_plugins() {
             if let Some(package_name) = registry.find_package_name(&args.plugin) {
-                println!("Found plugin '{}' provided by package '{}'", args.plugin, package_name);
+                println!(
+                    "Found plugin '{}' provided by package '{}'",
+                    args.plugin, package_name
+                );
                 println!("Attempting to uninstall package '{}'...", package_name);
 
                 let output2 = std::process::Command::new(&uv_path)
@@ -241,7 +248,10 @@ fn execute_uninstall(args: UninstallArgs) -> Result<()> {
                 let stderr2 = String::from_utf8_lossy(&output2.stderr);
                 if stderr2.contains("No packages to uninstall") || stderr2.contains("Skipping") {
                     eprintln!("\n⚠ Package '{}' not found", package_name);
-                    return Err(R2xError::VenvError(format!("Package '{}' not found", package_name)));
+                    return Err(R2xError::VenvError(format!(
+                        "Package '{}' not found",
+                        package_name
+                    )));
                 }
 
                 if !output2.status.success() {
@@ -256,12 +266,18 @@ fn execute_uninstall(args: UninstallArgs) -> Result<()> {
             } else {
                 eprintln!("\n⚠ Plugin '{}' not found in registry", args.plugin);
                 eprintln!("\n💡 Tip: Use 'r2x plugin list' to see installed plugins and their package names");
-                return Err(R2xError::VenvError(format!("Plugin '{}' not found", args.plugin)));
+                return Err(R2xError::VenvError(format!(
+                    "Plugin '{}' not found",
+                    args.plugin
+                )));
             }
         } else {
             eprintln!("\n⚠ Package '{}' not found", args.plugin);
             eprintln!("\n💡 Tip: Use the exact package name shown in 'r2x plugin list'");
-            return Err(R2xError::VenvError(format!("Package '{}' not found", args.plugin)));
+            return Err(R2xError::VenvError(format!(
+                "Package '{}' not found",
+                args.plugin
+            )));
         }
     } else if !output.status.success() {
         return Err(R2xError::VenvError(format!(
