@@ -59,7 +59,6 @@ impl EntryPoint {
 }
 
 pub fn discover_all_entry_points() -> Result<Vec<EntryPoint>> {
-    //crate::python::init()?;
     debug!("Discovering all entry points...");
     let registry = crate::python::plugin::get_plugin_registry()?;
 
