@@ -1,5 +1,4 @@
 use crate::{R2xError, Result};
-use pyo3::prelude::*;
 use std::path::Path;
 use tracing::debug;
 
@@ -47,76 +46,64 @@ fn resolve_python_home(python_exe: &Path) -> Result<std::path::PathBuf> {
 }
 
 pub fn verify_python(venv_path: &Path) -> Result<()> {
-    let site_packages = super::venv::get_site_packages(venv_path)?;
+    use std::process::Command;
 
-    Python::with_gil(|py| {
-        let sys = py.import_bound("sys")?;
-        let version: String = sys.getattr("version")?.extract()?;
-        if !version.starts_with("3.11") {
-            return Err(R2xError::PythonInit(format!(
-                "Wrong Python version! Expected 3.11, got: {}",
-                version
-            )));
-        }
+    let python_exe = get_venv_python_exe(venv_path)?;
 
-        let path = sys.getattr("path")?;
-        path.call_method1("insert", (0, site_packages.to_str().unwrap()))?;
-        process_pth_files(py, &site_packages)?;
+    // Check Python version
+    let output = Command::new(&python_exe)
+        .arg("-c")
+        .arg("import sys; print(sys.version)")
+        .output()
+        .map_err(|e| R2xError::PythonInit(format!("Failed to run Python: {}", e)))?;
 
-        debug!(
-            "Python {}: {} packages in sys.path",
-            version.split_whitespace().next().unwrap_or("3.11"),
-            path.len()?
-        );
-
-        import_r2x_core(py, venv_path)?;
-
-        Ok(())
-    })
-}
-
-fn import_r2x_core(py: Python, venv_path: &Path) -> Result<()> {
-    py.import_bound("r2x_core")
-        .map(|module| {
-            if let Ok(version) = module.getattr("__version__").and_then(|v| v.extract::<String>()) {
-                debug!("r2x-core {} ready", version);
-            }
-        })
-        .map_err(|e| {
-            R2xError::PythonInit(format!(
-                "Failed to import r2x-core: {}\n\nInstall with: uv pip install r2x-core --python {}",
-                e, venv_path.join("bin/python3").display()
-            ))
-        })
-}
-
-fn process_pth_files(py: Python, site_packages: &Path) -> Result<()> {
-    use std::fs;
-    use std::io::{BufRead, BufReader};
-
-    if let Ok(entries) = fs::read_dir(site_packages) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("pth") {
-                if let Ok(file) = fs::File::open(&path) {
-                    let reader = BufReader::new(file);
-                    for line in reader.lines().flatten() {
-                        let line = line.trim();
-                        if line.is_empty() || line.starts_with('#') || line.starts_with("import ") {
-                            continue;
-                        }
-
-                        let sys = py.import_bound("sys")?;
-                        let sys_path = sys.getattr("path")?;
-                        if !line.is_empty() {
-                            sys_path.call_method1("append", (line,))?;
-                            debug!("Added to sys.path from .pth: {}", line);
-                        }
-                    }
-                }
-            }
-        }
+    if !output.status.success() {
+        return Err(R2xError::PythonInit(
+            "Python version check failed".to_string(),
+        ));
     }
+
+    let version = String::from_utf8(output.stdout)
+        .map_err(|e| R2xError::PythonInit(format!("Invalid UTF-8 in version output: {}", e)))?
+        .trim()
+        .to_string();
+
+    if !version.starts_with("3.11") {
+        return Err(R2xError::PythonInit(format!(
+            "Wrong Python version! Expected 3.11, got: {}",
+            version
+        )));
+    }
+
+    debug!(
+        "Python version verified: {}",
+        version.split_whitespace().next().unwrap_or("3.11")
+    );
+
+    // Check r2x_core import
+    let output = Command::new(&python_exe)
+        .arg("-c")
+        .arg("import r2x_core; print(r2x_core.__version__)")
+        .output()
+        .map_err(|e| {
+            R2xError::PythonInit(format!("Failed to run Python for r2x_core import: {}", e))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(R2xError::PythonInit(format!(
+            "Failed to import r2x-core: {}\n\nInstall with: uv pip install r2x-core --python {}",
+            stderr,
+            python_exe.display()
+        )));
+    }
+
+    let version_str = String::from_utf8(output.stdout)
+        .map_err(|e| R2xError::PythonInit(format!("Invalid UTF-8 in r2x_core version: {}", e)))?
+        .trim()
+        .to_string();
+
+    debug!("r2x-core {} ready", version_str);
 
     Ok(())
 }

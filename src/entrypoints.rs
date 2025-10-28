@@ -60,8 +60,8 @@ impl EntryPoint {
 
 pub fn discover_all_entry_points() -> Result<Vec<EntryPoint>> {
     //crate::python::init()?;
-    println!("Discovering all entry points...");
-    let registry = crate::python::plugin::discover_plugins()?;
+    debug!("Discovering all entry points...");
+    let registry = crate::python::plugin::get_plugin_registry()?;
 
     let mut entry_points = Vec::new();
 
@@ -208,24 +208,52 @@ pub fn create_all_wrappers() -> Result<Vec<String>> {
     Ok(created)
 }
 
-pub fn remove_all_wrappers() -> Result<Vec<String>> {
-    let entry_points = discover_all_entry_points()?;
-    let mut removed = Vec::new();
+pub fn remove_all_wrappers() -> Result<()> {
+    let bin_dir = get_bin_directory()?;
 
-    for entry_point in entry_points {
-        match remove_wrapper(&entry_point) {
-            Ok(_) => {
-                removed.push(entry_point.wrapper_name());
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to remove wrapper for {}: {}",
-                    entry_point.wrapper_name(),
-                    e
-                );
+    #[cfg(unix)]
+    {
+        for entry in std::fs::read_dir(&bin_dir)
+            .map_err(|e| R2xError::ConfigError(format!("Failed to read bin dir: {}", e)))?
+        {
+            let entry =
+                entry.map_err(|e| R2xError::ConfigError(format!("Failed to read entry: {}", e)))?;
+            let path = entry.path();
+
+            if let Ok(metadata) = path.symlink_metadata() {
+                if metadata.file_type().is_symlink() {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        warn!("Failed to remove wrapper {:?}: {}", path, e);
+                    }
+                }
             }
         }
     }
 
-    Ok(removed)
+    #[cfg(windows)]
+    {
+        let r2x_exe = std::env::current_exe()
+            .map_err(|e| R2xError::ConfigError(format!("Failed to get current exe: {}", e)))?;
+        let r2x_exe_str = r2x_exe.to_string_lossy().to_string();
+
+        for entry in std::fs::read_dir(&bin_dir)
+            .map_err(|e| R2xError::ConfigError(format!("Failed to read bin dir: {}", e)))?
+        {
+            let entry =
+                entry.map_err(|e| R2xError::ConfigError(format!("Failed to read entry: {}", e)))?;
+            let path = entry.path();
+
+            if path.extension() == Some(std::ffi::OsStr::new("bat")) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if content.contains(&r2x_exe_str) {
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            warn!("Failed to remove wrapper {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

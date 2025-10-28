@@ -1,6 +1,5 @@
 //! Plugin management commands
 
-use crate::python::plugin_cache::{invalidate_cache, load_cached_plugins, save_cached_plugins};
 use crate::{R2xError, Result};
 use clap::{Args, Subcommand};
 use tracing::debug;
@@ -22,13 +21,13 @@ pub enum PluginsCommand {
 }
 
 #[derive(Debug, Args)]
-struct InstallArgs {
+pub struct InstallArgs {
     /// Plugin name (e.g., r2x-switch)
     plugin: String,
 }
 
 #[derive(Debug, Args)]
-struct UninstallArgs {
+pub struct UninstallArgs {
     /// Plugin name to uninstall (e.g., r2x-switch)
     plugin: String,
 }
@@ -42,35 +41,7 @@ pub fn execute(args: PluginsArgs) -> Result<()> {
 }
 
 fn execute_list() -> Result<()> {
-    // Try to load cached plugin list first
-    match load_cached_plugins() {
-        Ok(Some(cached)) => {
-            debug!(
-                "Using cached plugin list (age: {}s)",
-                cached.age().as_secs()
-            );
-            display_plugins(&cached.plugins);
-            return Ok(());
-        }
-        Ok(None) => {
-            debug!("Cache miss or expired, discovering plugins via Python");
-        }
-        Err(e) => {
-            debug!(
-                "Failed to load cache: {}, discovering plugins via Python",
-                e
-            );
-        }
-    }
-
-    // Cache miss or error - discover plugins via Python
-    //crate::python::init()?;
-    let registry = crate::python::plugin::discover_plugins()?;
-
-    // Save to cache for next time
-    if let Err(e) = save_cached_plugins(&registry) {
-        debug!("Failed to cache plugin list: {}", e);
-    }
+    let registry = crate::python::plugin::get_plugin_registry()?;
 
     display_plugins(&registry);
 
@@ -169,7 +140,7 @@ fn execute_install(args: InstallArgs) -> Result<()> {
     println!("✓ Plugin '{}' installed successfully", args.plugin);
 
     // Invalidate cache since we just installed a new plugin
-    if let Err(e) = invalidate_cache() {
+    if let Err(e) = crate::python::plugin_cache::invalidate_cache() {
         debug!("Failed to invalidate plugin cache: {}", e);
     }
 
@@ -217,93 +188,134 @@ fn execute_uninstall(args: UninstallArgs) -> Result<()> {
     let package_not_found =
         stderr.contains("No packages to uninstall") || stderr.contains("Skipping");
 
-    // If first attempt failed, try to find package name from registry
-    if package_not_found {
+    // Check if first attempt succeeded
+    if output.status.success() && !package_not_found {
+        println!("✓ Plugin '{}' uninstalled successfully", args.plugin);
+
+        // Update cache by removing plugins from the uninstalled package
+        if let Ok(mut registry) = crate::python::plugin::get_plugin_registry() {
+            registry
+                .parsers
+                .retain(|_, info| info.package_name.as_ref() != Some(&args.plugin));
+            registry
+                .exporters
+                .retain(|_, info| info.package_name.as_ref() != Some(&args.plugin));
+            registry
+                .modifiers
+                .retain(|_, info| info.package_name.as_ref() != Some(&args.plugin));
+            registry
+                .filters
+                .retain(|_, info| info.package_name.as_ref() != Some(&args.plugin));
+            if let Err(e) = crate::python::plugin_cache::save_cached_plugins(&registry) {
+                debug!("Failed to save updated plugin cache: {}", e);
+            }
+        }
+    } else {
+        // If first attempt failed, try to find package name from registry
         debug!(
-            "Package '{}' not found, checking plugin registry",
+            "Package '{}' not found or uninstall failed, checking plugin registry",
             args.plugin
         );
 
-        // Discover plugins to get package mapping
-        crate::python::init()?;
-        if let Ok(registry) = crate::python::plugin::discover_plugins() {
-            if let Some(package_name) = registry.find_package_name(&args.plugin) {
-                println!(
-                    "Found plugin '{}' provided by package '{}'",
-                    args.plugin, package_name
+        // Load plugin registry from cache if available, else discover
+        let mut registry = match crate::python::plugin::get_plugin_registry() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("\n⚠ Failed to load plugin registry: {}", e);
+                eprintln!(
+                    "\n💡 Tip: Use 'r2x plugin list' to refresh cache, or the exact package name"
                 );
-                println!("Attempting to uninstall package '{}'...", package_name);
-
-                let output2 = std::process::Command::new(&uv_path)
-                    .args([
-                        "pip",
-                        "uninstall",
-                        &package_name,
-                        "--python",
-                        python_exe.to_str().unwrap(),
-                    ])
-                    .output()
-                    .map_err(|e| R2xError::VenvError(format!("Failed to run UV: {}", e)))?;
-
-                let stderr2 = String::from_utf8_lossy(&output2.stderr);
-                if stderr2.contains("No packages to uninstall") || stderr2.contains("Skipping") {
-                    eprintln!("\n⚠ Package '{}' not found", package_name);
-                    return Err(R2xError::VenvError(format!(
-                        "Package '{}' not found",
-                        package_name
-                    )));
-                }
-
-                if !output2.status.success() {
-                    return Err(R2xError::VenvError(format!(
-                        "Package '{}' uninstallation failed",
-                        package_name
-                    )));
-                }
-
-                println!("✓ Package '{}' uninstalled successfully", package_name);
-                // Continue to wrapper cleanup
-            } else {
-                eprintln!("\n⚠ Plugin '{}' not found in registry", args.plugin);
-                eprintln!("\n💡 Tip: Use 'r2x plugin list' to see installed plugins and their package names");
                 return Err(R2xError::VenvError(format!(
-                    "Plugin '{}' not found",
-                    args.plugin
+                    "Failed to load plugin registry: {}",
+                    e
                 )));
             }
+        };
+
+        if let Some(package_name) = registry.find_package_name(&args.plugin) {
+            println!(
+                "Found plugin '{}' provided by package '{}'",
+                args.plugin, package_name
+            );
+            println!("Attempting to uninstall package '{}'...", package_name);
+
+            let output2 = std::process::Command::new(&uv_path)
+                .args([
+                    "pip",
+                    "uninstall",
+                    &package_name,
+                    "--python",
+                    python_exe.to_str().unwrap(),
+                ])
+                .output()
+                .map_err(|e| R2xError::VenvError(format!("Failed to run UV: {}", e)))?;
+
+            let stderr2 = String::from_utf8_lossy(&output2.stderr);
+            if stderr2.contains("No packages to uninstall") || stderr2.contains("Skipping") {
+                eprintln!("\n⚠ Package '{}' not found", package_name);
+                return Err(R2xError::VenvError(format!(
+                    "Package '{}' not found",
+                    package_name
+                )));
+            }
+
+            if !output2.status.success() {
+                return Err(R2xError::VenvError(format!(
+                    "Package '{}' uninstallation failed",
+                    package_name
+                )));
+            }
+
+            println!("✓ Package '{}' uninstalled successfully", package_name);
+
+            // Update cache by removing plugins from the uninstalled package
+            registry
+                .parsers
+                .retain(|_, info| info.package_name.as_ref() != Some(&package_name));
+            registry
+                .exporters
+                .retain(|_, info| info.package_name.as_ref() != Some(&package_name));
+            registry
+                .modifiers
+                .retain(|_, info| info.package_name.as_ref() != Some(&package_name));
+            registry
+                .filters
+                .retain(|_, info| info.package_name.as_ref() != Some(&package_name));
+            if let Err(e) = crate::python::plugin_cache::save_cached_plugins(&registry) {
+                debug!("Failed to save updated plugin cache: {}", e);
+            }
         } else {
-            eprintln!("\n⚠ Package '{}' not found", args.plugin);
-            eprintln!("\n💡 Tip: Use the exact package name shown in 'r2x plugin list'");
+            eprintln!("\n⚠ Plugin '{}' not found in registry", args.plugin);
+            eprintln!(
+                "\n💡 Tip: Use 'r2x plugin list' to see installed plugins and their package names"
+            );
             return Err(R2xError::VenvError(format!(
                 "Package '{}' not found",
                 args.plugin
             )));
         }
-    } else if !output.status.success() {
-        return Err(R2xError::VenvError(format!(
-            "Plugin '{}' uninstallation failed",
-            args.plugin
-        )));
-    } else {
-        println!("✓ Plugin '{}' uninstalled successfully", args.plugin);
-    }
-
-    // Invalidate cache since we just removed a plugin
-    if let Err(e) = invalidate_cache() {
-        debug!("Failed to invalidate plugin cache: {}", e);
     }
 
     // Rebuild wrappers for remaining plugins (in background to not slow down uninstall)
     println!("Updating entry point wrappers...");
 
-    // Remove old wrappers and recreate for remaining plugins
-    // This requires Python init but we do it after reporting success to the user
+    // Remove all existing wrappers
     if let Err(e) = crate::entrypoints::remove_all_wrappers() {
         debug!("Failed to remove old wrappers: {}", e);
     }
 
-    if let Err(e) = crate::entrypoints::create_all_wrappers() {
-        debug!("Failed to recreate wrappers: {}", e);
+    // Recreate wrappers for remaining plugins
+    match crate::entrypoints::create_all_wrappers() {
+        Ok(created) if !created.is_empty() => {
+            println!("✓ Created entry points:");
+            for name in created {
+                println!("  • {}", name);
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            debug!("Failed to recreate wrappers: {}", e);
+        }
     }
 
     Ok(())

@@ -1,6 +1,7 @@
 use crate::{R2xError, Result};
 use serde_json::Value;
 use std::process::Command;
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct FieldSchema {
@@ -49,7 +50,7 @@ impl FieldType {
 }
 
 pub fn get_plugin_schema(plugin_name: &str) -> Result<Vec<FieldSchema>> {
-    println!("Getting plugin schema for {}", plugin_name);
+    debug!("Getting plugin schema for {}", plugin_name);
     let uv_path = crate::python::uv::ensure_uv()?;
     let python_path = crate::python::venv::get_uv_python_path()?;
 
@@ -102,7 +103,7 @@ pub fn get_plugin_schema(plugin_name: &str) -> Result<Vec<FieldSchema>> {
 }
 
 fn parse_schema(schema: &Value) -> Result<Vec<FieldSchema>> {
-    println!("Parsing schema");
+    debug!("Parsing schema");
     let mut fields = Vec::new();
 
     let properties = schema

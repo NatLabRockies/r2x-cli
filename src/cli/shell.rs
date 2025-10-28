@@ -5,7 +5,6 @@ use crate::{R2xError, Result};
 use clap::Args;
 use std::path::PathBuf;
 use std::process::Command;
-use std::process::Command;
 
 #[derive(Args)]
 pub struct ShellArgs {
@@ -31,128 +30,180 @@ pub struct ShellArgs {
 }
 
 pub fn execute(args: ShellArgs, verbose: u8, quiet: bool) -> Result<()> {
-    // Initialize Python to get system loaded
-    crate::python::init()?;
+    let uv_python_path = crate::python::venv::get_uv_python_path()?;
+    let temp_system_path = std::env::temp_dir().join("r2x_shell_system.json");
 
-    let temp_system_path = Python::with_gil(|py| -> Result<PathBuf> {
-        // Control Python logging
-        if quiet || verbose == 0 {
-            let logger = py.import_bound("loguru")?.getattr("logger")?;
-            logger.call_method1("disable", ("",))?;
+    println!("Preparing IPython environment...");
+
+    // Define loguru code once based on verbosity/quiet settings
+    let loguru_code = if quiet || verbose == 0 {
+        "\nfrom loguru import logger\nlogger.disable(\"\")\n"
+    } else {
+        ""
+    };
+
+    // Determine how to load the system
+    let script = if args.stdin {
+        // Load from stdin
+        println!("Reading system from stdin...");
+        let mut json_input = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut json_input)?;
+
+        // Create temp file for stdin input
+        let temp_path = std::env::temp_dir().join("r2x_stdin_system.json");
+        std::fs::write(&temp_path, &json_input)?;
+
+        format!(
+            r#"
+import infrasys
+import sys{}
+system = infrasys.System.from_json('{}')
+system.to_json('{}')
+"#,
+            loguru_code,
+            temp_path.display(),
+            temp_system_path.display()
+        )
+    } else if let Some(json_path) = &args.json {
+        // Load from JSON file
+        println!("Loading system from JSON file: {}", json_path.display());
+
+        format!(
+            r#"
+import infrasys
+import sys{}
+system = infrasys.System.from_json('{}')
+system.to_json('{}')
+"#,
+            loguru_code,
+            json_path.display(),
+            temp_system_path.display()
+        )
+    } else if args.input.is_none() {
+        // Try to load from cache
+        let cache_dir = dirs::cache_dir()
+            .ok_or(R2xError::NoCacheDir)?
+            .join("r2x")
+            .join("systems");
+
+        let cached_path = cache_dir.join(format!("{}_system.json", args.plugin));
+
+        if !cached_path.exists() {
+            return Err(R2xError::ConfigError(format!(
+                "No cached system found at: {}\n\
+                 Run 'r2x read {} <path>' first to create the cache, or use --input or --json",
+                cached_path.display(),
+                args.plugin
+            )));
         }
 
-        // Import infrasys
-        let infrasys = py.import_bound("infrasys")?;
-        let system_class = infrasys.getattr("System")?;
+        println!("Loading cached system from: {}", cached_path.display());
 
-        // Determine how to load the system
-        let system = if args.stdin {
-            // Load from stdin
-            println!("Reading system from stdin...");
-            let mut json_input = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut json_input)?;
+        format!(
+            r#"
+import infrasys
+import sys{}
+system = infrasys.System.from_json('{}')
+system.to_json('{}')
+"#,
+            loguru_code,
+            cached_path.display(),
+            temp_system_path.display()
+        )
+    } else if let Some(input_path) = &args.input {
+        // Parse from source data
+        // Get plugin schema for argument parsing
+        let schema = get_plugin_schema(&args.plugin)?;
 
-            // Create temp file for stdin input
-            let temp_path = std::env::temp_dir().join("r2x_stdin_system.json");
-            std::fs::write(&temp_path, &json_input)?;
-
-            system_class.call_method1("from_json", (temp_path.to_str().unwrap(),))?
-        } else if let Some(json_path) = &args.json {
-            // Load from JSON file
-            println!("Loading system from JSON file: {}", json_path.display());
-            system_class.call_method1("from_json", (json_path.to_str().unwrap(),))?
-        } else if args.input.is_none() {
-            // Try to load from cache
-            let cache_dir = dirs::cache_dir()
-                .ok_or(R2xError::NoCacheDir)?
-                .join("r2x")
-                .join("systems");
-
-            let cached_path = cache_dir.join(format!("{}_system.json", args.plugin));
-
-            if !cached_path.exists() {
-                return Err(R2xError::ConfigError(format!(
-                    "No cached system found at: {}\n\
-                     Run 'r2x read {} <path>' first to create the cache, or use --input or --json",
-                    cached_path.display(),
-                    args.plugin
-                )));
-            }
-
-            println!("Loading cached system from: {}", cached_path.display());
-
-            system_class.call_method1("from_json", (cached_path.to_str().unwrap(),))?
-        } else if let Some(input_path) = &args.input {
-            // Parse from source data
-            // Get plugin schema for argument parsing
-            let schema = get_plugin_schema(&args.plugin)?;
-
-            // Parse model-specific arguments
-            let model_config = if !args.model_args.is_empty() {
-                parse_model_args(&args.plugin, &schema, &args.model_args)?
-            } else {
-                std::collections::HashMap::new()
-            };
-
-            println!(
-                "Loading system from {} using plugin '{}'...",
-                input_path.display(),
-                args.plugin
-            );
-
-            // Import r2x_core and get PluginManager
-            let r2x_core = py.import_bound("r2x_core")?;
-            let plugin_manager_class = r2x_core.getattr("PluginManager")?;
-            let manager = plugin_manager_class.call0()?;
-
-            // Load parser class
-            let parser_class = manager.call_method1("load_parser", (&args.plugin,))?;
-            if parser_class.is_none() {
-                return Err(R2xError::PluginNotFound(args.plugin.clone()));
-            }
-
-            // Load config class
-            let config_class = manager.call_method1("load_config_class", (&args.plugin,))?;
-            if config_class.is_none() {
-                return Err(R2xError::PluginNotFound(args.plugin.clone()));
-            }
-
-            // Build config dict
-            let config_dict = build_config_dict(py, &schema, &model_config)?;
-
-            // Add data_path to config
-            config_dict.set_item("data_path", input_path.to_str().unwrap())?;
-
-            // Create config instance
-            let config_obj = config_class.call((), Some(&config_dict))?;
-
-            // Create DataStore
-            let data_store_class = r2x_core.getattr("DataStore")?;
-            let data_store = data_store_class.call0()?;
-
-            // Create parser instance
-            let parser_kwargs = PyDict::new_bound(py);
-            parser_kwargs.set_item("config", &config_obj)?;
-            parser_kwargs.set_item("data_store", &data_store)?;
-            let parser = parser_class.call((), Some(&parser_kwargs))?;
-
-            // Build system
-            println!("Building system...");
-            parser.call_method0("build_system")?
+        // Parse model-specific arguments
+        let model_config = if !args.model_args.is_empty() {
+            parse_model_args(&args.plugin, &schema, &args.model_args)?
         } else {
-            return Err(R2xError::ConfigError(
-                "Must specify one of: --input, --json, or --stdin".to_string(),
-            ));
+            std::collections::HashMap::new()
         };
 
-        println!("✓ System loaded successfully\n");
+        println!(
+            "Loading system from {} using plugin '{}'...",
+            input_path.display(),
+            args.plugin
+        );
 
-        // Save system to a temporary file that IPython can load
-        let temp_dir = std::env::temp_dir();
-        let temp_system_path = temp_dir.join("r2x_shell_system.json");
+        let config_json = build_config_dict(&schema, &model_config)?;
 
-        println!("Preparing IPython environment...");
+        // Get module file
+        let module_name = format!("r2x_{}", args.plugin);
+        let output = Command::new(&uv_python_path)
+            .args([
+                "-c",
+                &format!("import {}; print({}.__file__)", module_name, module_name),
+            ])
+            .output()?;
 
+        if !output.status.success() {
+            return Err(R2xError::SubprocessError(format!(
+                "Failed to get module file for {}: {}",
+                module_name,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let module_file = String::from_utf8(output.stdout)
+            .map_err(|e| R2xError::ConfigError(format!("Invalid UTF8: {}", e)))?
+            .trim()
+            .to_string();
+        let module_path = PathBuf::from(&module_file);
+        let module_dir = module_path.parent().ok_or_else(|| {
+            R2xError::ConfigError(format!("Cannot find parent directory of {}", module_file))
+        })?;
+        let file_mapping_path = module_dir.join("config").join("file_mapping.json");
+
+        format!(
+            r#"
+import json
+import infrasys
+from r2x_core import PluginManager, DataStore
+import sys{}
+manager = PluginManager()
+parser_class = manager.load_parser("{}")
+if parser_class is None:
+    sys.exit(1)
+config_class = manager.load_config_class("{}")
+if config_class is None:
+    sys.exit(1)
+config_dict = json.loads('{}')
+config_dict['data_path'] = '{}'
+config = config_class(**config_dict)
+data_store = DataStore.from_json('{}', '{}')
+parser = parser_class(config=config, data_store=data_store)
+system = parser.build_system()
+system.to_json('{}')
+"#,
+            loguru_code,
+            args.plugin,
+            args.plugin,
+            config_json.replace("'", "\\'"),
+            input_path.display(),
+            file_mapping_path.display(),
+            input_path.display(),
+            temp_system_path.display()
+        )
+    } else {
+        return Err(R2xError::ConfigError(
+            "Must specify one of: --input, --json, or --stdin".to_string(),
+        ));
+    };
+
+    let status = Command::new(&uv_python_path)
+        .args(["-c", &script])
+        .status()?;
+
+    if !status.success() {
+        return Err(R2xError::SubprocessError(
+            "Failed to load system".to_string(),
+        ));
+    }
+
+    println!("✓ System loaded successfully\n");
 
     // Now spawn IPython as a subprocess with the system pre-loaded
     launch_ipython_subprocess(&args.plugin, &temp_system_path)?;
@@ -196,8 +247,7 @@ fn parse_model_args(
 
 fn launch_ipython_subprocess(plugin: &str, temp_system_path: &PathBuf) -> Result<()> {
     // Get venv path
-    let venv_path = crate::python::venv::get_venv_path()?;
-    let python_exe = venv_path.join("bin/python");
+    let python_exe = crate::python::venv::get_uv_python_path()?;
 
     // Create startup script for IPython
     let startup_script = format!(

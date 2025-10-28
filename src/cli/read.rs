@@ -1,8 +1,8 @@
 use crate::schema::{build_config_dict, get_plugin_schema};
 use crate::{R2xError, Result};
 use clap::Args;
-use pyo3::prelude::*;
 use std::path::PathBuf;
+use std::process::Command;
 use tracing::info;
 
 #[derive(Args, Debug)]
@@ -33,8 +33,10 @@ pub struct ReadArgs {
 }
 
 pub fn execute(args: ReadArgs, verbose: u8, quiet: bool) -> Result<()> {
-    //crate::python::init()?;
-
+    let uv_python_path = crate::python::venv::get_uv_python_path()?;
+    let uv_python_str = uv_python_path.to_str().ok_or(R2xError::ConfigError(
+        "Virtual environment path is not valid UTF-8".to_string(),
+    ))?;
     let schema = get_plugin_schema(&args.model)?;
 
     if args.model_help {
@@ -46,94 +48,113 @@ pub fn execute(args: ReadArgs, verbose: u8, quiet: bool) -> Result<()> {
 
     let matches = parse_model_args(&args.model, &schema, &args.model_args)?;
 
-    Python::with_gil(|py| -> Result<()> {
-        if quiet || verbose == 0 {
-            let logger = py.import_bound("loguru")?.getattr("logger")?;
-            logger.call_method1("disable", ("",))?;
-        }
+    // Get module file
+    let module_name = format!("r2x_{}", args.model);
+    let output = Command::new("uv")
+        .args([
+            "-c",
+            &format!("import {}; print({}.__file__)", module_name, module_name),
+        ])
+        .output()?;
 
-        let r2x_core = py.import_bound("r2x_core")?;
-        let plugin_manager_class = r2x_core.getattr("PluginManager")?;
-        let manager = plugin_manager_class.call0()?;
+    if !output.status.success() {
+        return Err(R2xError::SubprocessError(format!(
+            "Failed to get module file for {}: {}",
+            module_name,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
 
-        let parser_class = manager.call_method1("load_parser", (&args.model,))?;
-        if parser_class.is_none() {
-            return Err(R2xError::PluginNotFound(args.model.clone()));
-        }
-
-        let config_class = manager.call_method1("load_config_class", (&args.model,))?;
-        if config_class.is_none() {
-            return Err(R2xError::PluginNotFound(args.model.clone()));
-        }
-
-        let config_dict = build_config_dict(py, &schema, &matches)?;
-        let config = config_class.call((), Some(&config_dict))?;
-
-        let data_store_class = r2x_core.getattr("DataStore")?;
-        let plugin_module_name = format!("r2x_{}", &args.model);
-        let plugin_module = py.import_bound(plugin_module_name.as_str())?;
-        let module_file = plugin_module.getattr("__file__")?.extract::<String>()?;
-
-        let module_path = PathBuf::from(&module_file);
-        let module_dir = module_path.parent().ok_or_else(|| {
-            R2xError::ConfigError(format!("Cannot find parent directory of {}", module_file))
-        })?;
-        let file_mapping_path = module_dir.join("config").join("file_mapping.json");
-
-        info!("Using file mapping: {:?}", file_mapping_path);
-
-        let data_store = data_store_class.call_method1(
-            "from_json",
-            (
-                file_mapping_path.to_str().unwrap(),
-                args.input.to_str().unwrap(),
-            ),
-        )?;
-
-        let parser_kwargs = pyo3::types::PyDict::new_bound(py);
-        parser_kwargs.set_item("config", config)?;
-        parser_kwargs.set_item("data_store", data_store)?;
-
-        let parser = parser_class.call((), Some(&parser_kwargs))?;
-
-        info!("Building system from {} data...", args.model);
-        let system = parser.call_method0("build_system")?;
-
-        if args.stdout {
-            // Write to stdout
-            let json_str: String = system.call_method0("to_json")?.extract()?;
-            println!("{}", json_str);
-        } else {
-            // Determine output path
-            let output_path = if let Some(path) = &args.output {
-                path.clone()
-            } else {
-                // Default to cache directory
-                let cache_dir = dirs::cache_dir()
-                    .ok_or(R2xError::NoCacheDir)?
-                    .join("r2x")
-                    .join("systems");
-
-                // Create systems directory if it doesn't exist
-                std::fs::create_dir_all(&cache_dir)?;
-
-                cache_dir.join(format!("{}_system.json", args.model))
-            };
-
-            // Write to file
-            info!("Writing system to: {:?}", output_path);
-            system.call_method1("to_json", (output_path.to_str().unwrap(),))?;
-            println!("✓ System written to: {}", output_path.display());
-        }
-
-        Ok(())
+    let module_file = String::from_utf8(output.stdout)
+        .map_err(|e| R2xError::ConfigError(format!("Invalid UTF8: {}", e)))?
+        .trim()
+        .to_string();
+    let module_path = PathBuf::from(&module_file);
+    let module_dir = module_path.parent().ok_or_else(|| {
+        R2xError::ConfigError(format!("Cannot find parent directory of {}", module_file))
     })?;
+    let file_mapping_path = module_dir.join("config").join("file_mapping.json");
+
+    info!("Using file mapping: {:?}", file_mapping_path);
+
+    let config_json = build_config_dict(&schema, &matches)?;
+
+    let output_path = if args.stdout {
+        PathBuf::new()
+    } else if let Some(path) = &args.output {
+        path.clone()
+    } else {
+        // Default to cache directory
+        let cache_dir = dirs::cache_dir()
+            .ok_or(R2xError::NoCacheDir)?
+            .join("r2x")
+            .join("systems");
+
+        // Create systems directory if it doesn't exist
+        std::fs::create_dir_all(&cache_dir)?;
+
+        cache_dir.join(format!("{}_system.json", args.model))
+    };
+
+    // Define loguru code once based on verbosity/quiet settings
+    let loguru_code = if quiet || verbose == 0 {
+        "\nfrom loguru import logger\nlogger.disable(\"\")\n"
+    } else {
+        ""
+    };
+
+    let script = format!(
+        r#"
+import sys
+import json
+from r2x_core import PluginManager, DataStore
+import infrasys{}
+manager = PluginManager()
+parser_class = manager.load_parser("{}")
+if parser_class is None:
+    sys.exit(1)
+config_class = manager.load_config_class("{}")
+if config_class is None:
+    sys.exit(1)
+config_dict = json.loads('{}')
+config = config_class(**config_dict)
+data_store = DataStore.from_json('{}', '{}')
+parser = parser_class(config=config, data_store=data_store)
+system = parser.build_system()
+if {}:
+    print(system.to_json())
+else:
+    system.to_json('{}')
+"#,
+        loguru_code,
+        args.model,
+        args.model,
+        config_json.replace("'", "\\'"),
+        file_mapping_path.display(),
+        args.input.display(),
+        if args.stdout { "True" } else { "False" },
+        output_path.display()
+    );
+
+    let status = Command::new("uv")
+        .args(["run", "--python", uv_python_str, "python", "-c", &script])
+        .status()?;
+
+    if !status.success() {
+        return Err(R2xError::SubprocessError(
+            "Failed to run parsing script".to_string(),
+        ));
+    }
+
+    if !args.stdout {
+        println!("✓ System written to: {}", output_path.display());
+    }
 
     Ok(())
 }
 
 fn parse_model_args(
-    model: &str,
+    _model: &str,
     schema: &[crate::schema::FieldSchema],
     args: &[String],
 ) -> Result<std::collections::HashMap<String, String>> {

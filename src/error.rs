@@ -23,9 +23,6 @@ pub enum R2xError {
     #[error("Schema parsing error: {0}")]
     SchemaParse(#[from] serde_json::Error),
 
-    #[error("Python error: {0}")]
-    Python(#[from] pyo3::PyErr),
-
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -46,7 +43,7 @@ pub enum R2xError {
 
     #[error("Upgrade failed: {0}")]
     UpgradeError(String),
-    
+
     #[error("Subprocess execution failed: {0}")]
     SubprocessError(String),
 }

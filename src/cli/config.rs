@@ -47,7 +47,7 @@ struct InitArgs {
     with_examples: bool,
 
     /// Force overwrite if file exists
-    #[arg(short, long)]
+    #[arg(long)]
     force: bool,
 }
 
@@ -163,7 +163,10 @@ fn execute_init(args: InitArgs) -> Result<()> {
         println!("  - Configuration overrides under 'input.config' and 'output.config'");
         println!("  - System modifiers under 'modifiers'");
         println!("\nFor an example with modifiers, run:");
-        println!("  r2x config init --input {} --output {} --with-examples", args.input, args.output);
+        println!(
+            "  r2x config init --input {} --output {} --with-examples",
+            args.input, args.output
+        );
     }
 
     println!("\nTo run the workflow:");
