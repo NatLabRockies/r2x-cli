@@ -8,7 +8,6 @@ use crate::logger;
 use once_cell::sync::OnceCell;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -39,48 +38,6 @@ impl Bridge {
         logger::debug(&format!(
             "Initializing Python bridge with: {}",
             python_path.display()
-        ));
-
-        // Set PYTHONHOME to the uv-managed Python installation
-        // This is required for the embedded Python interpreter to find its standard library
-        let config = crate::config_manager::Config::load()
-            .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
-
-        let pythonhome_start = std::time::Instant::now();
-        if let Some(uv_path) = config.uv_path.as_ref() {
-            let python_version = config.python_version.as_deref().unwrap_or("3.12");
-            let prefix = format!("cpython-{}", python_version);
-
-            // Use `uv python dir --system` to get the managed Python base directory
-            if let Ok(dir_output) = Command::new(uv_path).args(["python", "dir"]).output() {
-                if dir_output.status.success() {
-                    let python_dir = String::from_utf8_lossy(&dir_output.stdout)
-                        .trim()
-                        .to_string();
-                    let python_base = PathBuf::from(&python_dir);
-
-                    // Find the cpython-{version}.* installation directory
-                    if let Ok(entries) = std::fs::read_dir(&python_base) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_dir()
-                                && entry.file_name().to_string_lossy().starts_with(&prefix)
-                            {
-                                logger::debug(&format!(
-                                    "Setting PYTHONHOME to: {}",
-                                    path.display()
-                                ));
-                                env::set_var("PYTHONHOME", &path);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        logger::debug(&format!(
-            "PYTHONHOME setup took: {:?}",
-            pythonhome_start.elapsed()
         ));
 
         let pyo3_start = std::time::Instant::now();
