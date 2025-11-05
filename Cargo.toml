@@ -24,7 +24,7 @@ colored = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.9"
-dirs = "5.0"
+dirs = "6.0"
 pyo3 = { version = "0.27", features = ["auto-initialize", "abi3-py38"] }
 serde_yaml = "0.9"
 regex = "1.10"
