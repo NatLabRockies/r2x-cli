@@ -77,6 +77,10 @@ pub struct RunCommand {
     #[arg(long)]
     pub print: bool,
 
+    /// Show pipeline flow without executing (display which plugins produce/consume stdout)
+    #[arg(long)]
+    pub dry_run: bool,
+
     /// Output file for final pipeline stdout (used when no subcommand)
     #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<String>,
@@ -113,6 +117,7 @@ pub fn handle_run(cmd: RunCommand, _opts: GlobalOpts) -> Result<(), RunError> {
                     cmd.pipeline_name,
                     cmd.list,
                     cmd.print,
+                    cmd.dry_run,
                     cmd.output,
                 )
             } else {
@@ -129,6 +134,7 @@ fn handle_pipeline_mode(
     pipeline_name: Option<String>,
     list: bool,
     print: bool,
+    dry_run: bool,
     output: Option<String>,
 ) -> Result<(), RunError> {
     let config = PipelineConfig::load(&yaml_path)?;
@@ -144,7 +150,11 @@ fn handle_pipeline_mode(
             ));
         }
     } else if let Some(name) = pipeline_name {
-        run_pipeline(&config, &name, output.as_deref())?;
+        if dry_run {
+            show_pipeline_flow(&config, &name)?;
+        } else {
+            run_pipeline(&config, &name, output.as_deref())?;
+        }
     } else {
         return Err(RunError::InvalidArgs(
             "Pipeline name required for execution".to_string(),
@@ -368,6 +378,45 @@ fn list_pipelines(config: &PipelineConfig) {
 fn print_pipeline_config(config: &PipelineConfig, pipeline_name: &str) -> Result<(), RunError> {
     let output = config.print_pipeline_config(pipeline_name)?;
     println!("{}", output);
+    Ok(())
+}
+
+fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<(), RunError> {
+    let pipeline = config
+        .get_pipeline(pipeline_name)
+        .ok_or_else(|| PipelineError::PipelineNotFound(pipeline_name.to_string()))?;
+
+    let manifest = PluginManifest::load()?;
+
+    logger::success(&format!("Pipeline: {}", pipeline_name));
+    println!();
+    println!("Pipeline flow (--dry-run):");
+
+    for (index, plugin_name) in pipeline.iter().enumerate() {
+        let plugin = manifest
+            .plugins
+            .get(plugin_name)
+            .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
+
+        // Determine if plugin reads from stdin/stdout
+        let has_obj = plugin.obj.is_some();
+        let input_marker = if index > 0 { "← stdin" } else { "" };
+        let output_marker = if has_obj { "→ stdout" } else { "" };
+
+        print!("  {}", plugin_name);
+        if !input_marker.is_empty() {
+            print!("  {}", input_marker.dimmed());
+        }
+        if !output_marker.is_empty() {
+            print!("  {}", output_marker.dimmed());
+        }
+        println!();
+    }
+
+    println!();
+    println!("{}  No actual execution. Use without --dry-run to run the pipeline.",
+        "✔".green());
+
     Ok(())
 }
 

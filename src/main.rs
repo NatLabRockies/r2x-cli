@@ -104,11 +104,20 @@ enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
-    ///  Configure Python installation and virtual environment
+    /// Configure Python installation
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Python {
         #[command(subcommand)]
         action: PythonAction,
+    },
+    /// Manage virtual environment
+    #[command(subcommand_required = false, arg_required_else_help = false)]
+    Venv {
+        #[command(subcommand)]
+        action: Option<VenvAction>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Run pipelines or plugins
     Run(run::RunCommand),
@@ -184,33 +193,24 @@ enum PluginsAction {
 
 #[derive(Subcommand)]
 enum PythonAction {
-    /// Install a different python version.
+    /// Install a different Python version
     Install {
-        #[arg(long, help = "Python version to install")]
+        /// Python version to install (e.g., 3.13, 3.12.1)
         version: Option<String>,
     },
-    /// Create or manage virtual environment
-    Venv {
-        #[command(subcommand)]
-        subcommand: Option<VenvSubcommand>,
-
-        /// Skip confirmation and clear existing venv
-        #[arg(long, global = true)]
-        clear: bool,
-    },
+    /// Get the Python executable path in the configured venv
+    Path,
     /// Show the configured Python version and venv information
     Show,
 }
 
-#[derive(Subcommand, Clone, Debug)]
-pub enum VenvSubcommand {
+#[derive(Subcommand)]
+pub enum VenvAction {
     /// Get or set the venv path
     Path {
         /// Optional new venv path to set
         new_path: Option<String>,
     },
-    /// Update r2x-core in the venv to the configured version
-    UpdateCore,
 }
 
 fn main() {
@@ -285,6 +285,9 @@ fn main() {
         }
         Commands::Python { action } => {
             python::handle_python(action, cli.global);
+        }
+        Commands::Venv { action, yes } => {
+            python::handle_venv(action, yes, cli.global);
         }
         Commands::Run(cmd) => {
             if let Err(e) = run::handle_run(cmd, cli.global) {
