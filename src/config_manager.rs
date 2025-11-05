@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use which::which;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -249,20 +249,16 @@ impl Config {
             self.uv_path = None;
         }
 
-        // First, try to find uv in PATH
-        if let Ok(output) = Command::new("which").arg("uv").output() {
-            if output.status.success() {
-                let path = String::from_utf8(output.stdout)?.trim().to_string();
-                self.uv_path = Some(path.clone());
+        match which("uv") {
+            Ok(path) => {
+                let path_str = path.to_string_lossy().trim().to_string();
+                self.uv_path = Some(path_str.clone());
                 self.save()?;
-                return Ok(path);
+                return Ok(path_str);
             }
-        }
-
-        // If uv is not found, try to install it
-        #[cfg(target_os = "windows")]
-        {
-            return Err("uv is not installed. Please install it from: https://docs.astral.sh/uv/getting-started/installation/".into());
+            Err(_) => {
+                return Err("uv is not installed. Please install it from: https://docs.astral.sh/uv/getting-started/installation/".into())
+            }
         }
 
         #[cfg(not(target_os = "windows"))]

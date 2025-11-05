@@ -9,7 +9,7 @@ pub fn list_plugins(_opts: &GlobalOpts) -> Result<(), String> {
         println!("There are no current plugins installed.");
         println!();
         println!("To install a plugin, run:");
-        println!("  {} plugins install <package>", "r2x".bold().cyan());
+        println!("  {} install <package>", "r2x".bold().cyan());
         return Ok(());
     }
 

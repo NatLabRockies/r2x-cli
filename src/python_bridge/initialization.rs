@@ -3,6 +3,7 @@
 //! This module handles all Python interpreter initialization, virtual environment
 //! configuration, and environment setup required before the bridge can be used.
 
+use super::utils::*;
 use crate::errors::BridgeError;
 use crate::logger;
 use once_cell::sync::OnceCell;
@@ -66,11 +67,21 @@ impl Bridge {
                 .get_venv_path(),
         );
 
-        let python_ver = get_python_version_dir(&venv_path)?;
-        let site_packages = venv_path
-            .join("lib")
-            .join(&python_ver)
-            .join("site-packages");
+        let lib_dir = venv_path.join(PYTHON_LIB_DIR);
+        logger::debug(&format!(
+            "lib_dir: {}, exists: {}",
+            lib_dir.display(),
+            lib_dir.exists()
+        ));
+        if !lib_dir.exists() {
+            return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
+        }
+        let site_packages = lib_dir.join(SITE_PACKAGES);
+        logger::debug(&format!(
+            "site_packages: {}, exists: {}",
+            site_packages.display(),
+            site_packages.exists()
+        ));
 
         Python::with_gil(|py| {
             let site = PyModule::import(py, "site")
@@ -153,24 +164,6 @@ impl Bridge {
 }
 
 /// Helper: get python3.X directory inside venv lib/
-fn get_python_version_dir(venv_path: &Path) -> Result<String, BridgeError> {
-    let lib_dir = venv_path.join("lib");
-    if !lib_dir.exists() {
-        return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
-    }
-
-    for entry in std::fs::read_dir(&lib_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("python") && entry.file_type()?.is_dir() {
-            return Ok(name_str.to_string());
-        }
-    }
-
-    Err(BridgeError::VenvNotFound(venv_path.to_path_buf()))
-}
-
 /// Detect the Python version from the embedded interpreter and store it in config
 ///
 /// This function:
@@ -242,11 +235,7 @@ pub fn configure_python_venv() -> Result<PathBuf, BridgeError> {
 
     let venv_path = PathBuf::from(config.get_venv_path());
 
-    let python_path = if cfg!(windows) {
-        venv_path.join("Scripts").join("python.exe")
-    } else {
-        venv_path.join("bin").join("python")
-    };
+    let python_path = venv_path.join(PYTHON_BIN_DIR).join(PYTHON_EXE);
 
     // Create venv if it doesn't exist
     if !venv_path.exists() || !python_path.exists() {
@@ -279,14 +268,4 @@ pub fn configure_python_venv() -> Result<PathBuf, BridgeError> {
     }
 
     Ok(python_path)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_get_python_version_dir_format() {
-        // Test that the function expects a valid format
-        let result = "python3.12".starts_with("python");
-        assert!(result);
-    }
 }

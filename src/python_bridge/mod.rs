@@ -12,9 +12,11 @@ mod initialization;
 mod manifest_builder;
 mod package_loader;
 mod plugin_invoker;
+mod utils;
 
 pub use initialization::configure_python_venv;
 pub use initialization::Bridge;
+pub use utils::{PYTHON_BIN_DIR, PYTHON_EXE, PYTHON_LIB_DIR, SITE_PACKAGES};
 
 #[cfg(test)]
 mod tests {
