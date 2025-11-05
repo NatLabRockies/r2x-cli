@@ -139,7 +139,13 @@ pub fn handle_python(action: PythonAction, opts: GlobalOpts) {
 fn handle_venv_create(clear: bool, opts: GlobalOpts) {
     logger::debug(&format!("Handling venv create command (clear: {})", clear));
     match Config::load() {
-        Ok(config) => {
+        Ok(mut config) => {
+            // Ensure uv is installed first
+            if let Err(e) = config.ensure_uv_path() {
+                logger::error(&format!("Failed to setup uv: {}", e));
+                return;
+            }
+
             let venv_path = config.get_venv_path();
             let venv_dir = PathBuf::from(&venv_path);
             let mut prompted = false;
@@ -238,6 +244,12 @@ fn handle_venv_path(new_path: Option<String>, _opts: GlobalOpts) {
     logger::debug("Handling venv path command");
     match Config::load() {
         Ok(mut config) => {
+            // Ensure uv is installed first
+            if let Err(e) = config.ensure_uv_path() {
+                logger::error(&format!("Failed to setup uv: {}", e));
+                return;
+            }
+
             if let Some(path) = new_path {
                 logger::debug(&format!("Setting venv path to: {}", path));
                 let venv_path = PathBuf::from(&path);
@@ -285,7 +297,13 @@ fn handle_venv_path(new_path: Option<String>, _opts: GlobalOpts) {
 fn handle_update_core(_opts: GlobalOpts) {
     logger::debug("Handling update-core command");
     match Config::load() {
-        Ok(config) => {
+        Ok(mut config) => {
+            // Ensure uv is installed first
+            if let Err(e) = config.ensure_uv_path() {
+                logger::error(&format!("Failed to setup uv: {}", e));
+                return;
+            }
+
             let venv_path = config.get_venv_path();
             let venv_dir = PathBuf::from(&venv_path);
 

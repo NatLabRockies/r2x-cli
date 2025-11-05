@@ -239,10 +239,17 @@ impl Config {
     }
 
     pub fn ensure_uv_path(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        // Check if the stored path exists
         if let Some(ref path) = self.uv_path {
-            return Ok(path.clone());
+            if std::path::Path::new(path).exists() {
+                return Ok(path.clone());
+            }
+            // Path was in config but doesn't exist, clear it
+            eprintln!("Stored uv path no longer exists: {}", path);
+            self.uv_path = None;
         }
 
+        // First, try to find uv in PATH
         if let Ok(output) = Command::new("which").arg("uv").output() {
             if output.status.success() {
                 let path = String::from_utf8(output.stdout)?.trim().to_string();
@@ -252,24 +259,40 @@ impl Config {
             }
         }
 
-        let output = Command::new("cargo")
-            .args(["install", "--git", "https://github.com/astral-sh/uv", "uv"])
-            .output()?;
-
-        if !output.status.success() {
-            return Err("Failed to install uv".into());
+        // If uv is not found, try to install it
+        #[cfg(target_os = "windows")]
+        {
+            return Err("uv is not installed. Please install it from: https://docs.astral.sh/uv/getting-started/installation/".into());
         }
 
-        if let Ok(output) = Command::new("which").arg("uv").output() {
-            if output.status.success() {
-                let path = String::from_utf8(output.stdout)?.trim().to_string();
-                self.uv_path = Some(path.clone());
-                self.save()?;
-                return Ok(path);
+        #[cfg(not(target_os = "windows"))]
+        {
+            eprintln!("uv not found. Installing uv using official installer...\n");
+
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg("curl -LsSf https://astral.sh/uv/install.sh | sh")
+                .status()?;
+
+            if !status.success() {
+                return Err("Failed to install uv".into());
             }
-        }
 
-        Err("Failed to locate uv after installation".into())
+            eprintln!("\nuv installation completed. Verifying installation...");
+
+            // Verify the installation
+            if let Ok(output) = Command::new("which").arg("uv").output() {
+                if output.status.success() {
+                    let path = String::from_utf8(output.stdout)?.trim().to_string();
+                    eprintln!("Found uv at: {}", path);
+                    self.uv_path = Some(path.clone());
+                    self.save()?;
+                    return Ok(path);
+                }
+            }
+
+            Err("Failed to locate uv after installation. Verify that ~/.local/bin or ~/.cargo/bin is in your PATH".into())
+        }
     }
 
     pub fn ensure_cache_path(&mut self) -> Result<String, Box<dyn std::error::Error>> {
@@ -288,12 +311,8 @@ impl Config {
             return Ok(venv_path);
         }
 
-        // Get uv path first
-        let uv_path = self
-            .uv_path
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Box::<dyn std::error::Error>::from("uv path not configured"))?;
+        // Ensure uv is installed first (this will auto-install if needed)
+        let uv_path = self.ensure_uv_path()?;
 
         // Use the Python version from config, or default to 3.12
         let python_version = self.python_version.as_deref().unwrap_or("3.12");
