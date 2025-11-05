@@ -50,7 +50,7 @@ impl Bridge {
 
         // Enable Python bytecode generation for faster subsequent imports
         // This overrides PYTHONDONTWRITEBYTECODE if set in the environment
-        Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let sys = PyModule::import(py, "sys")
                 .map_err(|e| BridgeError::Python(format!("Failed to import sys module: {}", e)))?;
             sys.setattr("dont_write_bytecode", false).map_err(|e| {
@@ -76,14 +76,27 @@ impl Bridge {
         if !lib_dir.exists() {
             return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
         }
-        let site_packages = lib_dir.join(SITE_PACKAGES);
+
+        // Find the python3.X directory inside lib/
+        use std::fs;
+        let python_version_dir = fs::read_dir(&lib_dir)
+            .map_err(|e| {
+                BridgeError::Initialization(format!("Failed to read lib directory: {}", e))
+            })?
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().starts_with("python"))
+            .ok_or_else(|| {
+                BridgeError::Initialization("No python3.X directory found in venv/lib".to_string())
+            })?;
+
+        let site_packages = python_version_dir.path().join(SITE_PACKAGES);
         logger::debug(&format!(
             "site_packages: {}, exists: {}",
             site_packages.display(),
             site_packages.exists()
         ));
 
-        Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let site = PyModule::import(py, "site")
                 .map_err(|e| BridgeError::Python(format!("Failed to import site module: {}", e)))?;
             site.call_method1("addsitedir", (site_packages.to_str().unwrap(),))
@@ -119,7 +132,6 @@ impl Bridge {
             "Total bridge initialization took: {:?}",
             start_time.elapsed()
         ));
-        logger::info("Python bridge initialized successfully");
         Ok(Bridge {})
     }
 
@@ -140,9 +152,20 @@ impl Bridge {
         // Check if Python logs should be shown on console
         let enable_console = crate::logger::get_log_python();
 
-        Python::with_gil(|py| {
-            let logger_module = PyModule::import(py, "r2x_core.logger")?;
-            let setup_logging = logger_module.getattr("setup_logging")?;
+        logger::debug(&format!(
+            "Configuring Python logging with level={}, file={}, enable_console={}",
+            log_level, log_file, enable_console
+        ));
+
+        pyo3::Python::attach(|py| {
+            let logger_module = PyModule::import(py, "r2x_core.logger").map_err(|e| {
+                logger::warn(&format!("Failed to import r2x_core.logger: {}", e));
+                BridgeError::Import("r2x_core.logger".to_string(), format!("{}", e))
+            })?;
+            let setup_logging = logger_module.getattr("setup_logging").map_err(|e| {
+                logger::warn(&format!("Failed to get setup_logging function: {}", e));
+                BridgeError::Python(format!("setup_logging not found: {}", e))
+            })?;
             let kwargs = pyo3::types::PyDict::new(py);
             kwargs.set_item("level", log_level)?;
             kwargs.set_item("log_file", &log_file)?;
@@ -176,7 +199,7 @@ fn detect_and_store_python_version() -> Result<(), BridgeError> {
         .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
     // Get Python version from sys.version_info (the actual compiled version)
-    let version_str = Python::with_gil(|py| {
+    let version_str = pyo3::Python::attach(|py| {
         let sys = PyModule::import(py, "sys")
             .map_err(|e| BridgeError::Python(format!("Failed to import sys: {}", e)))?;
         let version_info = sys

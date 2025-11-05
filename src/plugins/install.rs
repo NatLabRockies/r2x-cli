@@ -183,13 +183,15 @@ fn run_pip_install(
         python_path.to_string(),
     ];
 
+    if no_cache {
+        install_args.push("--no-cache".to_string());
+    }
+
     if editable {
         install_args.push("-e".to_string());
     }
 
-    if no_cache {
-        install_args.push("--no-cache".to_string());
-    }
+    install_args.push(package.to_string());
 
     let debug_flags = if editable && no_cache {
         "-e --no-cache"
@@ -205,8 +207,6 @@ fn run_pip_install(
         "Running: {} pip install {} --python {} {}",
         uv_path, debug_flags, python_path, package
     ));
-
-    install_args.push(package.to_string());
 
     let output = Command::new(uv_path)
         .args(&install_args)

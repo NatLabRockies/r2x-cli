@@ -13,12 +13,13 @@ mod plugins;
 pub mod python_bridge;
 use commands::{cache, config, init, python, read, run};
 use plugins::{
-    clean_manifest, install_plugin, list_plugins, remove_plugin, show_install_help, GitOptions,
+    clean_manifest, install_plugin, list_plugins, remove_plugin, show_install_help, sync_manifest,
+    GitOptions,
 };
 
 #[derive(Parser)]
 #[command(name = "r2x")]
-#[command(version = "0.1.0")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(
     about = "Energy translator framework",
     long_about = "R2X is a CLI tool for translating models."
@@ -98,6 +99,9 @@ enum Commands {
     },
     /// Remove a plugin
     Remove { plugin: String },
+    /// Sync plugin manifest (re-run plugin discovery for all installed packages)
+    /// Useful when developing plugins locally with -e to refresh the plugin registry
+    Sync,
     /// Clean the plugin manifest (removes all installed plugins)
     Clean {
         /// Skip confirmation prompt
@@ -280,6 +284,11 @@ fn main() {
         },
         Commands::Remove { plugin } => {
             if let Err(e) = remove_plugin(&plugin, &cli.global) {
+                logger::error(&e);
+            }
+        }
+        Commands::Sync => {
+            if let Err(e) = sync_manifest(&cli.global) {
                 logger::error(&e);
             }
         }

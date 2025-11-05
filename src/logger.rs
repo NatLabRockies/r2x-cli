@@ -142,9 +142,9 @@ pub fn success(message: &str) {
 /// Log a step message (important user-facing step)
 pub fn step(message: &str) {
     if get_verbosity() >= 2 {
-        eprintln!("TRACE {}", message);
+        eprintln!("TRACE: {}", message);
     }
-    write_to_log(&format!("STEP {}", message));
+    write_to_log(&format!("STEP: {}", message));
 }
 
 /// Capture command output and log it

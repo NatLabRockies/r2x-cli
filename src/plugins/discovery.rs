@@ -2,8 +2,7 @@ use crate::config_manager::Config;
 use crate::logger;
 use crate::plugin_cache::{CachedPackage, CachedPlugin, PluginMetadataCache};
 use crate::plugin_manifest::PluginManifest;
-use crate::python_bridge;
-use std::fs;
+use crate::plugins::AstDiscovery;
 use std::path::PathBuf;
 
 /// Options for plugin discovery and registration
@@ -24,6 +23,11 @@ pub fn discover_and_register_entry_points_with_deps(
     let package_name_full = &opts.package_name_full;
     let dependencies = &opts.dependencies;
     let no_cache = opts.no_cache;
+
+    // Get venv path from config for entry_points.txt lookup
+    let venv_path = crate::config_manager::Config::load()
+        .ok()
+        .map(|c| c.get_venv_path());
 
     logger::debug(&format!("Registering plugins from package: '{}'", package));
 
@@ -81,121 +85,42 @@ pub fn discover_and_register_entry_points_with_deps(
             .filter_map(|key| manifest.plugins.get(key).map(|p| (key.clone(), p.clone())))
             .collect()
     } else {
-        // Try metadata cache with version lookup
-        let cache_version = opts.package_version.as_deref().unwrap_or("unknown");
-        let mut metadata_cache = PluginMetadataCache::load().unwrap_or_else(|e| {
-            logger::debug(&format!("Failed to load metadata cache: {}", e));
-            PluginMetadataCache::default()
-        });
-
-        if !no_cache
-            && metadata_cache
-                .get_package(package_name_full, cache_version)
-                .is_some()
-        {
-            let cached_package = metadata_cache
-                .get_package(package_name_full, cache_version)
-                .unwrap();
+        if no_cache {
             logger::debug(&format!(
-                "✓ Cache hit: Found {} plugin(s) for '{}@{}' in metadata cache",
-                cached_package.plugins.len(),
-                package_name_full,
-                cache_version
+                "⊘ Cache skipped (--no-cache): Loading '{}@{}' via AST",
+                package_name_full, package_version
             ));
 
             PluginMetadataCache::extract_plugins(cached_package)
         } else {
-            // Cache miss or --no-cache - load from bridge and cache for future use
-            if no_cache {
-                logger::debug(&format!(
-                    "⊘ Cache skipped (--no-cache): Loading '{}@{}' from package metadata",
-                    package_name_full, cache_version
-                ));
-            } else {
-                logger::debug(&format!(
-                    "✗ Cache miss: Loading '{}@{}' from package metadata",
-                    package_name_full, cache_version
-                ));
-            }
-            let bridge = python_bridge::Bridge::get()
-                .map_err(|e| format!("Failed to initialize Python bridge: {}", e))?;
-
-            let plugin_entries = bridge
-                .build_manifest_from_package(package_short_name, package_name_full)
-                .map_err(|e| {
-                    format!(
-                        "Failed to load plugin package '{}': {}",
-                        package_short_name, e
-                    )
-                })?;
-
-            // Cache the plugins for future installs
-            if !plugin_entries.is_empty() {
-                let mut cached_package = CachedPackage::new(package_name_full.to_string());
-
-                for (name, plugin) in &plugin_entries {
-                    let cached_plugin = CachedPlugin {
-                        name: name.clone(),
-                        obj: plugin
-                            .obj
-                            .as_ref()
-                            .map(|obj| crate::plugin_cache::CallableMetadata {
-                                module: obj.module.clone(),
-                                name: obj.name.clone(),
-                                callable_type: obj.callable_type.clone(),
-                                return_annotation: obj.return_annotation.clone(),
-                                parameters: obj
-                                    .parameters
-                                    .iter()
-                                    .map(|(k, v)| {
-                                        (
-                                            k.clone(),
-                                            crate::plugin_cache::ParameterMetadata {
-                                                annotation: v.annotation.clone(),
-                                                default: v.default.as_ref().and_then(|d| {
-                                                    serde_json::from_str::<serde_json::Value>(d)
-                                                        .ok()
-                                                        .filter(|val| !val.is_null())
-                                                }),
-                                                is_required: v.is_required,
-                                            },
-                                        )
-                                    })
-                                    .collect(),
-                            }),
-                        plugin_type: plugin.plugin_type.clone().unwrap_or_default(),
-                        config: plugin
-                            .config
-                            .as_ref()
-                            .and_then(|c| serde_json::to_value(c).ok()),
-                        call_method: plugin.call_method.clone(),
-                    };
-                    cached_package.add_plugin(cached_plugin);
-                }
-
-                if let Err(e) = metadata_cache.set_package(
-                    package_name_full.to_string(),
-                    cache_version.to_string(),
-                    cached_package,
-                ) {
-                    logger::debug(&format!(
-                        "Warning: Failed to cache plugin metadata for '{}@{}': {}",
-                        package_name_full, cache_version, e
-                    ));
-                } else if let Err(e) = metadata_cache.save() {
-                    logger::debug(&format!("Warning: Failed to save metadata cache: {}", e));
-                } else {
-                    logger::debug(&format!(
-                        "✓ Cached {} plugin(s) for '{}@{}'",
-                        plugin_entries.len(),
-                        package_name_full,
-                        cache_version
-                    ));
-                }
-            }
-
-            plugin_entries
+            logger::debug(&format!(
+                "✗ Cache miss: Loading '{}@{}' via AST",
+                package_name_full, package_version
+            ));
         }
+
+        let package_path = find_package_path(package_name_full).map_err(|e| {
+            format!("Failed to locate package '{}': {}", package_name_full, e)
+        })?;
+
+        logger::debug(&format!("Found package at: {}", package_path.display()));
+
+        let json = AstDiscovery::discover_plugins(
+            &package_path,
+            package_name_full,
+            venv_path.as_deref(),
+            Some(package_version),
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to discover plugins for '{}': {}",
+                package_short_name, e
+            )
+        })?;
+
+        parse_plugin_json(&json, package_name_full).map_err(|e| {
+            format!("Failed to parse plugin JSON for '{}': {}", package_short_name, e)
+        })?
     };
 
     let mut total_plugins = plugin_entries.len();
@@ -261,8 +186,6 @@ pub fn discover_and_register_entry_points_with_deps(
             });
 
             for dep in r2x_dependencies {
-                let dep_short_name = dep.strip_prefix("r2x-").unwrap_or(&dep);
-
                 let dep_start = std::time::Instant::now();
 
                 // Try metadata cache first (dependencies use "unknown" version), unless --no-cache
@@ -278,82 +201,59 @@ pub fn discover_and_register_entry_points_with_deps(
 
                     Ok(PluginMetadataCache::extract_plugins(cached_package))
                 } else {
-                    // Cache miss - load from bridge
                     logger::debug(&format!(
-                        "✗ Cache miss: Loading '{}' from package metadata",
+                        "✗ Cache miss: Loading '{}' via AST",
                         &dep
                     ));
-                    let bridge = python_bridge::Bridge::get()
-                        .map_err(|e| format!("Failed to initialize Python bridge: {}", e))?;
-
-                    match bridge.build_manifest_from_package(dep_short_name, &dep) {
-                        Ok(dep_plugin_entries) => {
-                            // Cache the dependency plugins (unless --no-cache)
-                            if !no_cache && !dep_plugin_entries.is_empty() {
-                                let mut dep_cached_package = CachedPackage::new(dep.clone());
-
-                                for (name, plugin) in &dep_plugin_entries {
-                                    let cached_plugin = CachedPlugin {
-                                        name: name.clone(),
-                                        obj: plugin.obj.as_ref().map(|obj| crate::plugin_cache::CallableMetadata {
-                                            module: obj.module.clone(),
-                                            name: obj.name.clone(),
-                                            callable_type: obj.callable_type.clone(),
-                                            return_annotation: obj.return_annotation.clone(),
-                                            parameters: obj.parameters.iter().map(|(k, v)| {
-                                                (k.clone(), crate::plugin_cache::ParameterMetadata {
-                                                    annotation: v.annotation.clone(),
-                                                    default: v.default.as_ref().and_then(|d| {
-                                                        serde_json::from_str::<serde_json::Value>(d).ok().filter(|val| !val.is_null())
-                                                    }),
-                                                    is_required: v.is_required,
-                                                })
-                                            }).collect(),
-                                        }),
-                                        plugin_type: plugin.plugin_type.clone().unwrap_or_default(),
-                                        config: plugin.config.as_ref().and_then(|c| serde_json::to_value(c).ok()),
-                                        call_method: plugin.call_method.clone(),
-                                    };
-                                    dep_cached_package.add_plugin(cached_plugin);
+                    match find_package_path(&dep) {
+                        Ok(dep_path) => {
+                            match AstDiscovery::discover_plugins(
+                                &dep_path,
+                                &dep,
+                                venv_path.as_deref(),
+                                None, // Dependencies don't have version info
+                            ) {
+                                Ok(json) => {
+                                    match parse_plugin_json(&json, &dep) {
+                                        Ok(entries) => entries,
+                                        Err(e) => {
+                                            logger::warn(&format!(
+                                                "Failed to parse plugins from dependency '{}': {}",
+                                                &dep, e
+                                            ));
+                                            Vec::new()
+                                        }
+                                    }
                                 }
-
-                                if let Err(e) = metadata_cache.set_package(
-                                    dep.clone(),
-                                    "unknown".to_string(),
-                                    dep_cached_package,
-                                ) {
-                                    logger::debug(&format!(
-                                        "Warning: Failed to cache dependency plugins for '{}': {}",
-                                        dep, e
+                                Err(e) => {
+                                    logger::warn(&format!(
+                                        "Failed to discover plugins from dependency '{}': {}",
+                                        &dep, e
                                     ));
-                                } else if let Err(e) = metadata_cache.save() {
-                                    logger::debug(&format!(
-                                        "Warning: Failed to save metadata cache after dependency load: {}",
-                                        e
-                                    ));
-                                } else {
-                                    logger::debug(&format!(
-                                        "✓ Cached {} plugin(s) for '{}'",
-                                        dep_plugin_entries.len(),
-                                        dep
-                                    ));
+                                    Vec::new()
                                 }
                             }
-                            Ok(dep_plugin_entries)
+                        }
+                        Err(e) => {
+                            logger::warn(&format!(
+                                "Failed to locate dependency package '{}': {}",
+                                &dep, e
+                            ));
+                            Vec::new()
                         }
                         Err(e) => Err(e),
                     }
                 };
 
-                match dep_plugin_entries {
-                    Ok(dep_plugin_entries) => {
-                        logger::debug(&format!("Loading {} took: {:?}", dep, dep_start.elapsed()));
-                        if !dep_plugin_entries.is_empty() {
-                            logger::debug(&format!(
-                                "Found {} r2x plugin(s) in dependency '{}'",
-                                dep_plugin_entries.len(),
-                                dep
-                            ));
+                if dep_plugin_entries.is_empty() {
+                    logger::debug(&format!("No plugins found in dependency '{}'", &dep));
+                } else {
+                    logger::debug(&format!(
+                        "Found {} plugin(s) for '{}' in {:?}",
+                        dep_plugin_entries.len(),
+                        &dep,
+                        dep_start.elapsed()
+                    ));
 
                             for (key, mut plugin) in dep_plugin_entries {
                                 plugin.install_type = Some("dependency".to_string());
@@ -388,12 +288,23 @@ pub fn discover_and_register_entry_points_with_deps(
 
 /// Quick check: does the package have an entry_points.txt file?
 /// This is a fast file system check to avoid Python bridge initialization
-fn check_entry_points_exists(package_name_full: &str) -> bool {
-    // Get venv path
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+fn find_package_path(package_name_full: &str) -> Result<PathBuf, String> {
+    let config = crate::config_manager::Config::load()
+        .map_err(|e| format!("Failed to load config: {}", e))?;
+
+    let normalized_package_name = package_name_full.replace('-', "_");
+
+    // First, try to find the package via UV's .pth file cache (for editable/local installs)
+    if let Ok(uv_cache_path) = try_find_package_via_pth(&normalized_package_name) {
+        logger::debug(&format!(
+            "Found package '{}' via UV .pth cache at: {}",
+            package_name_full,
+            uv_cache_path.display()
+        ));
+        return Ok(uv_cache_path);
+    }
+
+    // Fallback: search in site-packages (for normally installed packages)
     let venv_path = PathBuf::from(config.get_venv_path());
 
     // Find site-packages directory
@@ -415,23 +326,149 @@ fn check_entry_points_exists(package_name_full: &str) -> bool {
             Some(d) => d,
             None => return false,
         };
+    let package_dir = std::fs::read_dir(&site_packages)
+        .map_err(|e| format!("Failed to read site-packages: {}", e))?
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name == normalized_package_name || name.starts_with(&format!("{}-", normalized_package_name))
+        })
+        .ok_or_else(|| format!("Package '{}' not found in site-packages", package_name_full))?;
 
-        python_version_dir.path().join("site-packages")
+    Ok(package_dir.path())
+}
+
+fn try_find_package_via_pth(normalized_package_name: &str) -> Result<PathBuf, String> {
+    // Look for .pth file in UV cache directory
+    // Pattern: ~/.cache/uv/archive-v0/<hash>/<package_name>.pth
+    let cache_dir = if let Some(home) = dirs::home_dir() {
+        home.join(".cache").join("uv").join("archive-v0")
+    } else {
+        return Err("Could not determine home directory".to_string());
     };
 
-    // Convert package name format: "r2x-reeds" -> "r2x_reeds" for dist-info lookup
-    let normalized_name = package_name_full.replace('-', "_");
+    if !cache_dir.exists() {
+        logger::debug(&format!(
+            "UV cache directory does not exist: {}",
+            cache_dir.display()
+        ));
+        return Err("UV cache not found".to_string());
+    }
 
-    // Find dist-info directory matching the package name
-    // Match exactly: package_name + "-" to avoid matching r2x_sienna when looking for r2x_sienna_to_plexos
-    if let Ok(entries) = fs::read_dir(&site_packages_path) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            let expected_prefix = format!("{}-", normalized_name);
-            if file_name.starts_with(&expected_prefix) && file_name.ends_with(".dist-info") {
-                let entry_points_path = entry.path().join("entry_points.txt");
-                return entry_points_path.exists();
+    // Search through all hash directories in the UV cache
+    let hash_dirs = std::fs::read_dir(&cache_dir)
+        .map_err(|e| format!("Failed to read UV cache directory: {}", e))?;
+
+    for hash_entry in hash_dirs {
+        let hash_entry = match hash_entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let hash_path = hash_entry.path();
+        if !hash_path.is_dir() {
+            continue;
+        }
+
+        // Look for .pth file matching the package name
+        let pth_path = hash_path.join(format!("{}.pth", normalized_package_name));
+        if pth_path.exists() {
+            // Read the path from the .pth file
+            match std::fs::read_to_string(&pth_path) {
+                Ok(content) => {
+                    let package_path = content.trim();
+                    if !package_path.is_empty() {
+                        logger::debug(&format!(
+                            "Found .pth file for '{}': {}",
+                            normalized_package_name, pth_path.display()
+                        ));
+                        logger::debug(&format!(
+                            "Package path from .pth: {}",
+                            package_path
+                        ));
+                        return Ok(PathBuf::from(package_path));
+                    }
+                }
+                Err(e) => {
+                    logger::debug(&format!(
+                        "Failed to read .pth file at {}: {}",
+                        pth_path.display(),
+                        e
+                    ));
+                }
             }
+        }
+    }
+
+    Err(format!(
+        "Package '{}' not found in UV cache",
+        normalized_package_name
+    ))
+}
+
+fn parse_plugin_json(json: &str, package_name_full: &str) -> Result<Vec<(String, crate::plugin_manifest::Plugin)>, String> {
+    let package: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("Failed to parse plugin JSON: {}", e))?;
+
+    let mut plugins = Vec::new();
+
+    if let Some(plugins_array) = package.get("plugins").and_then(|p| p.as_array()) {
+        for plugin_obj in plugins_array {
+            let plugin_name = plugin_obj
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| "Plugin missing 'name' field".to_string())?;
+
+            let plugin_type = plugin_obj
+                .get("plugin_type")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string());
+
+            let io_type = plugin_obj
+                .get("io_type")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string());
+
+            let call_method = plugin_obj
+                .get("call_method")
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string());
+
+            let obj = plugin_obj.get("obj").cloned();
+            let config = plugin_obj.get("config").cloned();
+            let requires_store = plugin_obj.get("requires_store").and_then(|r| r.as_bool());
+
+            let plugin = crate::plugin_manifest::Plugin {
+                package_name: Some(package_name_full.to_string()),
+                package_version: None,
+                cached_at: None,
+                plugin_type,
+                description: None,
+                doc: None,
+                io_type,
+                call_method,
+                requires_store,
+                obj: obj.and_then(|o| {
+                    if o.is_null() {
+                        None
+                    } else {
+                        serde_json::from_value::<crate::plugin_manifest::CallableMetadata>(o).ok()
+                    }
+                }),
+                config: config.and_then(|c| {
+                    if c.is_null() {
+                        None
+                    } else {
+                        serde_json::from_value::<crate::plugin_manifest::ConfigMetadata>(c).ok()
+                    }
+                }),
+                upgrader: None,
+                install_type: None,
+                installed_by: None,
+            };
+
+            logger::debug(&format!("Parsed plugin: {}", plugin_name));
+            plugins.push((plugin_name.to_string(), plugin));
         }
     }
 
@@ -471,8 +508,8 @@ mod tests {
         assert!(looks_like_r2x_plugin("r2x-reeds"));
         assert!(looks_like_r2x_plugin("r2x-plexos"));
         assert!(!looks_like_r2x_plugin("r2x-core"));
-        assert!(!looks_like_r2x_plugin("chronify"));
-        assert!(!looks_like_r2x_plugin("requests"));
+        assert!(!looks_like_r2x_plugin("numpy"));
+        assert!(!looks_like_r2x_plugin("pandas"));
     }
 
     #[test]
