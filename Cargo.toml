@@ -1,6 +1,6 @@
 [package]
 name = "r2x"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 authors = ["pesap <pesap@users.noreply.github.com>", "Micah Webb <micahpw@users.noreply.github.com>"]
 description = "A comprehensive framework plugin manager for the r2x power systems modeling ecosystem. Simplifies discovery, installation, and management of r2x framework plugins."
