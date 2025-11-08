@@ -1,0 +1,14 @@
+[package]
+name = "r2x-config"
+version = "0.0.4"
+edition = "2021"
+description = "Configuration management for the r2x CLI"
+license = "BSD-3-Clause"
+repository = "https://github.com/NREL/r2x-cli"
+publish = false
+
+[dependencies]
+dirs = "6.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = { version = "0.9", features = ["preserve_order"] }
+which = "8.0.0"

@@ -1,0 +1,21 @@
+[package]
+name = "r2x-ast"
+version = "0.0.4"
+edition = "2021"
+description = "AST discovery utilities for the r2x CLI"
+license = "BSD-3-Clause"
+repository = "https://github.com/NREL/r2x-cli"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+ast-grep-core = "0.22"
+ast-grep-language = "0.22"
+r2x-manifest = { path = "../r2x-manifest" }
+tracing = "0.1"
+walkdir = "2.4"
+toml = { version = "0.9", features = ["preserve_order"] }
+r2x-logger = { path = "../r2x-logger" }
+
+[dev-dependencies]
+tempfile = "3.10"
