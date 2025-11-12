@@ -14,6 +14,12 @@ homepage = "https://github.com/NREL/r2x-cli"
 documentation = "https://docs.rs/r2x"
 rust-version = "1.72"
 
+[workspace.dependencies]
+r2x-config = { path = "crates/r2x-config" }
+r2x-manifest = { path = "crates/r2x-manifest" }
+r2x-python = { path = "crates/r2x-python" }
+r2x-logger = { path = "crates/r2x-logger" }
+
 [profile.dist]
 inherits = "release"
 lto = "thin"
