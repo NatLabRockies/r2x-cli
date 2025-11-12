@@ -10,7 +10,6 @@ documentation = { workspace = true }
 rust-version = { workspace = true }
 
 description = "Manifest management utilities for the r2x CLI"
-publish = false
 
 [dependencies]
 anyhow = "1.0"

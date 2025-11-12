@@ -10,7 +10,6 @@ documentation = { workspace = true }
 rust-version = { workspace = true }
 
 description = "Python bridge for the r2x CLI"
-publish = false
 
 [dependencies]
 once_cell = "1.19"
