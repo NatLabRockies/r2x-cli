@@ -97,7 +97,19 @@ version = "0.22.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "302b68ec51d0990cf24ccc77a98297888145bfe69a078f11f1c51c961bec1b14"
 dependencies = [
- "bit-set",
+ "bit-set 0.5.3",
+ "regex",
+ "thiserror 1.0.69",
+ "tree-sitter-facade-sg",
+]
+
+[[package]]
+name = "ast-grep-core"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "624f575766495025effd15f8125f51ccf11d96f22d0f8c257bf4b8cd09fa26bb"
+dependencies = [
+ "bit-set 0.8.0",
  "regex",
  "thiserror 1.0.69",
  "tree-sitter-facade-sg",
@@ -105,11 +117,11 @@ dependencies = [
 
 [[package]]
 name = "ast-grep-language"
-version = "0.22.6"
+version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a028281965a8ebc134ba31b3cb15d55eaa7a2c9b1dbf3127856b6a3263b8e3e5"
+checksum = "d67cb12eed2d42535b61ed224d0ce4448b3a7304e0f028f1adf12a64041e0a61"
 dependencies = [
- "ast-grep-core",
+ "ast-grep-core 0.25.4",
  "ignore",
  "serde",
  "tree-sitter-bash",
@@ -123,7 +135,7 @@ dependencies = [
  "tree-sitter-haskell",
  "tree-sitter-html",
  "tree-sitter-java",
- "tree-sitter-javascript-sg",
+ "tree-sitter-javascript",
  "tree-sitter-json",
  "tree-sitter-kotlin",
  "tree-sitter-lua",
@@ -132,6 +144,7 @@ dependencies = [
  "tree-sitter-ruby",
  "tree-sitter-rust",
  "tree-sitter-scala",
+ "tree-sitter-sql-bigquery",
  "tree-sitter-swift",
  "tree-sitter-typescript",
 ]
@@ -159,7 +172,16 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0700ddab506f33b20a03b13996eccd309a48e5ff77d0d95926aa0210fb4e95f1"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.6.3",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
 ]
 
 [[package]]
@@ -167,6 +189,12 @@ name = "bit-vec"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
 name = "bitflags"
@@ -801,7 +829,7 @@ name = "r2x-ast"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "ast-grep-core",
+ "ast-grep-core 0.22.6",
  "ast-grep-language",
  "r2x-logger",
  "r2x-manifest",
@@ -1352,10 +1380,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-javascript-sg"
-version = "0.21.2"
+name = "tree-sitter-javascript"
+version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bcc0db43c6e12fa3cc61f6341a36aba80ae95eeaf575a4292bad7a1960488f2"
+checksum = "8710a71bc6779e33811a8067bdda3ed08bed1733296ff915e44faf60f8c533d7"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -1436,6 +1464,16 @@ name = "tree-sitter-scala"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4cb33e33a04b091b56541cf6663abba117cd2feefe2908e42cf9964d75a5edb"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-sql-bigquery"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03958a5b10ddcd25ed510cf95a9bbb36cad5837894f4b7743e6ce0e26875e463"
 dependencies = [
  "cc",
  "tree-sitter",

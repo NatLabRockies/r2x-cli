@@ -14,7 +14,7 @@ description = "AST discovery utilities for the r2x CLI"
 [dependencies]
 anyhow = "1.0"
 ast-grep-core = "0.22"
-ast-grep-language = "0.22"
+ast-grep-language = "0.25"
 tracing = "0.1"
 walkdir = "2.4"
 toml = { version = "0.9", features = ["preserve_order"] }
