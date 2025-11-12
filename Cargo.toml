@@ -15,12 +15,11 @@ documentation = "https://docs.rs/r2x"
 rust-version = "1.72"
 
 [workspace.dependencies]
-r2x-config = { path = "crates/r2x-config"}
-r2x-manifest = { path = "crates/r2x-manifest"}
-r2x-python = { path = "crates/r2x-python"}
-r2x-logger = { path = "crates/r2x-logger"}
-r2x-ast = { path = "crates/r2x-ast"}
-r2x-cli = { path = "crates/r2x-cli"}
+r2x-config = { path = "crates/r2x-config", version = "0.0.1" }
+r2x-manifest = { path = "crates/r2x-manifest", version = "0.0.1" }
+r2x-python = { path = "crates/r2x-python", version = "0.0.1" }
+r2x-logger = { path = "crates/r2x-logger", version = "0.0.1" }
+r2x-ast = { path = "crates/r2x-ast", version = "0.0.1" }
 
 [profile.dist]
 inherits = "release"
