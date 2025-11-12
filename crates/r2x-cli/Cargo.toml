@@ -1,0 +1,61 @@
+[package]
+name = "r2x"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+documentation = { workspace = true }
+rust-version = { workspace = true }
+
+description = "A comprehensive framework plugin manager for the r2x power systems modeling ecosystem. Simplifies discovery, installation, and management of r2x framework plugins."
+readme = "../../README.md"
+keywords = ["power-systems", "r2x", "cli", "plugin-manager", "uv"]
+categories = ["command-line-utilities", "development-tools"]
+
+[package.metadata.wix]
+upgrade-guid = "AB0643AB-0F2C-4FDC-ACFB-E7886B50614F"
+path-guid = "B2C9C3FE-FD0C-4209-910C-A07D1A71C539"
+license = false
+eula = false
+
+[dependencies]
+atty = "0.2"
+clap = { version = "4.5", features = ["derive"] }
+colored = "3.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = { version = "0.9", features = ["preserve_order"] }
+dirs = "6.0"
+serde_yaml = "0.9"
+regex = "1.10"
+thiserror = "2.0"
+once_cell = "1.19"
+chrono = { version = "0.4", features = ["serde"] }
+indicatif = "0.18"
+which = "8.0.0"
+walkdir = "2.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1.0"
+
+[dependencies.r2x-manifest]
+path = "../r2x-manifest"
+
+[dependencies.r2x-ast]
+path = "../r2x-ast"
+
+[dependencies.r2x-python]
+path = "../r2x-python"
+
+[dependencies.r2x-config]
+path = "../r2x-config"
+
+[dependencies.r2x-logger]
+path = "../r2x-logger"
+
+[dev-dependencies]
+assert_cmd = "2.1"
+predicates = "3.0"
+tempfile = "3.8"
