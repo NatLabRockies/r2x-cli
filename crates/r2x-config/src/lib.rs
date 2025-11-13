@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use which::which;
+
+#[cfg(unix)]
+use std::process::Command;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -289,11 +291,6 @@ impl Config {
             }
 
             return Err("Failed to locate uv after installation. Verify that ~/.local/bin or ~/.cargo/bin is in your PATH".into());
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            Err("uv is not installed. Please install it from: https://docs.astral.sh/uv/getting-started/installation/".into())
         }
     }
 

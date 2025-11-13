@@ -63,15 +63,22 @@ jobs:
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - name: Ensure python3.12 alias (unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: ln -sf "$pythonLocation/bin/python" "$pythonLocation/bin/python3.12"
+        # Check that files are not equivalent before linking.
+        run: |
+          if ! [ "$pythonLocation/bin/python" -ef "$pythonLocation/bin/python3.12" ]; then
+            ln -sf "$pythonLocation/bin/python" "$pythonLocation/bin/python3.12"
+          fi
       - name: Ensure python3.12 alias (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Copy-Item "$env:pythonLocation\\python.exe" "$env:pythonLocation\\python3.12.exe" -Force
+        run: |
+          if (!(Test-Path "$env:pythonLocation\\python3.12.exe") -or ((Get-Item "$env:pythonLocation\\python.exe").FullName -ne (Get-Item "$env:pythonLocation\\python3.12.exe").FullName)) {
+            Copy-Item "$env:pythonLocation\\python.exe" "$env:pythonLocation\\python3.12.exe" -Force
+          }
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -194,10 +201,13 @@ jobs:
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - name: Ensure python3.12 alias (unix)
         shell: bash
-        run: ln -sf "$pythonLocation/bin/python" "$pythonLocation/bin/python3.12"
+        run: |
+          if ! [ "$pythonLocation/bin/python" -ef "$pythonLocation/bin/python3.12" ]; then
+            ln -sf "$pythonLocation/bin/python" "$pythonLocation/bin/python3.12"
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@v4
         with:

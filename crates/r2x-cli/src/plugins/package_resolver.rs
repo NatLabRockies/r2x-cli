@@ -3,8 +3,8 @@
 //! Handles locating installed packages in virtual environments,
 //! including support for UV editable installs via .pth files.
 
+use r2x_python::resolve_site_package_path;
 use std::path::PathBuf;
-
 /// Find the path to an installed package
 pub fn find_package_path(package_name_full: &str) -> Result<PathBuf, String> {
     let config = crate::config_manager::Config::load()
@@ -19,15 +19,10 @@ pub fn find_package_path(package_name_full: &str) -> Result<PathBuf, String> {
 
     // Fallback: search in site-packages (for normally installed packages)
     let venv_path = PathBuf::from(config.get_venv_path());
-    let lib_dir = venv_path.join("lib");
 
-    let python_version_dir = std::fs::read_dir(&lib_dir)
-        .map_err(|e| format!("Failed to read lib directory: {}", e))?
-        .filter_map(|e| e.ok())
-        .find(|e| e.file_name().to_string_lossy().starts_with("python"))
-        .ok_or_else(|| "No python directory found in venv".to_string())?;
-
-    let site_packages = python_version_dir.path().join("site-packages");
+    // FIXME, properly handle error propagation.
+    let site_packages = resolve_site_package_path(&venv_path)
+        .map_err(|e| format!("failed to resolve path to python packages: {}", e))?;
 
     let package_dir = std::fs::read_dir(&site_packages)
         .map_err(|e| format!("Failed to read site-packages: {}", e))?
