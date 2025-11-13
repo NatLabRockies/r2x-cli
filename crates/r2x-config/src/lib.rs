@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use which::which;
+
+#[cfg(unix)]
+use std::process::Command;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {

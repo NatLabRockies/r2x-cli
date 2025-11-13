@@ -4,6 +4,12 @@ use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use predicates::prelude::*;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+const EXECUTABLE_NAME: &str = "r2x";
+
+#[cfg(windows)]
+const EXECUTABLE_NAME: &str = "r2x.exe";
+
 fn fixture_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -51,7 +57,10 @@ fn test_plugins_help() {
         .args(["run", "plugin", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Usage: r2x run plugin"));
+        .stdout(predicate::str::contains(format!(
+            "Usage: {} run plugin",
+            EXECUTABLE_NAME
+        )));
 }
 
 #[test]

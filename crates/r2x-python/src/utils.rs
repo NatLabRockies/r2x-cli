@@ -6,25 +6,25 @@
 use super::errors::BridgeError;
 use std::path::PathBuf;
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 use std::fs;
 
 /// The name of the library directory in a Python venv (e.g., "Lib" on Windows, "lib" on Unix)
 #[cfg(windows)]
 const PYTHON_LIB_DIR: &str = "Lib";
-#[cfg(not(windows))]
+#[cfg(unix)]
 const PYTHON_LIB_DIR: &str = "lib";
 
 /// The name of the binaries/scripts directory in a Python venv (e.g., "Scripts" on Windows, "bin" on Unix)
 #[cfg(windows)]
 const PYTHON_BIN_DIR: &str = "Scripts";
-#[cfg(not(windows))]
+#[cfg(unix)]
 const PYTHON_BIN_DIR: &str = "bin";
 
 /// The name of the Python executable in a venv (e.g., "python.exe" on Windows, "python" on Unix)
 #[cfg(windows)]
 const PYTHON_EXE: &str = "python.exe";
-#[cfg(not(windows))]
+#[cfg(unix)]
 const PYTHON_EXE: &str = "python";
 
 // Site Packages differences.
