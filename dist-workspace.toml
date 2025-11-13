@@ -17,5 +17,4 @@ install-path = "CARGO_HOME"
 install-updater = false
 
 [workspace.metadata.dist]
-allow-dirty = ["ci"]
-
+allow-dirty = true
