@@ -21,8 +21,8 @@ pub fn find_package_path(package_name_full: &str) -> Result<PathBuf, String> {
     let venv_path = PathBuf::from(config.get_venv_path());
 
     // FIXME, properly handle error propagation.
-    let site_packages =
-        resolve_site_package_path(&venv_path).expect("Failed to resolve site packages");
+    let site_packages = resolve_site_package_path(&venv_path)
+        .map_err(|e| format!("failed to resolve path to python packages: {}", e))?;
 
     let package_dir = std::fs::read_dir(&site_packages)
         .map_err(|e| format!("Failed to read site-packages: {}", e))?
