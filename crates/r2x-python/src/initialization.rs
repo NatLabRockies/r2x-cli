@@ -3,7 +3,7 @@
 //! This module handles all Python interpreter initialization, virtual environment
 //! configuration, and environment setup required before the bridge can be used.
 
-use super::utils::*;
+use super::utils::{resolve_python_path, resolve_site_package_path};
 use crate::errors::BridgeError;
 use once_cell::sync::OnceCell;
 use pyo3::prelude::*;
@@ -70,6 +70,7 @@ impl Bridge {
         // Add site-packages from venv to sys.path so imports work as expected
         let venv_path = PathBuf::from(config.get_venv_path());
 
+        // TODO we can move this block and the next into utils.rs
         let lib_dir = venv_path.join(PYTHON_LIB_DIR);
         logger::debug(&format!(
             "lib_dir: {}, exists: {}",
@@ -320,7 +321,13 @@ pub fn configure_python_venv() -> Result<PathBuf, BridgeError> {
 
     let venv_path = PathBuf::from(config.get_venv_path());
 
-    let python_path = venv_path.join(PYTHON_BIN_DIR).join(PYTHON_EXE);
+    let python_path_result = resolve_python_path(&venv_path);
+
+    if python_path_result.is_err() {
+        logger::debug("Could not resolve Python path");
+    }
+
+    let python_path = python_path_result.unwrap_or_else(|_| PathBuf::new());
 
     // Create venv if it doesn't exist
     if !venv_path.exists() || !python_path.exists() {

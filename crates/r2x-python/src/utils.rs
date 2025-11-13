@@ -3,17 +3,9 @@
 //! This module provides compile-time constants for directories and files that differ
 //! between Windows and Unix-like systems in Python virtual environments.
 
+use super::errors::BridgeError;
+use std::fs;
 use std::path::PathBuf;
-
-#[derive(Debug)]
-pub enum VenvErr {
-    BinaryNotFound,
-    PackageNotFound,
-    PackageDirNotFound,
-    LibDirNotFound,
-    VenvDirNotFound,
-    IOError(std::io::Error),
-}
 
 /// The name of the library directory in a Python venv (e.g., "Lib" on Windows, "lib" on Unix)
 #[cfg(windows)]
@@ -66,6 +58,7 @@ pub fn resolve_site_package_path(venv_path: &PathBuf) -> Result<PathBuf, VenvErr
             return Err(VenvErr::LibDirNotFound);
         }
 
+        // FIXME Return a VenvError -> Map to BridgeError in Initialization process
         let python_version_dir = std::fs::read_dir(&lib_dir)
             .map_err(|e| format!("Failed to read lib directory: {}", e))?
             .filter_map(|e| e.ok())
@@ -80,4 +73,20 @@ pub fn resolve_site_package_path(venv_path: &PathBuf) -> Result<PathBuf, VenvErr
 
         Ok(site_packages)
     }
+}
+
+pub fn resolve_python_path(venv_path: &PathBuf) -> Result<PathBuf, VenvErr> {
+    // validate venv path is a valid directory
+    if !venv_path.is_dir() {
+        return Err(VenvErr::VenvDirNotFound);
+    }
+
+    let python_path = venv_path.join(PYTHON_BIN_DIR).join(PYTHON_EXE);
+
+    // validate the interpreter path is valid
+    if !python_path.is_file() {
+        return Err(VenvErr::BinaryNotFound);
+    }
+
+    return Ok(python_path);
 }
