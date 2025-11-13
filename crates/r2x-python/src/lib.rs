@@ -14,7 +14,7 @@ mod utils;
 
 pub use errors::BridgeError;
 pub use initialization::{configure_python_venv, Bridge};
-pub use utils::{resolve_site_package_path, PYTHON_BIN_DIR, PYTHON_EXE, PYTHON_LIB_DIR};
+pub use utils::{resolve_python_path, resolve_site_package_path};
 
 #[cfg(test)]
 mod tests {

@@ -69,33 +69,7 @@ impl Bridge {
 
         // Add site-packages from venv to sys.path so imports work as expected
         let venv_path = PathBuf::from(config.get_venv_path());
-
-        // TODO we can move this block and the next into utils.rs
-        let lib_dir = venv_path.join(PYTHON_LIB_DIR);
-        logger::debug(&format!(
-            "lib_dir: {}, exists: {}",
-            lib_dir.display(),
-            lib_dir.exists()
-        ));
-        if !lib_dir.exists() {
-            return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
-        }
-
-        // Find the python3.X directory inside lib/
-        use std::fs;
-        let python_version_dir = fs::read_dir(&lib_dir)
-            .map_err(|e| {
-                BridgeError::Initialization(format!("Failed to read lib directory: {}", e))
-            })?
-            .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().starts_with("python"))
-            .ok_or_else(|| {
-                BridgeError::Initialization("No python3.X directory found in venv/lib".to_string())
-            })?;
-
-        let site_packages = resolve_site_package_path(&venv_path).map_err(|e| {
-            BridgeError::Initialization(format!("Failed to resolve site package path"))
-        })?;
+        let site_packages = resolve_site_package_path(&venv_path)?;
 
         logger::debug(&format!(
             "site_packages: {}, exists: {}",
