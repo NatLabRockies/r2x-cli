@@ -4,8 +4,10 @@
 //! between Windows and Unix-like systems in Python virtual environments.
 
 use super::errors::BridgeError;
-use std::fs;
 use std::path::PathBuf;
+
+#[cfg(not(windows))]
+use std::fs;
 
 /// The name of the library directory in a Python venv (e.g., "Lib" on Windows, "lib" on Unix)
 #[cfg(windows)]
