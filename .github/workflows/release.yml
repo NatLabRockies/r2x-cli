@@ -67,7 +67,7 @@ jobs:
       - name: Set PYO3_PYTHON (unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: echo "PYO3_PYTHON=$pythonLocation/bin/python"
+        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
       - name: Set PYO3_PYTHON (windows)
         if: runner.os == 'Windows'
         shell: pwsh
