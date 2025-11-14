@@ -40,12 +40,12 @@ impl AstDiscovery {
         logger::info(&format!("AST discovery started for: {}", package_name_full));
 
         // Find the plugins.py file using entry_points.txt
-        let plugins_py =
+        let (plugins_py, plugin_module) =
             Self::find_plugins_py_via_entry_points(package_path, package_name_full, venv_path)?;
         logger::info(&format!("Found plugins.py at: {:?}", plugins_py));
 
         // Phase 1: Extract plugins with constructor_args
-        let extractor = extractor::PluginExtractor::new(plugins_py.clone())
+        let extractor = extractor::PluginExtractor::new(plugins_py.clone(), plugin_module.clone())
             .map_err(|e| anyhow!("Failed to create extractor: {}", e))?;
 
         let mut plugins = extractor
@@ -96,7 +96,7 @@ impl AstDiscovery {
         package_path: &Path,
         package_name_full: &str,
         venv_path: Option<&str>,
-    ) -> Result<std::path::PathBuf> {
+    ) -> Result<(std::path::PathBuf, String)> {
         use std::fs;
         // Try to find entry_points.txt in the package's dist-info
         let entry_points_path =
@@ -113,13 +113,13 @@ impl AstDiscovery {
         // Try to locate the actual file
         let plugins_path = package_path.join(&relative_path);
         if plugins_path.exists() {
-            return Ok(plugins_path);
+            return Ok((plugins_path, module_path));
         }
         // Try one level up (in case package_path is the package root)
         if let Some(parent) = package_path.parent() {
             let plugins_path = parent.join(&relative_path);
             if plugins_path.exists() {
-                return Ok(plugins_path);
+                return Ok((plugins_path, module_path));
             }
         }
         Err(anyhow!(

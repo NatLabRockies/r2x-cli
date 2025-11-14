@@ -23,26 +23,21 @@ pub struct PluginExtractor {
     pub(crate) python_file_path: PathBuf,
     pub(crate) content: String,
     pub(crate) import_map: HashMap<String, String>,
+    pub(crate) current_module: String,
 }
 
 impl PluginExtractor {
-    pub fn new(python_file_path: PathBuf) -> Result<Self> {
+    pub fn new(python_file_path: PathBuf, module_path: String) -> Result<Self> {
         debug!("Initializing plugin extractor for: {:?}", python_file_path);
 
         let content = fs::read_to_string(&python_file_path)?;
-        if !content.contains("PluginManifest") && !content.contains("manifest.add") {
-            return Err(anyhow!(
-                "No PluginManifest found in: {:?}",
-                python_file_path
-            ));
-        }
-
         let import_map = Self::build_import_map_static(&content);
 
         Ok(PluginExtractor {
             python_file_path,
             content,
             import_map,
+            current_module: module_path,
         })
     }
 
@@ -57,23 +52,43 @@ impl PluginExtractor {
 
         let manifest_add_calls: Vec<_> = root.find_all("manifest.add($$$_)").collect();
 
-        if manifest_add_calls.is_empty() {
-            return Err(anyhow!("No manifest.add() calls found"));
-        }
-
-        debug!("Found {} manifest.add() calls", manifest_add_calls.len());
-        let mut plugins = Vec::new();
+        if !manifest_add_calls.is_empty() {
+            debug!("Found {} manifest.add() calls", manifest_add_calls.len());
+            let mut plugins = Vec::new();
 
         for add_match in manifest_add_calls {
             let add_text = add_match.text();
-            if let Ok(plugin) = self.extract_plugin_from_add_call(add_text.as_ref()) {
-                debug!("Extracted plugin: {}", plugin.name);
-                plugins.push(plugin);
+            match self.extract_plugin_from_add_call(add_text.as_ref()) {
+                Ok(plugin) => {
+                    debug!("Extracted plugin: {}", plugin.name);
+                    plugins.push(plugin);
+                }
+                Err(err) => {
+                    debug!(
+                        "Failed to parse manifest.add() call '{}': {}",
+                        add_text.lines().next().unwrap_or(""),
+                        err
+                    );
+                }
             }
         }
 
-        info!("Extracted {} plugins from manifest", plugins.len());
-        Ok(plugins)
+            info!("Extracted {} plugins from manifest.add() helpers", plugins.len());
+            return Ok(plugins);
+        }
+
+        let constructor_plugins = self.extract_plugins_from_constructor_calls()?;
+        if !constructor_plugins.is_empty() {
+            info!(
+                "Extracted {} plugins from Package-based constructors",
+                constructor_plugins.len()
+            );
+            return Ok(constructor_plugins);
+        }
+
+        Err(anyhow!(
+            "No manifest.add() helpers or plugin constructors found"
+        ))
     }
 
     fn extract_plugin_from_add_call(&self, add_text: &str) -> Result<PluginSpec> {
@@ -91,13 +106,12 @@ impl PluginExtractor {
         }
 
         let spec_match = &plugin_spec_calls[0];
-        let env = spec_match.get_env();
-
-        let method = env
-            .get_match("$METHOD")
-            .ok_or_else(|| anyhow!("Missing helper method"))?
-            .text()
-            .to_string();
+        let method = spec_match
+            .get_node()
+            .field("function")
+            .and_then(|func| func.field("attribute"))
+            .map(|attr| attr.text().to_string())
+            .ok_or_else(|| anyhow!("Missing helper method"))?;
 
         let kind = match method.as_str() {
             "parser" => PluginKind::Parser,
@@ -114,17 +128,13 @@ impl PluginExtractor {
         let kwargs = self.extract_keyword_arguments_from_text(call_text.as_ref())?;
 
         let name = self.find_kwarg_value(&kwargs, "name")?;
-        let entry = self.find_kwarg_value(&kwargs, "entry")?;
+        let entry_value = self.find_kwarg_value(&kwargs, "entry")?;
+        let entry = self.qualify_symbol(&entry_value);
 
-        let description = kwargs
-            .iter()
-            .find(|arg| arg.name == "description")
-            .map(|arg| arg.value.trim_matches('"').to_string());
+        let description =
+            self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
 
-        let method_param = kwargs
-            .iter()
-            .find(|arg| arg.name == "method")
-            .map(|arg| arg.value.trim_matches('"').to_string());
+        let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
 
         let invocation = InvocationSpec {
             implementation: ImplementationType::Class,
@@ -148,6 +158,149 @@ impl PluginExtractor {
             description,
             tags: Vec::new(),
         })
+    }
+
+    fn extract_plugins_from_constructor_calls(&self) -> Result<Vec<PluginSpec>> {
+        let sg = AstGrep::new(&self.content, Python);
+        let root = sg.root();
+        let mut plugins = Vec::new();
+
+        for plugin_match in root.find_all("$PLUGIN($$$ARGS)") {
+            let env = plugin_match.get_env();
+            let Some(callee) = env.get_match("$PLUGIN") else {
+                continue;
+            };
+            let callee_text = callee.text();
+            if !Self::looks_like_plugin_constructor(callee_text.as_ref()) {
+                continue;
+            }
+
+            let constructor_name = callee_text.to_string();
+            let call_text = plugin_match.text();
+            match self.build_plugin_from_constructor(&constructor_name, call_text.as_ref()) {
+                Ok(plugin) => {
+                    debug!(
+                        "Extracted plugin '{}' via constructor {}",
+                        plugin.name, constructor_name
+                    );
+                    plugins.push(plugin);
+                }
+                Err(err) => {
+                    debug!(
+                        "Failed to parse constructor '{}' at '{}': {}",
+                        constructor_name,
+                        call_text.lines().next().unwrap_or_default(),
+                        err
+                    );
+                }
+            }
+        }
+
+        Ok(plugins)
+    }
+
+    fn build_plugin_from_constructor(
+        &self,
+        constructor: &str,
+        call_text: &str,
+    ) -> Result<PluginSpec> {
+        let kwargs = self.extract_keyword_arguments_from_text(call_text)?;
+        let name = self.find_kwarg_by_role(&kwargs, args::KwArgRole::Name)?;
+        let entry = self.find_entry_reference(&kwargs)?;
+        let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
+        let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
+
+        let invocation = InvocationSpec {
+            implementation: Self::infer_invocation_type(&entry),
+            method: method_param,
+            constructor: Vec::new(),
+            call: Vec::new(),
+        };
+
+        let kind = self.infer_kind_from_constructor(constructor);
+        let io = self.infer_io_contract(&kind);
+        let resources = self.extract_resources(&kwargs);
+
+        Ok(PluginSpec {
+            name,
+            kind,
+            entry,
+            invocation,
+            io,
+            resources,
+            upgrade: None,
+            description,
+            tags: Vec::new(),
+        })
+    }
+
+    fn infer_invocation_type(entry: &str) -> ImplementationType {
+        let ident = entry.rsplit('.').next().unwrap_or(entry);
+        if ident
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+        {
+            ImplementationType::Class
+        } else {
+            ImplementationType::Function
+        }
+    }
+
+    fn find_entry_reference(&self, kwargs: &[args::KwArg]) -> Result<String> {
+        let symbol = self.find_kwarg_by_role(kwargs, args::KwArgRole::EntryReference)?;
+        Ok(self.qualify_symbol(&symbol))
+    }
+
+    fn find_kwarg_by_role(
+        &self,
+        kwargs: &[args::KwArg],
+        role: args::KwArgRole,
+    ) -> Result<String> {
+        kwargs
+            .iter()
+            .find(|kw| kw.role == role)
+            .map(|kw| kw.value.clone())
+            .ok_or_else(|| anyhow!("Argument with role {:?} not found", role))
+    }
+
+    fn find_optional_kwarg_by_role(
+        &self,
+        kwargs: &[args::KwArg],
+        role: args::KwArgRole,
+    ) -> Option<String> {
+        kwargs
+            .iter()
+            .find(|kw| kw.role == role)
+            .map(|kw| kw.value.clone())
+    }
+
+    fn infer_kind_from_constructor(&self, constructor: &str) -> PluginKind {
+        let lowered = constructor
+            .rsplit('.')
+            .next()
+            .unwrap_or(constructor)
+            .to_lowercase();
+        if lowered.contains("parser") {
+            PluginKind::Parser
+        } else if lowered.contains("export") {
+            PluginKind::Exporter
+        } else if lowered.contains("upgrade") {
+            PluginKind::Upgrader
+        } else if lowered.contains("modif") {
+            PluginKind::Modifier
+        } else {
+            PluginKind::Utility
+        }
+    }
+
+    fn looks_like_plugin_constructor(callee: &str) -> bool {
+        callee
+            .rsplit('.')
+            .next()
+            .map(|segment| segment.trim().ends_with("Plugin"))
+            .unwrap_or(false)
     }
 
     fn infer_io_contract(&self, kind: &PluginKind) -> IOContract {
@@ -174,14 +327,14 @@ impl PluginExtractor {
     fn extract_resources(&self, kwargs: &[args::KwArg]) -> Option<ResourceSpec> {
         let config = kwargs
             .iter()
-            .find(|arg| arg.name == "config")
+            .find(|arg| arg.role == args::KwArgRole::Config)
             .map(|arg| {
                 let config_class = arg.value.trim().to_string();
                 let module = self
                     .import_map
                     .get(&config_class)
-                    .cloned()
-                    .unwrap_or_default();
+                    .map(|m| self.normalize_module_path(m))
+                    .unwrap_or_else(|| self.current_module.clone());
 
                 ConfigSpec {
                     module,
@@ -192,7 +345,7 @@ impl PluginExtractor {
 
         let store = kwargs
             .iter()
-            .find(|arg| arg.name == "store")
+            .find(|arg| arg.role == args::KwArgRole::Store)
             .map(|arg| {
                 let value = arg.value.trim();
                 if value == "True" || value == "true" {
@@ -265,5 +418,58 @@ impl PluginExtractor {
         _package_name: &str,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn qualify_symbol(&self, symbol: &str) -> String {
+        if symbol.contains('.') || self.current_module.is_empty() {
+            return symbol.to_string();
+        }
+
+        let module = self
+            .import_map
+            .get(symbol)
+            .map(|m| self.normalize_module_path(m))
+            .unwrap_or_else(|| self.current_module.clone());
+
+        if module.is_empty() {
+            symbol.to_string()
+        } else {
+            format!("{}.{}", module, symbol)
+        }
+    }
+
+    fn normalize_module_path(&self, module: &str) -> String {
+        if module.starts_with('.') {
+            return self.resolve_relative_module(module);
+        }
+        module.to_string()
+    }
+
+    fn resolve_relative_module(&self, module: &str) -> String {
+        let mut base_parts: Vec<&str> = if self.current_module.is_empty() {
+            Vec::new()
+        } else {
+            self.current_module.split('.').collect()
+        };
+
+        let bytes = module.as_bytes();
+        let mut idx = 0usize;
+        while idx < bytes.len() && bytes[idx] == b'.' {
+            if !base_parts.is_empty() {
+                base_parts.pop();
+            }
+            idx += 1;
+        }
+
+        let remainder = module[idx..].trim_matches('.');
+        if !remainder.is_empty() {
+            for part in remainder.split('.') {
+                if !part.is_empty() {
+                    base_parts.push(part);
+                }
+            }
+        }
+
+        base_parts.join(".")
     }
 }

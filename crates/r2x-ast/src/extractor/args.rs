@@ -1,10 +1,40 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KwArgRole {
+    Name,
+    EntryReference,
+    Method,
+    Description,
+    Config,
+    Store,
+    IoType,
+    Other,
+}
+
+impl KwArgRole {
+    pub fn from_identifier(name: &str) -> Self {
+        match name {
+            "name" => KwArgRole::Name,
+            "obj" | "callable" | "target" | "function" | "factory" | "entry" => {
+                KwArgRole::EntryReference
+            }
+            "call_method" | "method" | "call_function" => KwArgRole::Method,
+            "description" => KwArgRole::Description,
+            "config" => KwArgRole::Config,
+            "store" => KwArgRole::Store,
+            "io_type" => KwArgRole::IoType,
+            _ => KwArgRole::Other,
+        }
+    }
+}
+
 pub(super) struct KwArg {
     pub name: String,
     pub value: String,
     #[allow(dead_code)]
     pub arg_type: String,
+    pub role: KwArgRole,
 }
 
 impl PluginExtractor {
@@ -40,6 +70,7 @@ impl PluginExtractor {
                             name: key.clone(),
                             value: value.clone(),
                             arg_type: arg_type.clone(),
+                            role: KwArgRole::from_identifier(&key),
                         });
 
                         debug!("Extracted arg: {} = {} (type: {})", key, value, arg_type);
