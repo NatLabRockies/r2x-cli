@@ -2,8 +2,8 @@ use anyhow::{anyhow, Result};
 use ast_grep_core::AstGrep;
 use ast_grep_language::Python;
 use r2x_manifest::{
-    ConfigSpec, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind, PluginSpec,
-    ResourceSpec, StoreMode, StoreSpec,
+    ArgumentSpec, ConfigSpec, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind,
+    PluginSpec, ResourceSpec, StoreMode, StoreSpec,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -13,28 +13,35 @@ use tracing::{debug, info};
 mod args;
 #[allow(dead_code)]
 mod parameters;
-#[allow(dead_code)]
-mod resolver;
 
 #[cfg(test)]
 mod tests;
 
 pub struct PluginExtractor {
     pub(crate) python_file_path: PathBuf,
+    pub(crate) package_root: PathBuf,
+    pub(crate) package_prefix: String,
     pub(crate) content: String,
     pub(crate) import_map: HashMap<String, String>,
     pub(crate) current_module: String,
 }
 
 impl PluginExtractor {
-    pub fn new(python_file_path: PathBuf, module_path: String) -> Result<Self> {
+    pub fn new(
+        python_file_path: PathBuf,
+        module_path: String,
+        package_root: PathBuf,
+    ) -> Result<Self> {
         debug!("Initializing plugin extractor for: {:?}", python_file_path);
 
         let content = fs::read_to_string(&python_file_path)?;
+        let package_prefix = module_path.split('.').next().unwrap_or("").to_string();
         let import_map = Self::build_import_map_static(&content);
 
         Ok(PluginExtractor {
             python_file_path,
+            package_root,
+            package_prefix,
             content,
             import_map,
             current_module: module_path,
@@ -130,6 +137,7 @@ impl PluginExtractor {
         let name = self.find_kwarg_value(&kwargs, "name")?;
         let entry_value = self.find_kwarg_value(&kwargs, "entry")?;
         let entry = self.qualify_symbol(&entry_value);
+        let constructor_args = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
 
         let description =
             self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
@@ -139,7 +147,7 @@ impl PluginExtractor {
         let invocation = InvocationSpec {
             implementation: ImplementationType::Class,
             method: method_param,
-            constructor: Vec::new(),
+            constructor: constructor_args,
             call: Vec::new(),
         };
 
@@ -209,11 +217,12 @@ impl PluginExtractor {
         let entry = self.find_entry_reference(&kwargs)?;
         let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
         let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
+        let constructor_args = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
 
         let invocation = InvocationSpec {
             implementation: Self::infer_invocation_type(&entry),
             method: method_param,
-            constructor: Vec::new(),
+            constructor: constructor_args,
             call: Vec::new(),
         };
 
@@ -274,6 +283,66 @@ impl PluginExtractor {
             .iter()
             .find(|kw| kw.role == role)
             .map(|kw| kw.value.clone())
+    }
+
+    fn resolve_entry_parameters(
+        &self,
+        entry: &str,
+        implementation: &ImplementationType,
+    ) -> Vec<ArgumentSpec> {
+        let (module_path, symbol) = match Self::split_entry(entry) {
+            Some(parts) => parts,
+            None => return Vec::new(),
+        };
+
+        let source = match self.load_module_source(&module_path) {
+            Some(src) => src,
+            None => {
+                debug!(
+                    "Unable to load module '{}' while resolving parameters for '{}'",
+                    module_path, entry
+                );
+                return Vec::new();
+            }
+        };
+
+        let entries = match implementation {
+            ImplementationType::Class => self
+                .extract_class_parameters_from_content(&source, &symbol)
+                .unwrap_or_else(|e| {
+                    debug!(
+                        "Failed to parse constructor for '{}': {}",
+                        entry, e
+                    );
+                    Vec::new()
+                }),
+            ImplementationType::Function => self
+                .extract_function_parameters_from_content(&source, &symbol)
+                .unwrap_or_else(|e| {
+                    debug!("Failed to parse function '{}' parameters: {}", entry, e);
+                    Vec::new()
+                }),
+        };
+
+        entries
+            .into_iter()
+            .map(|param| ArgumentSpec {
+                name: param.name,
+                annotation: param.annotation,
+                default: param.default,
+                required: param.is_required,
+            })
+            .collect()
+    }
+
+    fn split_entry(entry: &str) -> Option<(String, String)> {
+        if let Some(idx) = entry.rfind('.') {
+            let module = entry[..idx].to_string();
+            let symbol = entry[idx + 1..].to_string();
+            Some((module, symbol))
+        } else {
+            None
+        }
     }
 
     fn infer_kind_from_constructor(&self, constructor: &str) -> PluginKind {
@@ -471,5 +540,35 @@ impl PluginExtractor {
         }
 
         base_parts.join(".")
+    }
+
+    fn resolve_module_file(&self, module: &str) -> Option<PathBuf> {
+        let module = if module.is_empty() {
+            self.current_module.clone()
+        } else {
+            module.to_string()
+        };
+
+        let mut parts: Vec<&str> = module.split('.').collect();
+        if !self.package_prefix.is_empty() && parts.first() == Some(&self.package_prefix.as_str()) {
+            parts.remove(0);
+        }
+
+        let mut path = self.package_root.clone();
+        if parts.is_empty() {
+            path.push("__init__.py");
+            return Some(path);
+        }
+
+        for part in &parts {
+            path.push(part);
+        }
+        path.set_extension("py");
+        Some(path)
+    }
+
+    fn load_module_source(&self, module: &str) -> Option<String> {
+        let path = self.resolve_module_file(module)?;
+        fs::read_to_string(path).ok()
     }
 }

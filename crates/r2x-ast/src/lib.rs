@@ -45,8 +45,16 @@ impl AstDiscovery {
         logger::info(&format!("Found plugins.py at: {:?}", plugins_py));
 
         // Phase 1: Extract plugins with constructor_args
-        let extractor = extractor::PluginExtractor::new(plugins_py.clone(), plugin_module.clone())
-            .map_err(|e| anyhow!("Failed to create extractor: {}", e))?;
+        let package_root = plugins_py
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| package_path.to_path_buf());
+        let extractor = extractor::PluginExtractor::new(
+            plugins_py.clone(),
+            plugin_module.clone(),
+            package_root.clone(),
+        )
+        .map_err(|e| anyhow!("Failed to create extractor: {}", e))?;
 
         let mut plugins = extractor
             .extract_plugins()
@@ -58,10 +66,6 @@ impl AstDiscovery {
         ));
 
         // Phase 2: Resolve all class/function references
-        let package_root = plugins_py
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| package_path.to_path_buf());
         for plugin in &mut plugins {
             extractor
                 .resolve_references(plugin, &package_root, package_name_full)

@@ -2,7 +2,7 @@
 
 use super::*;
 
-struct ParameterEntry {
+pub(super) struct ParameterEntry {
     pub name: String,
     pub annotation: Option<String>,
     pub default: Option<String>,
