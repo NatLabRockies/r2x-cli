@@ -43,7 +43,7 @@ fn list_available_plugins() -> Result<(), RunError> {
             packages
                 .entry(pkg.name.clone())
                 .or_default()
-                .entry(plugin.plugin_type.clone())
+                .entry(format!("{:?}", plugin.kind))
                 .or_default()
                 .push(plugin.name.clone());
         }
@@ -76,7 +76,7 @@ fn run_plugin(plugin_name: &str, args: &[String]) -> Result<(), RunError> {
     logger::debug(&format!("Received args: {:?}", args));
 
     let manifest = Manifest::load()?;
-    let (_pkg, disc_plugin) = manifest
+    let (_pkg, plugin) = manifest
         .packages
         .iter()
         .find_map(|pkg| {
@@ -87,7 +87,7 @@ fn run_plugin(plugin_name: &str, args: &[String]) -> Result<(), RunError> {
         })
         .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
 
-    let bindings = super::runtime_bindings_from_disc(disc_plugin)?;
+    let bindings = r2x_manifest::build_runtime_bindings(plugin);
 
     package_verification::verify_and_ensure_plugin(&manifest, plugin_name)
         .map_err(|e| RunError::Verification(e.to_string()))?;
@@ -103,7 +103,7 @@ fn run_plugin(plugin_name: &str, args: &[String]) -> Result<(), RunError> {
     logger::debug(&format!("Config: {}", config_json));
 
     let start = Instant::now();
-    let invocation_result = bridge.invoke_plugin(&target, &config_json, None, Some(disc_plugin))?;
+    let invocation_result = bridge.invoke_plugin(&target, &config_json, None, Some(plugin))?;
     let PluginInvocationResult {
         output: result,
         timings,

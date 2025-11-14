@@ -5,7 +5,7 @@ use crate::GlobalOpts;
 use clap::Parser;
 use pipeline::handle_pipeline_mode;
 use plugin::handle_plugin_command;
-use r2x_manifest::runtime::{build_runtime_bindings, RuntimeBindings};
+use r2x_manifest::runtime::RuntimeBindings;
 use r2x_python::plugin_invoker::PluginInvocationTimings;
 use std::time::Duration;
 
@@ -110,23 +110,18 @@ pub fn handle_run(cmd: RunCommand, _opts: GlobalOpts) -> Result<(), RunError> {
     }
 }
 
-pub(super) fn runtime_bindings_from_disc(
-    disc_plugin: &r2x_manifest::DiscoveryPlugin,
-) -> Result<RuntimeBindings, RunError> {
-    build_runtime_bindings(disc_plugin).map_err(RunError::Config)
-}
-
 pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, RunError> {
-    let obj = &bindings.callable;
-
-    let target = if obj.callable_type == "class" {
-        if let Some(call_method) = &bindings.call_method {
-            format!("{}:{}.{}", obj.module, obj.name, call_method)
-        } else {
-            format!("{}:{}", obj.module, obj.name)
+    let target = match bindings.implementation_type {
+        r2x_manifest::ImplementationType::Class => {
+            if let Some(call_method) = &bindings.call_method {
+                format!("{}:{}.{}", bindings.entry_module, bindings.entry_name, call_method)
+            } else {
+                format!("{}:{}", bindings.entry_module, bindings.entry_name)
+            }
         }
-    } else {
-        format!("{}:{}", obj.module, obj.name)
+        r2x_manifest::ImplementationType::Function => {
+            format!("{}:{}", bindings.entry_module, bindings.entry_name)
+        }
     };
 
     Ok(target)

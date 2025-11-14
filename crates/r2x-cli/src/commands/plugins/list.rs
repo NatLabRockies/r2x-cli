@@ -27,7 +27,7 @@ pub fn list_plugins(_opts: &GlobalOpts) -> Result<(), String> {
             packages
                 .entry(pkg.name.clone())
                 .or_default()
-                .entry(plugin.plugin_type.clone())
+                .entry(format!("{:?}", plugin.kind))
                 .or_default()
                 .push(plugin.name.clone());
         }

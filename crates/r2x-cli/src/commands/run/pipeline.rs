@@ -1,4 +1,4 @@
-use super::{runtime_bindings_from_disc, RunError};
+use super::RunError;
 use crate::errors::PipelineError;
 use crate::logger;
 use crate::package_verification;
@@ -83,7 +83,7 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
     println!("\nPipeline flow (--dry-run):");
 
     for (index, plugin_name) in pipeline.iter().enumerate() {
-        let (_pkg, disc_plugin) = manifest
+        let (_pkg, plugin) = manifest
             .packages
             .iter()
             .find_map(|pkg| {
@@ -94,8 +94,8 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
             })
             .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
 
-        let bindings = runtime_bindings_from_disc(disc_plugin)?;
-        let has_obj = bindings.callable.callable_type == "class";
+        let bindings = r2x_manifest::build_runtime_bindings(plugin);
+        let has_obj = bindings.implementation_type == r2x_manifest::ImplementationType::Class;
         let input_marker = if index > 0 { "← stdin" } else { "" };
         let output_marker = if has_obj { "→ stdout" } else { "" };
 
@@ -158,7 +158,7 @@ fn run_pipeline(
         logger::spinner_start(&format!("  {} [{}/{}]", plugin_name, step_num, total_steps));
         let step_start = Instant::now();
 
-        let (pkg, disc_plugin) = manifest
+        let (pkg, plugin) = manifest
             .packages
             .iter()
             .find_map(|pkg| {
@@ -169,7 +169,7 @@ fn run_pipeline(
             })
             .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
 
-        let bindings = runtime_bindings_from_disc(disc_plugin)?;
+        let bindings = r2x_manifest::build_runtime_bindings(plugin);
 
         let yaml_config = if config.config.contains_key(plugin_name) {
             config.get_plugin_config_json(plugin_name)?
@@ -185,11 +185,8 @@ fn run_pipeline(
             }
         }
 
-        let normalized_io: Option<String> =
-            bindings.io_type.as_deref().map(normalize_io_type_value);
         let pipeline_input = current_stdin.as_deref();
-        let uses_stdin = matches!(normalized_io.as_deref(), Some("stdin") | Some("both"));
-        let stdin_json = if uses_stdin { pipeline_input } else { None };
+        let stdin_json = pipeline_input;
 
         let pipeline_overrides =
             prepare_pipeline_overrides(pipeline_input, &bindings, plugin_name)?;
@@ -212,7 +209,7 @@ fn run_pipeline(
             &target,
             &final_config_json,
             stdin_json,
-            Some(disc_plugin),
+            Some(plugin),
         ) {
             Ok(inv_result) => {
                 let elapsed = step_start.elapsed();
@@ -245,8 +242,7 @@ fn run_pipeline(
 
         let result = invocation_result.output;
 
-        let produces_stdout = matches!(normalized_io.as_deref(), Some("stdout") | Some("both"));
-        if produces_stdout && !result.is_empty() && result != "null" {
+        if !result.is_empty() && result != "null" {
             logger::debug(&format!("Plugin produced output ({} bytes)", result.len()));
             current_stdin = Some(result);
         } else {
@@ -276,15 +272,6 @@ fn run_pipeline(
     }
 
     Ok(())
-}
-
-fn normalize_io_type_value(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let without_prefix = trimmed
-        .strip_prefix("IOType.")
-        .or_else(|| trimmed.strip_prefix("IOType::"))
-        .unwrap_or(trimmed);
-    without_prefix.to_ascii_lowercase()
 }
 
 fn prepare_pipeline_overrides(
@@ -337,18 +324,18 @@ fn determine_json_path_field(
     plugin_name: &str,
 ) -> Option<&'static str> {
     if let Some(config) = &bindings.config {
-        if config.parameters.contains_key("json_path") {
+        if config.fields.iter().any(|f| f.name == "json_path") {
             return Some("json_path");
         }
-        if config.parameters.contains_key("path") {
+        if config.fields.iter().any(|f| f.name == "path") {
             return Some("path");
         }
     }
 
-    if bindings.callable.parameters.contains_key("json_path") {
+    if bindings.entry_parameters.iter().any(|p| p.name == "json_path") {
         return Some("json_path");
     }
-    if bindings.callable.parameters.contains_key("path") {
+    if bindings.entry_parameters.iter().any(|p| p.name == "path") {
         return Some("path");
     }
 
@@ -422,14 +409,13 @@ fn build_plugin_config(
     }
 
     let mut final_config = serde_json::Map::new();
-    let obj = &bindings.callable;
-    if obj.callable_type == "class" {
+    if bindings.implementation_type == r2x_manifest::ImplementationType::Class {
         let mut config_class_params = serde_json::Map::new();
         let mut constructor_params = serde_json::Map::new();
         let config_param_names: HashSet<String> = bindings
             .config
             .as_ref()
-            .map(|config_meta| config_meta.parameters.keys().cloned().collect())
+            .map(|config_meta| config_meta.fields.iter().map(|f| f.name.clone()).collect())
             .unwrap_or_default();
 
         if let serde_json::Value::Object(ref yaml_map) = yaml_config {
@@ -438,7 +424,7 @@ fn build_plugin_config(
                     continue;
                 } else if config_param_names.contains(key) {
                     config_class_params.insert(key.clone(), value.clone());
-                } else if obj.parameters.contains_key(key) {
+                } else if bindings.entry_parameters.iter().any(|p| p.name == *key) {
                     constructor_params.insert(key.clone(), value.clone());
                 } else {
                     config_class_params.insert(key.clone(), value.clone());
@@ -446,7 +432,7 @@ fn build_plugin_config(
             }
         }
 
-        if !config_class_params.is_empty() && obj.parameters.contains_key("config") {
+        if !config_class_params.is_empty() && bindings.entry_parameters.iter().any(|p| p.name == "config") {
             final_config.insert(
                 "config".to_string(),
                 serde_json::Value::Object(config_class_params),
@@ -455,7 +441,7 @@ fn build_plugin_config(
 
         final_config.extend(constructor_params);
 
-        if obj.parameters.contains_key("path")
+        if bindings.entry_parameters.iter().any(|p| p.name == "path")
             && !final_config.contains_key("path")
             && matches!(yaml_config, serde_json::Value::Object(_))
         {
@@ -471,7 +457,7 @@ fn build_plugin_config(
         }
 
         let needs_store =
-            bindings.requires_store.unwrap_or(false) || obj.parameters.contains_key("data_store");
+            bindings.requires_store || bindings.entry_parameters.iter().any(|p| p.name == "data_store");
 
         if needs_store {
             let store_value = if let serde_json::Value::Object(ref yaml_map) = yaml_config {

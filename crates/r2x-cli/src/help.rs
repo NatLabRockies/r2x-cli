@@ -1,5 +1,5 @@
 use crate::logger;
-use crate::r2x_manifest::{runtime::build_runtime_bindings, Manifest};
+use crate::r2x_manifest::Manifest;
 use colored::Colorize;
 
 /// Show help for the run command when invoked with no arguments
@@ -15,7 +15,7 @@ pub fn show_run_help() -> Result<(), String> {
         println!("{}", "Installed plugins:".bold());
         for pkg in &manifest.packages {
             for plugin in &pkg.plugins {
-                let plugin_type = &plugin.plugin_type;
+                let plugin_type = format!("{:?}", plugin.kind);
                 println!(
                     "  {} {} - from package {}",
                     plugin.name.cyan(),
@@ -56,7 +56,7 @@ pub fn show_run_help() -> Result<(), String> {
 pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
-    let (_pkg, disc_plugin) = manifest
+    let (_pkg, plugin) = manifest
         .packages
         .iter()
         .find_map(|pkg| {
@@ -67,19 +67,13 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
         })
         .ok_or_else(|| format!("Plugin '{}' not found in manifest", plugin_name))?;
 
-    let bindings = build_runtime_bindings(disc_plugin)
-        .map_err(|e| format!("Failed to load plugin '{}': {}", plugin_name, e))?;
+    let bindings = r2x_manifest::build_runtime_bindings(plugin);
 
     logger::step(&format!("Plugin: {}", plugin_name));
 
-    println!("\nType: {}", disc_plugin.plugin_type);
+    println!("\nType: {:?}", plugin.kind);
 
-    if let Some(io_type) = &bindings.io_type {
-        println!("I/O: {}", io_type);
-    }
-
-    // Check if plugin requires data store
-    let needs_store = check_needs_datastore(&bindings);
+    let needs_store = bindings.requires_store;
 
     if needs_store {
         println!("\nRequires data store: yes");
@@ -88,18 +82,16 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
         println!("  --store-name <NAME>       Name of the store (optional)");
     }
 
-    // Show callable parameters
-    let obj = &bindings.callable;
-    println!("\nCallable: {}.{}", obj.module, obj.name);
+    println!("\nCallable: {}.{}", bindings.entry_module, bindings.entry_name);
     if let Some(call_method) = &bindings.call_method {
         println!("Method: {}", call_method);
     }
 
-    if !obj.parameters.is_empty() {
+    if !bindings.entry_parameters.is_empty() {
         println!("\nCallable Parameters:");
-        for (name, param) in &obj.parameters {
+        for param in &bindings.entry_parameters {
             let annotation = param.annotation.as_deref().unwrap_or("Any");
-            let required = if param.is_required {
+            let required = if param.required {
                 "required"
             } else {
                 "optional"
@@ -111,7 +103,7 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
                 .unwrap_or_default();
             println!(
                 "  --{:<20} {:<15} {}{}",
-                name, annotation, required, default
+                param.name, annotation, required, default
             );
         }
     }
@@ -119,23 +111,23 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     // Show config parameters
     if let Some(config) = &bindings.config {
         println!("\nConfiguration Class: {}.{}", config.module, config.name);
-        if !config.parameters.is_empty() {
+        if !config.fields.is_empty() {
             println!("\nConfiguration Parameters:");
-            for (name, param) in &config.parameters {
-                let annotation = param.annotation.as_deref().unwrap_or("Any");
-                let required = if param.is_required {
+            for field in &config.fields {
+                let annotation = field.annotation.as_deref().unwrap_or("Any");
+                let required = if field.required {
                     "required"
                 } else {
                     "optional"
                 };
-                let default = param
+                let default = field
                     .default
                     .as_deref()
                     .map(|d| format!(" (default: {})", d))
                     .unwrap_or_default();
                 println!(
                     "  --{:<20} {:<15} {}{}",
-                    name, annotation, required, default
+                    field.name, annotation, required, default
                 );
             }
         }
@@ -158,14 +150,6 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Check if a plugin requires a DataStore
-fn check_needs_datastore(bindings: &r2x_manifest::runtime::RuntimeBindings) -> bool {
-    if bindings.callable.parameters.contains_key("data_store") {
-        return true;
-    }
-
-    bindings.requires_store.unwrap_or(false)
-}
 
 #[cfg(test)]
 mod tests {
