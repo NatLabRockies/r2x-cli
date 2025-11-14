@@ -64,21 +64,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Ensure python3.12 alias (unix)
+      - name: Set PYO3_PYTHON (unix)
         if: runner.os != 'Windows'
         shell: bash
-        # Check that files are not equivalent before linking.
-        run: |
-          if ! [ "$pythonLocation/bin/python" -ef "$pythonLocation/bin/python3.12" ]; then
-            ln -sf "$pythonLocation/bin/python" "$pythonLocation/bin/python3.12"
-          fi
-      - name: Ensure python3.12 alias (windows)
+        run: echo "PYO3_PYTHON=$pythonLocation/bin/python"
+      - name: Set PYO3_PYTHON (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          if (!(Test-Path "$env:pythonLocation\\python3.12.exe") -or ((Get-Item "$env:pythonLocation\\python.exe").FullName -ne (Get-Item "$env:pythonLocation\\python3.12.exe").FullName)) {
-            Copy-Item "$env:pythonLocation\\python.exe" "$env:pythonLocation\\python3.12.exe" -Force
-          }
+        run: echo "PYO3_PYTHON=$env:pythonLocation\python.exe" >> $GITHUB_ENV
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -202,12 +195,9 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Ensure python3.12 alias (unix)
+      - name: Set PYO3_PYTHON (unix)
         shell: bash
-        run: |
-          if ! [ "$pythonLocation/bin/python" -ef "$pythonLocation/bin/python3.12" ]; then
-            ln -sf "$pythonLocation/bin/python" "$pythonLocation/bin/python3.12"
-          fi
+        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
       - name: Install cached dist
         uses: actions/download-artifact@v4
         with:
