@@ -132,6 +132,7 @@ impl Bridge {
 
         let mut system_data: Option<pyo3::Py<PyAny>> = None;
         let mut system_json_path: Option<PathBuf> = None;
+        let mut saw_system_step = false;
 
         for step in steps.try_iter()? {
             let step_obj = step.map_err(|e| BridgeError::Python(format!("{}", e)))?;
@@ -162,6 +163,7 @@ impl Bridge {
             ));
 
             let data_arg = if upgrade_is_system {
+                saw_system_step = true;
                 if system_data.is_none() {
                     let resolved =
                         resolve_system_json_path(&path_buf).map_err(BridgeError::Python)?;
@@ -226,6 +228,13 @@ impl Bridge {
                         .unwrap_or_else(|_| "<unknown>".into())
                 ));
             }
+        }
+
+        if !saw_system_step {
+            logger::debug(
+                "Upgrader executed only FILE steps; skipping system.json resolution and returning empty output",
+            );
+            return Ok(String::new());
         }
 
         let final_json_path = if let Some(json_path) = system_json_path {
