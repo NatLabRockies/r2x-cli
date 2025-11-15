@@ -1,0 +1,9 @@
+- uses: actions/setup-python@v6
+  with:
+    python-version: "3.12"
+- if: runner.os != 'Windows'
+  shell: bash
+  run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
+- if: runner.os == 'Windows'
+  shell: pwsh
+  run: echo "PYO3_PYTHON=$env:pythonLocation\python.exe" >> $GITHUB_ENV
