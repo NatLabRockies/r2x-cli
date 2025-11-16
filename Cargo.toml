@@ -5,7 +5,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 authors = ["pesap <pesap@users.noreply.github.com>", "Micah Webb <micahpw@users.noreply.github.com>"]
 repository = "https://github.com/NREL/r2x-cli"
@@ -15,9 +15,9 @@ documentation = "https://docs.rs/r2x"
 rust-version = "1.72"
 
 [workspace.dependencies]
-r2x-config = { path = "crates/r2x-config", version = "0.0.2" }
+r2x-config = { path = "crates/r2x-config", version = "0.0.3" }
 r2x-manifest = { path = "crates/r2x-manifest", version = "0.0.3" }
-r2x-python = { path = "crates/r2x-python", version = "0.0.4" }
+r2x-python = { path = "crates/r2x-python", version = "0.0.5" }
 r2x-logger = { path = "crates/r2x-logger", version = "0.0.1" }
 r2x-ast = { path = "crates/r2x-ast", version = "0.0.4" }
 
