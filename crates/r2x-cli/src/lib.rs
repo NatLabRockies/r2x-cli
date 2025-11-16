@@ -26,6 +26,6 @@ pub use r2x_manifest::errors::ManifestError;
 
 // Re-export manifest types from new module for convenience
 pub use r2x_manifest::{
-    DecoratorRegistration, FunctionParameter, FunctionSignature,
-    Manifest, Metadata, Package, VarArgType,
+    DecoratorRegistration, FunctionParameter, FunctionSignature, Manifest, Metadata, Package,
+    VarArgType,
 };

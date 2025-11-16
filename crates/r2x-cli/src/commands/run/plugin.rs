@@ -10,10 +10,7 @@ use r2x_python::plugin_invoker::PluginInvocationResult;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-pub(super) fn handle_plugin_command(
-    cmd: PluginCommand,
-    opts: &GlobalOpts,
-) -> Result<(), RunError> {
+pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Result<(), RunError> {
     match cmd.plugin_name {
         Some(plugin_name) => {
             if cmd.show_help {

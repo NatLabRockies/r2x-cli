@@ -202,10 +202,7 @@ impl PluginExtractor {
                 Some(param_str[colon_idx + 1..].trim()),
             )
         } else if let Some(eq_idx) = param_str.find('=') {
-            (
-                param_str[..eq_idx].trim(),
-                Some(param_str[eq_idx..].trim()),
-            )
+            (param_str[..eq_idx].trim(), Some(param_str[eq_idx..].trim()))
         } else {
             (param_str, None)
         };

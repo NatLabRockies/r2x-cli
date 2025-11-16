@@ -63,24 +63,27 @@ impl PluginExtractor {
             debug!("Found {} manifest.add() calls", manifest_add_calls.len());
             let mut plugins = Vec::new();
 
-        for add_match in manifest_add_calls {
-            let add_text = add_match.text();
-            match self.extract_plugin_from_add_call(add_text.as_ref()) {
-                Ok(plugin) => {
-                    debug!("Extracted plugin: {}", plugin.name);
-                    plugins.push(plugin);
-                }
-                Err(err) => {
-                    debug!(
-                        "Failed to parse manifest.add() call '{}': {}",
-                        add_text.lines().next().unwrap_or(""),
-                        err
-                    );
+            for add_match in manifest_add_calls {
+                let add_text = add_match.text();
+                match self.extract_plugin_from_add_call(add_text.as_ref()) {
+                    Ok(plugin) => {
+                        debug!("Extracted plugin: {}", plugin.name);
+                        plugins.push(plugin);
+                    }
+                    Err(err) => {
+                        debug!(
+                            "Failed to parse manifest.add() call '{}': {}",
+                            add_text.lines().next().unwrap_or(""),
+                            err
+                        );
+                    }
                 }
             }
-        }
 
-            info!("Extracted {} plugins from manifest.add() helpers", plugins.len());
+            info!(
+                "Extracted {} plugins from manifest.add() helpers",
+                plugins.len()
+            );
             return Ok(plugins);
         }
 
@@ -99,14 +102,15 @@ impl PluginExtractor {
     }
 
     fn extract_plugin_from_add_call(&self, add_text: &str) -> Result<PluginSpec> {
-        debug!("Parsing PluginSpec from manifest.add(): {}", add_text.lines().next().unwrap_or(""));
+        debug!(
+            "Parsing PluginSpec from manifest.add(): {}",
+            add_text.lines().next().unwrap_or("")
+        );
 
         let sg = AstGrep::new(add_text, Python);
         let root = sg.root();
 
-        let plugin_spec_calls: Vec<_> = root
-            .find_all("PluginSpec.$METHOD($$$ARGS)")
-            .collect();
+        let plugin_spec_calls: Vec<_> = root.find_all("PluginSpec.$METHOD($$$ARGS)").collect();
 
         if plugin_spec_calls.is_empty() {
             return Err(anyhow!("No PluginSpec helper call found in manifest.add()"));
@@ -139,8 +143,7 @@ impl PluginExtractor {
         let entry = self.qualify_symbol(&entry_value);
         let constructor_args = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
 
-        let description =
-            self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
+        let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
 
         let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
         let resolved_method = method_param.or_else(|| Self::default_method_for_kind(&kind));
@@ -220,8 +223,7 @@ impl PluginExtractor {
         let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
         let constructor_args = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
         let kind = self.infer_kind_from_constructor(constructor);
-        let resolved_method =
-            method_param.or_else(|| Self::default_method_for_kind(&kind));
+        let resolved_method = method_param.or_else(|| Self::default_method_for_kind(&kind));
 
         let invocation = InvocationSpec {
             implementation: Self::infer_invocation_type(&entry),
@@ -265,11 +267,7 @@ impl PluginExtractor {
         Ok(self.qualify_symbol(&symbol))
     }
 
-    fn find_kwarg_by_role(
-        &self,
-        kwargs: &[args::KwArg],
-        role: args::KwArgRole,
-    ) -> Result<String> {
+    fn find_kwarg_by_role(&self, kwargs: &[args::KwArg], role: args::KwArgRole) -> Result<String> {
         kwargs
             .iter()
             .find(|kw| kw.role == role)
@@ -313,10 +311,7 @@ impl PluginExtractor {
             ImplementationType::Class => self
                 .extract_class_parameters_from_content(&source, &symbol)
                 .unwrap_or_else(|e| {
-                    debug!(
-                        "Failed to parse constructor for '{}': {}",
-                        entry, e
-                    );
+                    debug!("Failed to parse constructor for '{}': {}", entry, e);
                     Vec::new()
                 }),
             ImplementationType::Function => self

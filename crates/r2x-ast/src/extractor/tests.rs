@@ -155,15 +155,17 @@ manifest.add(PluginSpec.parser(name="demo.parser", entry=DemoParser))
     let plugin_file = pkg_root.join("plugin.py");
     fs::write(&plugin_file, content)?;
 
-    let extractor =
-        PluginExtractor::new(plugin_file, "demo.plugin".to_string(), pkg_root.clone())?;
+    let extractor = PluginExtractor::new(plugin_file, "demo.plugin".to_string(), pkg_root.clone())?;
     let plugins = extractor.extract_plugins()?;
 
     assert_eq!(plugins.len(), 1);
     assert_eq!(plugins[0].name, "demo.parser");
     assert_eq!(plugins[0].entry, "demo.plugin.DemoParser");
     assert_eq!(plugins[0].kind, PluginKind::Parser);
-    assert_eq!(plugins[0].invocation.implementation, ImplementationType::Class);
+    assert_eq!(
+        plugins[0].invocation.implementation,
+        ImplementationType::Class
+    );
     assert!(!plugins[0].invocation.constructor.is_empty());
 
     Ok(())

@@ -208,40 +208,36 @@ fn run_pipeline(
         logger::debug(&format!("Invoking: {}", target));
         logger::debug(&format!("Config: {}", final_config_json));
 
-        let invocation_result = match bridge.invoke_plugin(
-            &target,
-            &final_config_json,
-            stdin_json,
-            Some(plugin),
-        ) {
-            Ok(inv_result) => {
-                let elapsed = step_start.elapsed();
-                logger::spinner_success(&format!(
-                    "{} [{}/{}] ({})",
-                    plugin_name,
-                    step_num,
-                    total_steps,
-                    super::format_duration(elapsed)
-                ));
-                if logger::get_verbosity() > 0 {
-                    if let Some(timings) = &inv_result.timings {
-                        super::print_plugin_timing_breakdown(timings);
+        let invocation_result =
+            match bridge.invoke_plugin(&target, &final_config_json, stdin_json, Some(plugin)) {
+                Ok(inv_result) => {
+                    let elapsed = step_start.elapsed();
+                    logger::spinner_success(&format!(
+                        "{} [{}/{}] ({})",
+                        plugin_name,
+                        step_num,
+                        total_steps,
+                        super::format_duration(elapsed)
+                    ));
+                    if logger::get_verbosity() > 0 {
+                        if let Some(timings) = &inv_result.timings {
+                            super::print_plugin_timing_breakdown(timings);
+                        }
                     }
+                    inv_result
                 }
-                inv_result
-            }
-            Err(e) => {
-                let elapsed = step_start.elapsed();
-                logger::spinner_error(&format!(
-                    "{} [{}/{}] ({})",
-                    plugin_name,
-                    step_num,
-                    total_steps,
-                    super::format_duration(elapsed)
-                ));
-                return Err(RunError::Bridge(e));
-            }
-        };
+                Err(e) => {
+                    let elapsed = step_start.elapsed();
+                    logger::spinner_error(&format!(
+                        "{} [{}/{}] ({})",
+                        plugin_name,
+                        step_num,
+                        total_steps,
+                        super::format_duration(elapsed)
+                    ));
+                    return Err(RunError::Bridge(e));
+                }
+            };
 
         let result = invocation_result.output;
 
@@ -263,18 +259,18 @@ fn run_pipeline(
         .bold()
     );
 
-        if let Some(final_output) = current_stdin {
-            if let Some(output_path) = output_file {
-                logger::step(&format!("Writing output to: {}", output_path));
-                std::fs::write(output_path, final_output.as_bytes())
-                    .map_err(|e| RunError::Pipeline(PipelineError::Io(e)))?;
-                logger::success(&format!("Output saved to: {}", output_path));
-            } else if opts.suppress_stdout() {
-                logger::debug("Pipeline output suppressed due to -qq");
-            } else {
-                println!("{}", final_output);
-            }
+    if let Some(final_output) = current_stdin {
+        if let Some(output_path) = output_file {
+            logger::step(&format!("Writing output to: {}", output_path));
+            std::fs::write(output_path, final_output.as_bytes())
+                .map_err(|e| RunError::Pipeline(PipelineError::Io(e)))?;
+            logger::success(&format!("Output saved to: {}", output_path));
+        } else if opts.suppress_stdout() {
+            logger::debug("Pipeline output suppressed due to -qq");
+        } else {
+            println!("{}", final_output);
         }
+    }
 
     Ok(())
 }
@@ -337,7 +333,11 @@ fn determine_json_path_field(
         }
     }
 
-    if bindings.entry_parameters.iter().any(|p| p.name == "json_path") {
+    if bindings
+        .entry_parameters
+        .iter()
+        .any(|p| p.name == "json_path")
+    {
         return Some("json_path");
     }
     if bindings.entry_parameters.iter().any(|p| p.name == "path") {
@@ -413,9 +413,9 @@ fn build_plugin_config(
         }
     }
 
-        let mut final_config = serde_json::Map::new();
-        let mut store_value_for_folder: Option<serde_json::Value> = None;
-        if bindings.implementation_type == r2x_manifest::ImplementationType::Class {
+    let mut final_config = serde_json::Map::new();
+    let mut store_value_for_folder: Option<serde_json::Value> = None;
+    if bindings.implementation_type == r2x_manifest::ImplementationType::Class {
         let mut config_class_params = serde_json::Map::new();
         let mut constructor_params = serde_json::Map::new();
         let config_param_names: HashSet<String> = bindings
@@ -438,7 +438,9 @@ fn build_plugin_config(
             }
         }
 
-        if !config_class_params.is_empty() && bindings.entry_parameters.iter().any(|p| p.name == "config") {
+        if !config_class_params.is_empty()
+            && bindings.entry_parameters.iter().any(|p| p.name == "config")
+        {
             final_config.insert(
                 "config".to_string(),
                 serde_json::Value::Object(config_class_params),
@@ -462,8 +464,11 @@ fn build_plugin_config(
             }
         }
 
-        let needs_store =
-            bindings.requires_store || bindings.entry_parameters.iter().any(|p| p.name == "data_store");
+        let needs_store = bindings.requires_store
+            || bindings
+                .entry_parameters
+                .iter()
+                .any(|p| p.name == "data_store");
 
         if needs_store {
             let store_value = if let serde_json::Value::Object(ref yaml_map) = yaml_config {
@@ -491,7 +496,10 @@ fn build_plugin_config(
             final_config.insert("data_store".to_string(), store_value);
         }
 
-        if bindings.entry_parameters.iter().any(|p| p.name == "folder_path")
+        if bindings
+            .entry_parameters
+            .iter()
+            .any(|p| p.name == "folder_path")
             && !final_config.contains_key("folder_path")
         {
             let explicit_folder = if let serde_json::Value::Object(ref yaml_map) = yaml_config {
@@ -506,14 +514,17 @@ fn build_plugin_config(
 
             let folder_value = explicit_folder
                 .or_else(|| {
-                    store_value_for_folder.as_ref().and_then(|value| match value {
-                        serde_json::Value::String(s) => Some(serde_json::Value::String(s.clone())),
-                        _ => None,
-                    })
+                    store_value_for_folder
+                        .as_ref()
+                        .and_then(|value| match value {
+                            serde_json::Value::String(s) => {
+                                Some(serde_json::Value::String(s.clone()))
+                            }
+                            _ => None,
+                        })
                 })
                 .or_else(|| {
-                    inherited_store_path
-                        .map(|path| serde_json::Value::String(path.to_string()))
+                    inherited_store_path.map(|path| serde_json::Value::String(path.to_string()))
                 });
 
             if let Some(value) = folder_value {

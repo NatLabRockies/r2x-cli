@@ -4,9 +4,9 @@ use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use predicates::prelude::*;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -180,10 +180,7 @@ impl PipelineHarness {
             build_reeds_pipeline(&reeds_data, &reeds_output),
         )?;
         let s2p_pipeline = pipelines_dir.join("s2p.yaml");
-        fs::write(
-            &s2p_pipeline,
-            build_s2p_pipeline(&sienna_data, &s2p_output),
-        )?;
+        fs::write(&s2p_pipeline, build_s2p_pipeline(&sienna_data, &s2p_output))?;
 
         Ok(Self {
             _home: home,
@@ -198,7 +195,10 @@ impl PipelineHarness {
         let mut cmd = cargo_bin_cmd!("r2x");
         cmd.env("HOME", self.home_path());
         cmd.env("R2X_CONFIG", &self.config_path);
-        cmd.env("PYTHONPATH", self.site_packages.to_string_lossy().to_string());
+        cmd.env(
+            "PYTHONPATH",
+            self.site_packages.to_string_lossy().to_string(),
+        );
         cmd
     }
 

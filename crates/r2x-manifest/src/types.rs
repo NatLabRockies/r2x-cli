@@ -239,4 +239,3 @@ pub enum VarArgType {
     Args,
     Kwargs,
 }
-

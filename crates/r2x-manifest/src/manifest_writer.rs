@@ -44,7 +44,10 @@ pub fn read_from_path(manifest_path: &Path) -> Result<Manifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ArgumentSpec, IOContract, ImplementationType, InvocationSpec, Metadata, Package, PluginKind, PluginSpec};
+    use crate::types::{
+        ArgumentSpec, IOContract, ImplementationType, InvocationSpec, Metadata, Package,
+        PluginKind, PluginSpec,
+    };
     use tempfile::TempDir;
 
     #[test]
@@ -68,14 +71,12 @@ mod tests {
                 invocation: InvocationSpec {
                     implementation: ImplementationType::Class,
                     method: None,
-                    constructor: vec![
-                        ArgumentSpec {
-                            name: "name".to_string(),
-                            annotation: Some("str".to_string()),
-                            default: Some("example-plugin".to_string()),
-                            required: false,
-                        },
-                    ],
+                    constructor: vec![ArgumentSpec {
+                        name: "name".to_string(),
+                        annotation: Some("str".to_string()),
+                        default: Some("example-plugin".to_string()),
+                        required: false,
+                    }],
                     call: vec![],
                 },
                 io: IOContract {
@@ -109,7 +110,10 @@ mod tests {
         assert_eq!(loaded.packages[0].name, "r2x-example");
         assert_eq!(loaded.packages[0].editable_install, true);
         assert_eq!(loaded.packages[0].plugins[0].name, "example-plugin");
-        assert_eq!(loaded.packages[0].plugins[0].invocation.constructor.len(), 1);
+        assert_eq!(
+            loaded.packages[0].plugins[0].invocation.constructor.len(),
+            1
+        );
     }
 
     #[test]

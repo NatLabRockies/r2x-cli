@@ -83,7 +83,10 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
         println!("  --store-name <NAME>       Name of the store (optional)");
     }
 
-    println!("\nCallable: {}.{}", bindings.entry_module, bindings.entry_name);
+    println!(
+        "\nCallable: {}.{}",
+        bindings.entry_module, bindings.entry_name
+    );
     if let Some(call_method) = &bindings.call_method {
         println!("Method: {}", call_method);
     }
@@ -151,7 +154,6 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

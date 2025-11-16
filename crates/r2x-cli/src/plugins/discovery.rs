@@ -81,8 +81,7 @@ pub fn discover_and_register_entry_points_with_deps(
     for plugin in &discovered_plugins {
         logger::debug(&format!(
             "Discovered plugin '{}' of kind {:?}",
-            plugin.name,
-            plugin.kind
+            plugin.name, plugin.kind
         ));
     }
 

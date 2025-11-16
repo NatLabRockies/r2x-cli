@@ -117,7 +117,10 @@ pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, Ru
             if bindings.plugin_kind == PluginKind::Upgrader {
                 format!("{}:{}", bindings.entry_module, bindings.entry_name)
             } else if let Some(call_method) = &bindings.call_method {
-                format!("{}:{}.{}", bindings.entry_module, bindings.entry_name, call_method)
+                format!(
+                    "{}:{}.{}",
+                    bindings.entry_module, bindings.entry_name, call_method
+                )
             } else {
                 format!("{}:{}", bindings.entry_module, bindings.entry_name)
             }
