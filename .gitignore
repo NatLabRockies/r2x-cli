@@ -17,3 +17,6 @@
 
 # OS
 Thumbs.db
+
+# Bundled interpreter shims
+python-shim/

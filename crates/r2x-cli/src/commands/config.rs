@@ -10,10 +10,7 @@ pub enum ConfigAction {
     /// Display the current configuration values.
     Show,
     /// Update a configuration key (e.g. `r2x config set default-python-version 3.13`).
-    Set {
-        key: String,
-        value: String,
-    },
+    Set { key: String, value: String },
     /// Show the config path or set it when `new_path` is provided.
     Path {
         /// Optional new config path to set
@@ -77,8 +74,7 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                     }
                     println!(
                         "{}",
-                        "Tip: run `r2x config show` to confirm the updated value."
-                            .dimmed()
+                        "Tip: run `r2x config show` to confirm the updated value.".dimmed()
                     );
                 } else {
                     logger::error(&format!(
@@ -257,10 +253,7 @@ mod tests {
 
     #[test]
     fn test_config_reset() {
-        handle_config(
-            Some(ConfigAction::Reset { yes: true }),
-            normal_opts(),
-        );
+        handle_config(Some(ConfigAction::Reset { yes: true }), normal_opts());
     }
 
     #[test]

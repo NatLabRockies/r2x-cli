@@ -8,6 +8,7 @@ license = { workspace = true }
 homepage = { workspace = true }
 documentation = { workspace = true }
 rust-version = { workspace = true }
+build = "build.rs"
 
 description = "Python bridge for the r2x CLI"
 

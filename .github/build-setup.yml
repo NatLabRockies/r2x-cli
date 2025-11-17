@@ -3,7 +3,23 @@
     python-version: "3.12"
 - if: runner.os != 'Windows'
   shell: bash
-  run: echo "PYO3_PYTHON=python3" >> $GITHUB_ENV
+  run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
 - if: runner.os == 'Windows'
   shell: pwsh
-  run: echo "PYO3_PYTHON=python" >> $GITHUB_ENV
+  run: echo "PYO3_PYTHON=$env:pythonLocation\python.exe" >> $GITHUB_ENV
+- name: Install uv (unix)
+  if: runner.os != 'Windows'
+  shell: bash
+  run: |
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    echo "$HOME/.local/bin" >> $GITHUB_PATH
+- name: Install uv (windows)
+  if: runner.os == 'Windows'
+  shell: pwsh
+  run: |
+    irm https://astral.sh/uv/install.ps1 | iex
+    "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+- name: Prepare Python shim
+  shell: bash
+  run: |
+    PY_VERSION=3.12 ./scripts/prepare_python_shim.sh

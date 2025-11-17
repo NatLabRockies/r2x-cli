@@ -19,6 +19,11 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
+include = [
+    "python-shim/dist/libpython3.12.dylib",
+    "python-shim/dist/libpython3.12.so",
+    "python-shim/dist/python312.dll",
+]
 
 [workspace.metadata.dist]
 allow-dirty = true
