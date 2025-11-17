@@ -4,10 +4,8 @@
 //! between Windows and Unix-like systems in Python virtual environments.
 
 use super::errors::BridgeError;
-use std::path::PathBuf;
-
-#[cfg(unix)]
 use std::fs;
+use std::path::PathBuf;
 
 /// The name of the library directory in a Python venv (e.g., "Lib" on Windows, "lib" on Unix)
 #[cfg(windows)]
@@ -21,11 +19,11 @@ const PYTHON_BIN_DIR: &str = "Scripts";
 #[cfg(unix)]
 const PYTHON_BIN_DIR: &str = "bin";
 
-/// The name of the Python executable in a venv (e.g., "python.exe" on Windows, "python" on Unix)
-#[cfg(windows)]
-const PYTHON_EXE: &str = "python.exe";
+/// Candidate executable names in a venv
 #[cfg(unix)]
-const PYTHON_EXE: &str = "python";
+const PYTHON_EXE_CANDIDATES: &[&str] = &["python3", "python"];
+#[cfg(windows)]
+const PYTHON_EXE_CANDIDATES: &[&str] = &["python.exe", "python3.exe", "python3.12.exe"];
 
 // Site Packages differences.
 //
@@ -95,14 +93,35 @@ pub fn resolve_python_path(venv_path: &PathBuf) -> Result<PathBuf, BridgeError> 
         return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
     }
 
-    let python_path = venv_path.join(PYTHON_BIN_DIR).join(PYTHON_EXE);
-    // validate the interpreter path is valid
-    if !python_path.is_file() {
+    let bin_dir = venv_path.join(PYTHON_BIN_DIR);
+    if !bin_dir.is_dir() {
         return Err(BridgeError::Initialization(format!(
-            "Path to python binary is not valid: {}",
-            python_path.display()
+            "Python bin directory missing: {}",
+            bin_dir.display()
         )));
     }
 
-    return Ok(python_path);
+    for exe in PYTHON_EXE_CANDIDATES {
+        let candidate = bin_dir.join(exe);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir(&bin_dir) {
+        if let Some(candidate) = entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|name| name.contains("python"))
+                .unwrap_or(false)
+                && p.is_file()
+        }) {
+            return Ok(candidate);
+        }
+    }
+
+    Err(BridgeError::Initialization(format!(
+        "Path to python binary is not valid in {}",
+        venv_path.display()
+    )))
 }

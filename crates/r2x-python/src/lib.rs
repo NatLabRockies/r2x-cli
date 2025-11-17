@@ -13,7 +13,7 @@ pub mod plugin_invoker;
 mod utils;
 
 pub use errors::BridgeError;
-pub use initialization::{configure_python_venv, Bridge};
+pub use initialization::{configure_python_venv, Bridge, PythonEnvironment};
 pub use utils::{resolve_python_path, resolve_site_package_path};
 
 #[cfg(test)]

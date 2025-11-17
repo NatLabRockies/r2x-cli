@@ -10,10 +10,30 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use r2x_config::Config;
 use r2x_logger as logger;
-use std::path::PathBuf;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use which::which;
+
+#[cfg(windows)]
+const PYTHON_BIN_DIR_NAME: &str = "Scripts";
+#[cfg(not(windows))]
+const PYTHON_BIN_DIR_NAME: &str = "bin";
+#[cfg(windows)]
+const SYSTEM_PYTHON_CANDIDATES: &[&str] = &["python.exe", "py.exe"];
+#[cfg(not(windows))]
+const SYSTEM_PYTHON_CANDIDATES: &[&str] = &["python3", "python"];
+const REQUIRED_PYTHON_MAJOR: i32 = 3;
+const REQUIRED_PYTHON_MINOR: i32 = 12;
 
 pub struct Bridge {}
+
+#[derive(Debug, Clone)]
+pub struct PythonEnvironment {
+    pub interpreter: PathBuf,
+    pub python_home: Option<PathBuf>,
+}
 
 static BRIDGE_INSTANCE: OnceCell<Result<Bridge, BridgeError>> = OnceCell::new();
 
@@ -35,13 +55,21 @@ impl Bridge {
     fn initialize() -> Result<Bridge, BridgeError> {
         let start_time = std::time::Instant::now();
 
-        let python_path = configure_python_venv()?;
+        let python_env = configure_python_venv()?;
+        let python_path = python_env.interpreter.clone();
 
         let mut config = Config::load()
             .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
         let cache_path = config.ensure_cache_path().map_err(|e| {
             BridgeError::Initialization(format!("Failed to ensure cache path: {}", e))
         })?;
+        let venv_path = PathBuf::from(config.get_venv_path());
+        let site_packages = resolve_site_package_path(&venv_path)?;
+        if let Some(ref home) = python_env.python_home {
+            configure_embedded_python_env(home, &site_packages);
+        } else {
+            logger::debug("Using default embedded Python search paths");
+        }
 
         logger::debug(&format!(
             "Initializing Python bridge with: {}",
@@ -68,9 +96,6 @@ impl Bridge {
         logger::debug("Enabled Python bytecode generation");
 
         // Add site-packages from venv to sys.path so imports work as expected
-        let venv_path = PathBuf::from(config.get_venv_path());
-        let site_packages = resolve_site_package_path(&venv_path)?;
-
         logger::debug(&format!(
             "site_packages: {}, exists: {}",
             site_packages.display(),
@@ -289,7 +314,7 @@ def _r2x_cache_path_override():
 }
 
 /// Configure the Python virtual environment before PyO3 initialization
-pub fn configure_python_venv() -> Result<PathBuf, BridgeError> {
+pub fn configure_python_venv() -> Result<PythonEnvironment, BridgeError> {
     let mut config = Config::load()
         .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
@@ -301,10 +326,10 @@ pub fn configure_python_venv() -> Result<PathBuf, BridgeError> {
         logger::debug("Could not resolve Python path");
     }
 
-    let python_path = python_path_result.unwrap_or_else(|_| PathBuf::new());
+    let mut python_path = python_path_result.unwrap_or_else(|_| PathBuf::new());
 
-    // Create venv if it doesn't exist
-    if !venv_path.exists() || !python_path.exists() {
+    // Create venv only when it doesn't exist
+    if !venv_path.exists() {
         logger::step(&format!(
             "Creating Python virtual environment at: {}",
             venv_path.display()
@@ -331,7 +356,150 @@ pub fn configure_python_venv() -> Result<PathBuf, BridgeError> {
                 "Failed to create Python virtual environment".to_string(),
             ));
         }
+
+        python_path = resolve_python_path(&venv_path).unwrap_or_else(|_| PathBuf::new());
+
+        if python_path.as_os_str().is_empty() || !python_path.exists() {
+            if let Ok(entries) = std::fs::read_dir(venv_path.join(PYTHON_BIN_DIR_NAME)) {
+                let names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect();
+                logger::debug(&format!("Venv bin contents after creation: {:?}", names));
+            }
+            return Err(BridgeError::Initialization(
+                "Failed to locate Python executable after creating venv".to_string(),
+            ));
+        }
     }
 
-    Ok(python_path)
+    if python_path.as_os_str().is_empty() || !python_path.exists() {
+        logger::warn("Python binary not found in configured venv; attempting system fallback");
+        if let Some((fallback, home)) = find_system_python() {
+            return Ok(PythonEnvironment {
+                interpreter: fallback,
+                python_home: Some(home),
+            });
+        }
+
+        return Err(BridgeError::Initialization(
+            "Failed to locate a usable Python interpreter".to_string(),
+        ));
+    }
+
+    let python_home = resolve_python_home(&venv_path);
+
+    Ok(PythonEnvironment {
+        interpreter: python_path,
+        python_home,
+    })
+}
+
+fn configure_embedded_python_env(python_home: &Path, site_packages: &Path) {
+    let home = python_home.to_string_lossy().to_string();
+    env::set_var("PYTHONHOME", &home);
+    logger::debug(&format!("Set PYTHONHOME={}", home));
+
+    let mut paths = vec![site_packages.to_path_buf()];
+    if let Some(existing) = env::var_os("PYTHONPATH") {
+        if !existing.is_empty() {
+            paths.extend(env::split_paths(&existing));
+        }
+    }
+    if let Ok(joined) = env::join_paths(paths) {
+        env::set_var("PYTHONPATH", &joined);
+        logger::debug(&format!(
+            "Updated PYTHONPATH to include {}",
+            site_packages.display()
+        ));
+    }
+}
+
+fn resolve_python_home(venv_path: &Path) -> Option<PathBuf> {
+    let cfg_path = venv_path.join("pyvenv.cfg");
+    let contents = fs::read_to_string(&cfg_path).ok()?;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("home") {
+            let parts: Vec<_> = trimmed.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let mut path = PathBuf::from(parts[1].trim());
+                if path.ends_with("bin") || path.ends_with("Scripts") {
+                    path = path.parent().map(PathBuf::from).unwrap_or(path);
+                }
+                logger::debug(&format!(
+                    "Resolved base Python home {} from {}",
+                    path.display(),
+                    cfg_path.display()
+                ));
+                return Some(path);
+            }
+        }
+    }
+    logger::debug(&format!(
+        "Failed to resolve base Python home from {}",
+        cfg_path.display()
+    ));
+    None
+}
+
+fn detect_python_runtime(
+    python_bin: &Path,
+) -> Option<(PathBuf, i32, i32)> {
+    let output = Command::new(python_bin)
+        .arg("-c")
+        .arg(
+            "import sys\nprint(sys.base_prefix)\nprint(sys.version_info.major)\nprint(sys.version_info.minor)",
+        )
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        logger::debug(&format!(
+            "Failed to probe python runtime (status {:?})",
+            output.status.code()
+        ));
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let mut lines = stdout
+        .lines()
+        .map(|s| s.trim().to_string())
+        .collect::<Vec<_>>();
+    if lines.len() < 3 {
+        return None;
+    }
+    let minor = lines
+        .pop()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let major = lines
+        .pop()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0);
+    let prefix = PathBuf::from(lines.pop().unwrap_or_default());
+    Some((prefix, major, minor))
+}
+
+fn find_system_python() -> Option<(PathBuf, PathBuf)> {
+    for candidate in SYSTEM_PYTHON_CANDIDATES {
+        if let Ok(path) = which(candidate) {
+            if let Some((home, major, minor)) = detect_python_runtime(&path) {
+                if major == REQUIRED_PYTHON_MAJOR && minor == REQUIRED_PYTHON_MINOR {
+                    logger::warn(&format!(
+                        "Falling back to system Python at {}",
+                        path.display()
+                    ));
+                    return Some((path, home));
+                } else {
+                    logger::debug(&format!(
+                        "Skipping system python {} (version {}.{})",
+                        path.display(),
+                        major,
+                        minor
+                    ));
+                }
+            }
+        }
+    }
+    None
 }

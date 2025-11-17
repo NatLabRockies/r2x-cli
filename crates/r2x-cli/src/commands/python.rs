@@ -87,12 +87,12 @@ fn handle_python_install(version: Option<String>, _opts: GlobalOpts) {
             }
 
             match configure_python_venv() {
-                Ok(python_path) => {
+                Ok(python_env) => {
                     logger::info(&format!(
                         "Configuration saved with Python version {}",
                         version_str
                     ));
-                    if let Some(actual_version) = verify_python_version(&python_path) {
+                    if let Some(actual_version) = verify_python_version(&python_env.interpreter) {
                         logger::success(&format!(
                             "Python {} installed (reported {}). Venv ready at {}",
                             version_str,
@@ -177,11 +177,11 @@ fn handle_venv_create(skip_confirmation: bool) {
             }
 
             match configure_python_venv() {
-                Ok(python_path) => {
+                Ok(python_env) => {
                     logger::success(&format!(
                         "Virtual environment ready at {} (python {})",
                         venv_path,
-                        python_path.display()
+                        python_env.interpreter.display()
                     ));
                 }
                 Err(e) => logger::error(&format!("Failed to configure venv: {}", e)),
