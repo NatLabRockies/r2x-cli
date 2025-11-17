@@ -17,7 +17,7 @@ rust-version = "1.72"
 [workspace.dependencies]
 r2x-config = { path = "crates/r2x-config", version = "0.0.3" }
 r2x-manifest = { path = "crates/r2x-manifest", version = "0.0.3" }
-r2x-python = { path = "crates/r2x-python", version = "0.0.6" }
+r2x-python = { path = "crates/r2x-python", version = "0.0.7" }
 r2x-logger = { path = "crates/r2x-logger", version = "0.0.1" }
 r2x-ast = { path = "crates/r2x-ast", version = "0.0.4" }
 

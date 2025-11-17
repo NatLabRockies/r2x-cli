@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "r2x-python"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "once_cell",
  "pyo3",
