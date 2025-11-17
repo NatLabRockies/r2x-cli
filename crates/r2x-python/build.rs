@@ -5,9 +5,6 @@ fn main() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let target = env::var("TARGET").expect("TARGET not set");
-    let shim_dir = env::var("R2X_PYTHON_SHIM_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| manifest_dir.join("../../python-shim").join(&target));
 
     println!("cargo:rerun-if-env-changed=R2X_PYTHON_SHIM_DIR");
     println!("cargo:rerun-if-env-changed=PY_VERSION");
@@ -16,16 +13,30 @@ fn main() {
         println!("cargo:rerun-if-changed={}", shim_script.display());
     }
 
-    if !shim_dir.exists() {
-        return;
+    let shim_dirs = candidate_shim_dirs(&manifest_dir, &target);
+    for dir in shim_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        if let Some(lib_file) = find_python_lib(&dir) {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rerun-if-changed={}", lib_file.display());
+            copy_to_profile_dir(&lib_file);
+            add_rpath(&target);
+            return;
+        }
     }
+}
 
-    if let Some(lib_file) = find_python_lib(&shim_dir) {
-        println!("cargo:rustc-link-search=native={}", shim_dir.display());
-        println!("cargo:rerun-if-changed={}", lib_file.display());
-        copy_to_profile_dir(&lib_file);
-        add_rpath(&target);
+fn candidate_shim_dirs(manifest_dir: &Path, target: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(env_path) = env::var("R2X_PYTHON_SHIM_DIR") {
+        let base = PathBuf::from(env_path);
+        dirs.push(base.clone());
+        dirs.push(base.join(target));
     }
+    dirs.push(manifest_dir.join("../../python-shim").join(target));
+    dirs
 }
 
 fn find_python_lib(dir: &Path) -> Option<PathBuf> {

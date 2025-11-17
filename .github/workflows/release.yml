@@ -151,6 +151,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: echo "PYO3_PYTHON=$env:pythonLocation\\python.exe" >> $GITHUB_ENV
+      - name: Install uv (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Install uv (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
@@ -163,6 +175,31 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      - name: Prepare Python shim
+        shell: bash
+        env:
+          DIST_TARGETS: ${{ join(matrix.targets, ' ') }}
+          PY_VERSION: "3.12"
+        run: |
+          set -euo pipefail
+          IFS=' ' read -r -a targets <<< "$DIST_TARGETS"
+          if [ "${#targets[@]}" -ne 1 ]; then
+            echo "error: expected exactly one target triple but got: ${targets[*]}" >&2
+            exit 1
+          fi
+          target="${targets[0]}"
+          export TARGET_TRIPLE="${target}"
+          echo "Preparing python shim for ${target}"
+          PY_VERSION="${PY_VERSION}" ./scripts/prepare_python_shim.sh
+          shim_dir=$(python - <<'PY'
+import os
+from pathlib import Path
+target = os.environ["TARGET_TRIPLE"]
+workspace = Path(os.environ["GITHUB_WORKSPACE"])
+print((workspace / "python-shim" / target).resolve())
+PY
+)
+          printf 'R2X_PYTHON_SHIM_DIR=%s\n' "$shim_dir" >> "$GITHUB_ENV"
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
