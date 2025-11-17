@@ -787,7 +787,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "r2x"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "r2x-python"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "once_cell",
  "pyo3",
@@ -1516,9 +1516,9 @@ checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
 name = "unit-prefix"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "323402cff2dd658f39ca17c789b502021b3f18707c91cdf22e3838e1b4023817"
+checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "unsafe-libyaml"
