@@ -60,23 +60,16 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v6
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
-      - name: Set PYO3_PYTHON (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
-      - name: Set PYO3_PYTHON (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: echo "PYO3_PYTHON=$env:pythonLocation\python.exe" >> $GITHUB_ENV
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.30.2/cargo-dist-installer.sh | sh"
+
       - name: Cache dist
         uses: actions/upload-artifact@v4
         with:
@@ -132,6 +125,7 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -139,30 +133,10 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v6
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
-      - name: Set PYO3_PYTHON (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
-      - name: Set PYO3_PYTHON (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: echo "PYO3_PYTHON=$env:pythonLocation\\python.exe" >> $GITHUB_ENV
-      - name: Install uv (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-      - name: Install uv (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          irm https://astral.sh/uv/install.ps1 | iex
-          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
@@ -192,14 +166,21 @@ jobs:
           echo "Preparing python shim for ${target}"
           PY_VERSION="${PY_VERSION}" ./scripts/prepare_python_shim.sh
           shim_dir=$(python - <<'PY'
-import os
-from pathlib import Path
-target = os.environ["TARGET_TRIPLE"]
-workspace = Path(os.environ["GITHUB_WORKSPACE"])
-print((workspace / "python-shim" / target).resolve())
-PY
-)
+          import os
+          from pathlib import Path
+          target = os.environ["TARGET_TRIPLE"]
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          print((workspace / "python-shim" / target).resolve())
+          PY
+          )
           printf 'R2X_PYTHON_SHIM_DIR=%s\n' "$shim_dir" >> "$GITHUB_ENV"
+
+      - name: Verify python shim
+        run: |
+          echo "Contents of python-shim/:"
+          find python-shim/ -type f || echo "No Files found"
+          echo "Contents of python-shim/dist/:"
+          ls -la python-shim/dist/ || echo "Dir empty or missing"
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
@@ -240,13 +221,11 @@ PY
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v6
+
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
-      - name: Set PYO3_PYTHON (unix)
-        shell: bash
-        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
       - name: Install cached dist
         uses: actions/download-artifact@v4
         with:
@@ -334,6 +313,7 @@ PY
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"

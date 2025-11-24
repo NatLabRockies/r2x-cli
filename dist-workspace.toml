@@ -19,6 +19,7 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
+
 include = [
     "python-shim/dist/libpython3.12.dylib",
     "python-shim/dist/libpython3.12.so",
@@ -27,3 +28,9 @@ include = [
 
 [workspace.metadata.dist]
 allow-dirty = true
+
+[dist.installer.shell]
+script = "scripts/shell-installer.sh"
+
+[dist.installer.powershell]
+script = "scripts/powershell-installer.ps1"
