@@ -38,10 +38,17 @@ if [[ ! -f "scripts/detect_uv_python.py" ]]; then
     exit 1
 fi
 
-PY_PREFIX="$(PY_VERSION="${PY_VERSION}" "${PYTHON_BIN}" scripts/detect_uv_python.py)"
+# Prefer PYO3_PYTHON for prefix if set (e.g., in CI workflows)
+if [[ -n "${PYO3_PYTHON:-}" ]]; then
+    PY_PREFIX="$(dirname "$(dirname "$PYO3_PYTHON")")"
+    echo "Resolved Python prefix from PYO3_PYTHON: ${PY_PREFIX}"
+else
+    PY_PREFIX="$(PY_VERSION="${PY_VERSION}" "${PYTHON_BIN}" scripts/detect_uv_python.py)"
+    echo "Resolved Python prefix from uv list: ${PY_PREFIX}"
+fi
 
 if [[ -z "${PY_PREFIX}" ]]; then
-    echo "error: failed to resolve python prefix from uv output" >&2
+    echo "error: failed to resolve python prefix" >&2
     exit 1
 fi
 
