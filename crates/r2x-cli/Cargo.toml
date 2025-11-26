@@ -8,6 +8,7 @@ license = { workspace = true }
 homepage = { workspace = true }
 documentation = { workspace = true }
 rust-version = { workspace = true }
+build = "build.rs"
 
 description = "A comprehensive framework plugin manager for the r2x power systems modeling ecosystem. Simplifies discovery, installation, and management of r2x framework plugins."
 readme = "../../README.md"

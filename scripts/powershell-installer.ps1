@@ -44,8 +44,20 @@ Expand-Archive -Path "$TempDir\archive.zip" -DestinationPath $TempDir
 # Ensure install dir exists
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-# Copy ALL extracted files (binary + included libs) to install dir
-Copy-Item -Path "$TempDir\*" -Destination $InstallDir -Recurse
+# Find source directory (handle potential subdirectory in archive)
+$srcDir = $TempDir
+$subdirs = Get-ChildItem $TempDir -Directory
+if ($subdirs.Count -gt 0) {
+    $srcDir = $subdirs[0].FullName
+    Write-Host "Archive has subdirectory: $($subdirs[0].Name)"
+}
+
+# Copy only r2x.exe and python DLLs
+Get-ChildItem $srcDir -File | Where-Object {
+    $_.Name -eq 'r2x.exe' -or ($_.Name -like 'python*.dll')
+} | ForEach-Object {
+    Copy-Item $_.FullName $InstallDir
+}
 
 # Optional: Set executable permissions (PowerShell handles .exe)
 Write-Host "Installation complete! Run 'r2x' (ensure ~/.cargo/bin is in your PATH)."
