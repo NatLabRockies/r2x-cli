@@ -21,15 +21,10 @@ install-updater = false
 allow-dirty = ["ci"]
 
 copy-cdylibs = true
-cdylibs = [
-    "python-shim/${target}/libpython3.12.dylib",
-    "python-shim/${target}/libpython3.12.so",
-    "python-shim/${target}/python312.dll",
-]
 include = [
-    "python-shim/${target}/libpython3.12.dylib",
-    "python-shim/${target}/libpython3.12.so",
-    "python-shim/${target}/python312.dll",
+    "python-shim/*/libpython3.12.dylib",
+    "python-shim/*/libpython3.12.so",
+    "python-shim/*/python312.dll",
 ]
 
 
