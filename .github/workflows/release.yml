@@ -186,6 +186,19 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
 
+      - name: Debug cdylib in tar.xz
+        run: |
+          TAR_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
+          if tar -tf "target/distrib/${TAR_FILE}" | grep -q "libpython\|python.*\.dll"; then
+            echo "cdylib found in ${TAR_FILE}"
+          else
+            echo "cdylib NOT found in ${TAR_FILE}"
+            echo "Contents of python-shim/${TARGET_TRIPLE}/:"
+            ls -la "python-shim/${TARGET_TRIPLE}/" || echo "No shim directory"
+            echo "Tar.xz contents:"
+            tar -tf "target/distrib/${TAR_FILE}"
+          fi
+
       - name: Verify cdylibs in Build Manifest
         run: |
           # Set target triple from matrix
