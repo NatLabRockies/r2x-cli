@@ -205,11 +205,11 @@ jobs:
       - name: Download Specific Python Shim
         uses: actions/download-artifact@v4
         with:
-          name: python-shim-${TARGET_TRIPLE}
+          name: python-shim-${{ env.TARGET_TRIPLE }}
           path: .
 
       - name: Unzip Specific Python Shim
-        run: tar -xzf python-shim-${TARGET_TRIPLE}.tar.gz
+        run: tar -xzf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
 
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
