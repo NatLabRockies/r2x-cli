@@ -45,8 +45,21 @@ on:
       - '**[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
+  # Build python shims for each platform. (Cached)
+  # We need to have ALL cdylibs available at plan time.
+  # Otherwise cdylibs won't be bundled with the application.
+  build-and-aggregate-shims:
+    if: ${{ !github.event.pull_request }}
+    uses: ./.github/workflows/build-python-shims.yml
+    with:
+      py-version: "3.12"
+      checkout-ref: ${{ github.ref }}
+      force-rebuild: false  # Set to true for one-off rebuil
+
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
+    needs:
+      - build-and-aggregate-shims
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
@@ -60,10 +73,16 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
+
+      - name: Download Python Shims
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
+          name: python-shims-combined
+          path: .
+
+      - name: Unzip Python Shims
+        run: unzip python-shims-combined.zip
+
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -91,6 +110,15 @@ jobs:
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
+
+      - name: Verify cdylibs in Plan Manifest
+        run: |
+          if ! jq '.releases[0].bundles[] | select(.kind == "installer" or .kind == "archive") | .files[] | select(.path | test("python-shim/.*/.*(dylib|so|dll)"))' plan-dist-manifest.json | grep -q .; then
+            echo "Error: No Python cdylibs found in manifest bundles!"
+            cat plan-dist-manifest.json
+            exit 1
+          fi
+          echo "cdylibs verified in manifest."
 
   # Build and packages all the platform-specific things
   build-local-artifacts:
@@ -126,6 +154,14 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Download Python Shims
+        uses: actions/download-artifact@v4
+        with:
+          name: python-shims-combined
+          path: .
+      - name: Unzip Python Shims
+        run: unzip python-shims-combined.zip
+
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -133,10 +169,6 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
-        with:
-          python-version: "3.12"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
@@ -149,31 +181,6 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
-      - name: Prepare Python shim
-        shell: bash
-        env:
-          DIST_TARGETS: ${{ join(matrix.targets, ' ') }}
-          PY_VERSION: "3.12"
-        run: |
-          set -euo pipefail
-          IFS=' ' read -r -a targets <<< "$DIST_TARGETS"
-          if [ "${#targets[@]}" -ne 1 ]; then
-            echo "error: expected exactly one target triple but got: ${targets[*]}" >&2
-            exit 1
-          fi
-          target="${targets[0]}"
-          export TARGET_TRIPLE="${target}"
-          echo "Preparing python shim for ${target}"
-          PY_VERSION="${PY_VERSION}" ./scripts/prepare_python_shim.sh
-          shim_dir=$(python - <<'PY'
-          import os
-          from pathlib import Path
-          target = os.environ["TARGET_TRIPLE"]
-          workspace = Path(os.environ["GITHUB_WORKSPACE"])
-          print((workspace / "python-shim" / target).resolve())
-          PY
-          )
-          printf 'R2X_PYTHON_SHIM_DIR=%s\n' "$shim_dir" >> "$GITHUB_ENV"
 
       - name: Build artifacts
         run: |
@@ -235,10 +242,6 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
-        with:
-          python-version: "3.12"
       - name: Install cached dist
         uses: actions/download-artifact@v4
         with:

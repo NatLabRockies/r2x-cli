@@ -1,0 +1,197 @@
+name: Build Python Shims (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      py-version:
+        description: 'Python version to build shims for'
+        required: false
+        type: string
+        default: '3.12'
+      checkout-ref:
+        description: 'Git ref to checkout (e.g., tag or branch)'
+        required: false
+        type: string
+        default: ${{ github.ref }}
+      force-rebuild:
+        description: 'If true, ignore cache and force a rebuild'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  cache-check:
+    runs-on: ubuntu-22.04
+    outputs:
+      cache-hit: ${{ steps.restore-cache.outputs.cache-hit }}
+      cache-key: ${{ steps.set-key.outputs.cache-key }}
+    steps:
+      - name: Set Cache Key
+        id: set-key
+        run: |
+          HASH=$(echo "${{ hashFiles('scripts/prepare_python_shim.sh', '.github/actions/setup-uv-python/**') }}" | sha256sum | cut -d ' ' -f 1)
+          WEEK=$(date +%Y-%U)  # Weekly expiration: change to %Y-%m for monthly, etc.
+          KEY="python-shims-v${{ inputs.py-version }}-stable-${HASH}-${WEEK}"
+          if ${{ inputs.force-rebuild }}; then
+            KEY="${KEY}-forced-${{ github.run_id }}"  # Unique to force miss
+          fi
+          echo "cache-key=${KEY}" >> $GITHUB_OUTPUT
+      - name: Restore Cached Shims
+        id: restore-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: python-shims-combined.zip
+          key: ${{ steps.set-key.outputs.cache-key }}
+          # Optional restore-keys for partial matches (e.g., same version but old week)
+          restore-keys: |
+            python-shims-v${{ inputs.py-version }}-stable-
+      - name: Upload Cached Zip as Artifact (on hit)
+        if: steps.restore-cache.outputs.cache-hit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-shims-combined
+          path: python-shims-combined.zip
+
+  build-shim-macos-arm:
+    needs: cache-check
+    if: needs.cache-check.outputs.cache-hit != 'true'
+    runs-on: macos-14
+    env:
+      PY_VERSION: ${{ inputs.py-version }}
+      TARGET_TRIPLE: "aarch64-apple-darwin"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Prepare shim
+        run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-shim-${{ env.TARGET_TRIPLE }}
+          path: python-shim/${{ env.TARGET_TRIPLE }}/*
+
+  build-shim-macos-intel:
+    needs: cache-check
+    if: needs.cache-check.outputs.cache-hit != 'true'
+    runs-on: macos-13
+    env:
+      PY_VERSION: ${{ inputs.py-version }}
+      TARGET_TRIPLE: "x86_64-apple-darwin"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Prepare shim
+        run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-shim-${{ env.TARGET_TRIPLE }}
+          path: python-shim/${{ env.TARGET_TRIPLE }}/*
+
+  build-shim-linux-x86:
+    needs: cache-check
+    if: needs.cache-check.outputs.cache-hit != 'true'
+    runs-on: ubuntu-22.04
+    env:
+      PY_VERSION: ${{ inputs.py-version }}
+      TARGET_TRIPLE: "x86_64-unknown-linux-gnu"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Prepare shim
+        run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-shim-${{ env.TARGET_TRIPLE }}
+          path: python-shim/${{ env.TARGET_TRIPLE }}/*
+
+  build-shim-linux-arm:
+    needs: cache-check
+    if: needs.cache-check.outputs.cache-hit != 'true'
+    runs-on: ubuntu-22.04-arm
+    env:
+      PY_VERSION: ${{ inputs.py-version }}
+      TARGET_TRIPLE: "aarch64-unknown-linux-gnu"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Prepare shim
+        run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-shim-${{ env.TARGET_TRIPLE }}
+          path: python-shim/${{ env.TARGET_TRIPLE }}/*
+
+  build-shim-windows-x86:
+    needs: cache-check
+    if: needs.cache-check.outputs.cache-hit != 'true'
+    runs-on: windows-latest
+    env:
+      PY_VERSION: ${{ inputs.py-version }}
+      TARGET_TRIPLE: "x86_64-pc-windows-msvc"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Prepare shim
+        shell: bash
+        run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-shim-${{ env.TARGET_TRIPLE }}
+          path: python-shim/${{ env.TARGET_TRIPLE }}/*
+
+  aggregate-shims:
+    needs: [cache-check, build-shim-macos-arm, build-shim-macos-intel, build-shim-linux-x86, build-shim-linux-arm, build-shim-windows-x86]
+    if: needs.cache-check.outputs.cache-hit != 'true'  # Only run if we built
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download All Shim Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-shim-*
+          path: python-shim/
+          merge-multiple: true
+      - name: Zip Combined Shims
+        run: zip -r python-shims-combined.zip python-shim/
+      - name: Save to Cache
+        uses: actions/cache/save@v4
+        with:
+          path: python-shims-combined.zip
+          key: ${{ needs.cache-check.outputs.cache-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-shims-combined
+          path: python-shims-combined.zip
