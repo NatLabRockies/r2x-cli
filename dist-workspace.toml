@@ -20,7 +20,7 @@ install-updater = false
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
 
-copy-cdylibs = false
+copy-cdylibs = true
 cdylibs = [
     "python-shim/${target}/libpython3.12.dylib",
     "python-shim/${target}/libpython3.12.so",

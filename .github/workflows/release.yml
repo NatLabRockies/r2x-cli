@@ -197,6 +197,7 @@ jobs:
           submodules: recursive
 
       - name: Set Target Triple
+        shell: bash
         run: |
           IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
           TARGET_TRIPLE="${targets[0]}"
@@ -245,6 +246,7 @@ jobs:
 
 
       - name: Verify cdylibs in Bundle
+        shell: bash
         run: |
           # Set target triple from matrix
           IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
