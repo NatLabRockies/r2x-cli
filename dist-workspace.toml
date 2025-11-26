@@ -26,6 +26,13 @@ include = [
     "python-shim/dist/python312.dll",
 ]
 
+cdylibs = [
+    "python-shim/dist/libpython3.12.dylib",
+    "python-shim/dist/libpython3.12.so",
+    "python-shim/dist/python312.dll",
+]
+
+
 [workspace.metadata.dist]
 allow-dirty = true
 
