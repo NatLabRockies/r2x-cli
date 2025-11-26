@@ -38,12 +38,12 @@ jobs:
           python-version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
-      - name: Zip Shim
-        run: zip -r python-shim-${{ env.TARGET_TRIPLE }}.zip python-shim/${{ env.TARGET_TRIPLE }}
+      - name: Archive Shim
+        run: tar -czf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz python-shim/${{ env.TARGET_TRIPLE }}
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.zip
+          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
 
   build-shim-macos-intel:
     runs-on: macos-13
@@ -62,12 +62,12 @@ jobs:
           python-version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
-      - name: Zip Shim
-        run: zip -r python-shim-${{ env.TARGET_TRIPLE }}.zip python-shim/${{ env.TARGET_TRIPLE }}
+      - name: Archive Shim
+        run: tar -czf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz python-shim/${{ env.TARGET_TRIPLE }}
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.zip
+          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
 
   build-shim-linux-x86:
     runs-on: ubuntu-22.04
@@ -86,12 +86,12 @@ jobs:
           python-version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
-      - name: Zip Shim
-        run: zip -r python-shim-${{ env.TARGET_TRIPLE }}.zip python-shim/${{ env.TARGET_TRIPLE }}
+      - name: Archive Shim
+        run: tar -czf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz python-shim/${{ env.TARGET_TRIPLE }}
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.zip
+          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
 
   build-shim-linux-arm:
     runs-on: ubuntu-22.04-arm
@@ -110,13 +110,12 @@ jobs:
           python-version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
-      - name: Zip Shim
-        shell: bash
-        run: zip -r python-shim-${{ env.TARGET_TRIPLE }}.zip python-shim/${{ env.TARGET_TRIPLE }}
+      - name: Archive Shim
+        run: tar -czf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz python-shim/${{ env.TARGET_TRIPLE }}
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.zip
+          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
 
   build-shim-windows-x86:
     runs-on: windows-latest
@@ -136,10 +135,9 @@ jobs:
       - name: Prepare shim
         shell: bash
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
-      - name: Zip Shim
-        shell: bash
-        run: zip -r python-shim-${{ env.TARGET_TRIPLE }}.zip python-shim/${{ env.TARGET_TRIPLE }}
+      - name: Archive Shim
+        run: tar -czf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz python-shim/${{ env.TARGET_TRIPLE }}
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.zip
+          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.gz

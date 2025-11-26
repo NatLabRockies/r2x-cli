@@ -151,7 +151,7 @@ jobs:
           path: .
 
       - name: Unzip Specific Python Shim
-        run: unzip python-shim-${TARGET_TRIPLE}.zip
+        run: tar -xzf python-shim-${TARGET_TRIPLE}.tar.gz
 
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
