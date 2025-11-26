@@ -13,10 +13,6 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - uses: actions/checkout@v4
-      with:
-        persist-credentials: false
-        submodules: recursive
     - name: Install uv & python
       uses: ./.github/actions/setup-uv-python
       with:
