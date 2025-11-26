@@ -155,6 +155,11 @@ jobs:
       - name: Unzip Python Shims
         run: unzip python-shims-combined.zip
 
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
+
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
