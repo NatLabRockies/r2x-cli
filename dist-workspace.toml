@@ -26,6 +26,11 @@ cdylibs = [
     "python-shim/${target}/libpython3.12.so",
     "python-shim/${target}/python312.dll",
 ]
+include = [
+    "python-shim/${target}/libpython3.12.dylib",
+    "python-shim/${target}/libpython3.12.so",
+    "python-shim/${target}/python312.dll",
+]
 
 
 [workspace.metadata.dist]
