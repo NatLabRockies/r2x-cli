@@ -40,13 +40,6 @@ fi
 
 
 # Prefer PYO3_PYTHON for prefix if set (e.g., in CI workflows)
-#if [[ -n "${PYO3_PYTHON:-}" ]]; then
-#    PY_PREFIX="$(dirname "$(dirname "$PYO3_PYTHON")")"
-#    echo "Resolved Python prefix from PYO3_PYTHON: ${PY_PREFIX}"
-#else
-#    PY_PREFIX="$(PY_VERSION="${PY_VERSION}" "${PYTHON_BIN}" scripts/detect_uv_python.py)"
-#    echo "Resolved Python prefix from uv list: ${PY_PREFIX}"
-#fi
 PY_BIN_DIR="$(dirname "$PYO3_PYTHON")"
 # Check if Python exe is in a 'bin' subdirectory (Linux/Mac) or directly in the install root (Windows)
 if [[ "$PY_BIN_DIR" == *"/bin" ]] || [[ "$PY_BIN_DIR" == *"\bin" ]]; then
