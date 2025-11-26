@@ -176,12 +176,6 @@ jobs:
           )
           printf 'R2X_PYTHON_SHIM_DIR=%s\n' "$shim_dir" >> "$GITHUB_ENV"
 
-      - name: Verify python shim
-        run: |
-          echo "Contents of python-shim/:"
-          find python-shim/ -type f || echo "No Files found"
-          echo "Contents of python-shim/dist/:"
-          ls -la python-shim/dist/ || echo "Dir empty or missing"
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
@@ -189,6 +183,7 @@ jobs:
           echo "dist ran successfully"
 
       - name: Verify Python Shim Bundling
+        shell: bash
         run: |
           # Set target triple from matrix
           IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
@@ -196,7 +191,7 @@ jobs:
           SHIM_DIR="python-shim/$TARGET_TRIPLE"
 
           echo "Contents of $SHIM_DIR:"
-          ls -la "$SHIM_DIR" || echo "Directory not found"
+          ls -l "$SHIM_DIR" || echo "Directory not found"
 
           if ! find "$SHIM_DIR" -name "*python*" | grep -q .; then
             echo "Error: No Python-related files found in $SHIM_DIR. Bundling failed!"
