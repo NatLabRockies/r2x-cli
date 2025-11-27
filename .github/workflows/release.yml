@@ -266,7 +266,14 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
 
-
+      - name: Add Python shim to bundle
+        shell: bash
+        run: |
+          TAR_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
+          tar -xzf "target/distrib/${TAR_FILE}"
+          cp python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/
+          tar -czf "target/distrib/${TAR_FILE}" r2x-${TARGET_TRIPLE}/
+          rm -rf r2x-${TARGET_TRIPLE}
 
       - name: Verify cdylibs in Bundle
         shell: bash

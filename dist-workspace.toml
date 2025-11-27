@@ -21,9 +21,7 @@ install-updater = false
 allow-dirty = ["ci"]
 
 copy-cdylibs = true
-include = [
-    "python-shim/*/*",
-]
+
 
 
 [workspace.metadata.dist]
