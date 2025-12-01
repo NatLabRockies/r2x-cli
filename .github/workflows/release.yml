@@ -314,8 +314,6 @@ jobs:
 
             7z a "$BUNDLE_FILE" ./r2x-${TARGET_TRIPLE}/*
             rm -rf r2x-${TARGET_TRIPLE}
-
-            sha256sum "$BUNDLE_FILE" > "${BUNDLE_FILE}.sha256"
           elif [[ "$BUNDLE_FILE" == *.tar.* ]]; then
 
             tar -xf "$BUNDLE_FILE" 2>/dev/null || true
@@ -325,13 +323,29 @@ jobs:
 
             tar -cJf "$BUNDLE_FILE" r2x-${TARGET_TRIPLE}/
             rm -rf r2x-${TARGET_TRIPLE}
-
-            sha256sum "$BUNDLE_FILE" > "${BUNDLE_FILE}.sha256"
           else
             echo "Unknown bundle format: $BUNDLE_FILE"
             exit 1
           fi
 
+
+      - name: Update Checksums
+        shell: bash
+        run: |
+          for file in target/distrib/r2x-*.tar.xz target/distrib/r2x-*.zip; do
+            if [[ -f "$file" ]]; then
+              echo "Updating checksum for $file"
+              python3 -c "
+              import hashlib
+              import sys
+              file = sys.argv[1]
+              with open(file, 'rb') as f:
+                  h = hashlib.sha256(f.read()).hexdigest()
+              with open(file + '.sha256', 'w') as f:
+                  f.write(h + '  ' + file + '\n')
+              " "$file"
+            fi
+          done
 
       - name: Verify cdylibs in Bundle
         shell: bash
