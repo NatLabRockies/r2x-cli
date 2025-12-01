@@ -43,7 +43,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          path: python-shim-${{ env.TARGET_TRIPLE }}.${{ contains(env.TARGET_TRIPLE, 'windows') && 'tar.gz' || 'tar.xz' }}
 
   build-shim-macos-intel:
     runs-on: macos-13
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          path: python-shim-${{ env.TARGET_TRIPLE }}.${{ contains(env.TARGET_TRIPLE, 'windows') && 'tar.gz' || 'tar.xz' }}
 
   build-shim-linux-x86:
     runs-on: ubuntu-22.04
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          path: python-shim-${{ env.TARGET_TRIPLE }}.${{ contains(env.TARGET_TRIPLE, 'windows') && 'tar.gz' || 'tar.xz' }}
 
   build-shim-linux-arm:
     runs-on: ubuntu-22.04-arm
@@ -115,7 +115,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          path: python-shim-${{ env.TARGET_TRIPLE }}.${{ contains(env.TARGET_TRIPLE, 'windows') && 'tar.gz' || 'tar.xz' }}
 
   build-shim-windows-x86:
     runs-on: windows-latest
@@ -136,8 +136,8 @@ jobs:
         shell: bash
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
       - name: Archive Shim
-        run: tar -cJf python-shim-${{ env.TARGET_TRIPLE }}.tar.xz python-shim/${{ env.TARGET_TRIPLE }}
+        run: tar -czf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz python-shim/${{ env.TARGET_TRIPLE }}
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          path: python-shim-${{ env.TARGET_TRIPLE }}.${{ contains(env.TARGET_TRIPLE, 'windows') && 'tar.gz' || 'tar.xz' }}

@@ -211,10 +211,20 @@ jobs:
           path: .
 
       - name: Check downloaded shim file
-        run: ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+        run: |
+          if [[ "${{ env.TARGET_TRIPLE }}" == *"windows"* ]]; then
+            ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
+          else
+            ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          fi
 
       - name: Unzip Specific Python Shim
-        run: tar -xf python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+        run: |
+          if [[ "${{ env.TARGET_TRIPLE }}" == *"windows"* ]]; then
+            tar -xzf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
+          else
+            tar -xf python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
+          fi
 
       - name: List python-shim contents after unzip
         run: echo "Python-shim contents after unzip:" && find $GITHUB_WORKSPACE -path "*/python-shim/*" -type f
@@ -282,9 +292,10 @@ jobs:
           IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
           TARGET_TRIPLE="${targets[0]}"
           TAR_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
+          CONTENTS=$(tar -tf "target/distrib/${TAR_FILE}")
           echo "Tar.xz contents:"
-          tar -tf "target/distrib/${TAR_FILE}"
-          if tar -tf "target/distrib/${TAR_FILE}" | grep -q "libpython\|python.*\.dll"; then
+          echo "$CONTENTS"
+          if echo "$CONTENTS" | grep -q "libpython\|python.*\.dll"; then
             echo "cdylibs verified in bundle for $TARGET_TRIPLE."
           else
             echo "Error: No Python cdylibs found in bundle!"

@@ -22,8 +22,13 @@ runs:
       run: PY_VERSION=${{ inputs.py_version }} TARGET_TRIPLE=${{ inputs.target_triple }} ./scripts/prepare_python_shim.sh
     - name: Archive Shim
       shell: bash
-      run: tar -cJf python-shim-${{ inputs.target_triple }}.tar.xz python-shim/${{ inputs.target_triple }}
+      run: |
+        if [[ "${{ inputs.target_triple }}" == *"windows"* ]]; then
+          tar -czf python-shim-${{ inputs.target_triple }}.tar.gz python-shim/${{ inputs.target_triple }}
+        else
+          tar -cJf python-shim-${{ inputs.target_triple }}.tar.xz python-shim/${{ inputs.target_triple }}
+        fi
     - uses: actions/upload-artifact@v4
       with:
         name: python-shim-${{ inputs.target_triple }}
-        path: python-shim-${{ inputs.target_triple }}.tar.xz
+        path: python-shim-${{ inputs.target_triple }}.${{ contains(inputs.target_triple, 'windows') && 'tar.gz' || 'tar.xz' }}
