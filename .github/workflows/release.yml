@@ -211,6 +211,7 @@ jobs:
           path: .
 
       - name: Check downloaded shim file
+        shell: bash
         run: |
           if [[ "${{ env.TARGET_TRIPLE }}" == *"windows"* ]]; then
             ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
@@ -219,6 +220,7 @@ jobs:
           fi
 
       - name: Unzip Specific Python Shim
+        shell: bash
         run: |
           if [[ "${{ env.TARGET_TRIPLE }}" == *"windows"* ]]; then
             tar -xzf python-shim-${{ env.TARGET_TRIPLE }}.tar.gz
