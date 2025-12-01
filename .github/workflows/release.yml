@@ -332,12 +332,7 @@ jobs:
       - name: Update Checksums
         shell: bash
         run: |
-          for file in target/distrib/r2x-*.tar.xz target/distrib/r2x-*.zip; do
-            if [[ -f "$file" ]]; then
-              echo "Updating checksum for $file"
-              python3 -c "import hashlib, sys; f=sys.argv[1]; h=hashlib.sha256(open(f,'rb').read()).hexdigest(); open(f+'.sha256','w').write(h+'  '+f+'\n')" "$file"
-            fi
-          done
+          python3 scripts/update_checksums.py $BUILD_MANIFEST_NAME
 
       - name: Verify cdylibs in Bundle
         shell: bash
