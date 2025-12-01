@@ -153,11 +153,11 @@ jobs:
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
       - name: Archive Shim
         shell: bash
-        run: 7z a -r python-shim-${{ env.TARGET_TRIPLE }}.zip python-shim/${{ env.TARGET_TRIPLE }}
+        run: tar -cJf python-shim-${{ env.TARGET_TRIPLE }}.tar.xz python-shim/${{ env.TARGET_TRIPLE }}
       - name: Verify Archive
         shell: bash
-        run: ls -l python-shim-${{ env.TARGET_TRIPLE }}.zip
+        run: ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
       - uses: actions/upload-artifact@v4
         with:
           name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: python-shim-${{ env.TARGET_TRIPLE }}.zip
+          path: python-shim-${{ env.TARGET_TRIPLE }}.tar.xz

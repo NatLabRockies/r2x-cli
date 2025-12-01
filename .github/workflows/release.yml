@@ -214,24 +214,16 @@ jobs:
       - name: Check downloaded shim file
         shell: bash
         run: |
-          if [[ "${{ env.TARGET_TRIPLE }}" == *"windows"* ]]; then
-            ls -l python-shim-${{ env.TARGET_TRIPLE }}.zip
-          else
-            ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
-          fi
+          ls -la .
+          ls -l python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
 
-      - name: Unzip Specific Python Shim
+      - name: Extract Specific Python Shim
         shell: bash
-        run: |
-          if [[ "${{ env.TARGET_TRIPLE }}" == *"windows"* ]]; then
-            7z x -y python-shim-${{ env.TARGET_TRIPLE }}.zip
-          else
-            tar -xf python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
-          fi
+        run: tar -xf python-shim-${{ env.TARGET_TRIPLE }}.tar.xz
 
-      - name: List python-shim contents after unzip
+      - name: List python-shim contents after extract
         shell: bash
-        run: echo "Python-shim contents after unzip:" && find $GITHUB_WORKSPACE -path "*/python-shim/*" -type f
+        run: echo "Python-shim contents after extract:" && find $GITHUB_WORKSPACE -path "*/python-shim/*" -type f
 
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
@@ -287,19 +279,12 @@ jobs:
       - name: Add Python shim to bundle
         shell: bash
         run: |
-          if [[ "${TARGET_TRIPLE}" == *"windows"* ]]; then
-            BUNDLE_FILE="r2x-${TARGET_TRIPLE}.zip"
-            unzip "target/distrib/${BUNDLE_FILE}"
-            cp python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/
-            zip -r "target/distrib/${BUNDLE_FILE}" r2x-${TARGET_TRIPLE}/
-            rm -rf r2x-${TARGET_TRIPLE}
-          else
-            BUNDLE_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
-            tar -xf "target/distrib/${BUNDLE_FILE}"
-            cp python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/
-            tar -cJf "target/distrib/${BUNDLE_FILE}" r2x-${TARGET_TRIPLE}/
-            rm -rf r2x-${TARGET_TRIPLE}
-          fi
+          BUNDLE_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
+          tar -xf "target/distrib/${BUNDLE_FILE}" 2>/dev/null || true
+          mkdir -p r2x-${TARGET_TRIPLE}
+          cp -r python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/
+          tar -cJf "target/distrib/${BUNDLE_FILE}" r2x-${TARGET_TRIPLE}/
+          rm -rf r2x-${TARGET_TRIPLE}
 
       - name: Verify cdylibs in Bundle
         shell: bash
@@ -307,11 +292,7 @@ jobs:
           # Set target triple from matrix
           IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
           TARGET_TRIPLE="${targets[0]}"
-          if [[ "${TARGET_TRIPLE}" == *"windows"* ]]; then
-            TAR_FILE="r2x-${TARGET_TRIPLE}.tar.gz"
-          else
-            TAR_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
-          fi
+          TAR_FILE="r2x-${TARGET_TRIPLE}.tar.xz"
           CONTENTS=$(tar -tf "target/distrib/${TAR_FILE}")
           echo "Tar.xz contents:"
           echo "$CONTENTS"
