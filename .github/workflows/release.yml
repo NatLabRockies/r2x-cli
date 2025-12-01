@@ -329,11 +329,6 @@ jobs:
           fi
 
 
-      - name: Update Checksums
-        shell: bash
-        run: |
-          python3 scripts/update_checksums.py $BUILD_MANIFEST_NAME
-
       - name: Verify cdylibs in Bundle
         shell: bash
         run: |
@@ -416,6 +411,10 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Update Checksums
+        shell: bash
+        run: |
+          python3 scripts/update_checksums.py $BUILD_MANIFEST_NAME
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
