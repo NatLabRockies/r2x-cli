@@ -233,6 +233,11 @@ jobs:
         shell: bash
         run: echo "Python-shim contents after unzip:" && find $GITHUB_WORKSPACE -path "*/python-shim/*" -type f
 
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ matrix.python }}
+
       - name: Set Shim Library Path
         shell: bash
         run: |
@@ -245,11 +250,6 @@ jobs:
           elif [[ "${{ runner.os }}" == "Windows" ]]; then
             echo "PATH=$SHIM_DIR;$PATH" >> $GITHUB_ENV
           fi
-
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
-        with:
-          python-version: "3.12"
 
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
