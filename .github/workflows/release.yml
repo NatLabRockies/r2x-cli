@@ -307,11 +307,12 @@ jobs:
           fi
           if [[ "$BUNDLE_FILE" == *.zip ]]; then
             echo "Extracting zip: $BUNDLE_FILE"
-            unzip "$BUNDLE_FILE" 2>/dev/null || true
+            mkdir -p r2x-${TARGET_TRIPLE}
+            unzip "$BUNDLE_FILE" -d r2x-${TARGET_TRIPLE} 2>/dev/null || true
             echo "Copying shims to r2x-${TARGET_TRIPLE}/"
             cp python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/ 2>/dev/null || true
             echo "Re-archiving zip: $BUNDLE_FILE"
-            zip -r "$BUNDLE_FILE" r2x-${TARGET_TRIPLE}/
+            7z a "$BUNDLE_FILE" ./r2x-${TARGET_TRIPLE}/*
             rm -rf r2x-${TARGET_TRIPLE}
           elif [[ "$BUNDLE_FILE" == *.tar.* ]]; then
             echo "Extracting tar: $BUNDLE_FILE"
