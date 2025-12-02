@@ -414,7 +414,10 @@ jobs:
       - name: Update Checksums
         shell: bash
         run: |
-          python3 scripts/update_checksums.py $BUILD_MANIFEST_NAME
+            echo "Listing target/distrib contents"
+            ls -l target/distrib
+            echo "Updating checksums"
+            python3 scripts/update_checksums.py $BUILD_MANIFEST_NAME
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
