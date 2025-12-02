@@ -303,10 +303,10 @@ jobs:
         shell: bash
         run: |
           echo "Verifying root layout"
-          ls -l target/distrib/{{$TARGET_TRIPLE}}
+          ls -l target/distrib/$TARGET_TRIPLE
 
           echo "Verifying python-shim layout"
-          ls -l target/distrib/{{$TARGET_TRIPLE}}/python-shim/${{TARGET_TRIPLE}}
+          ls -l target/distrib/$TARGET_TRIPLE/python-shim/$TARGET_TRIPLE
 
       - id: cargo-dist
         name: Post-build
