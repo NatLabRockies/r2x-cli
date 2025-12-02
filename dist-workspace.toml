@@ -32,8 +32,8 @@ package-format = "zip"
 [workspace.metadata.dist]
 allow-dirty = true
 
-#[dist.installer.shell]
-#script = "scripts/shell-installer.sh"
+[dist.installer.shell]
+script = "scripts/shell-installer.sh"
 
-#[dist.installer.powershell]
-#script = "scripts/powershell-installer.ps1"
+[dist.installer.powershell]
+script = "scripts/powershell-installer.ps1"

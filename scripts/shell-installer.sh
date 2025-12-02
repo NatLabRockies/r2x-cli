@@ -24,15 +24,42 @@ ARCHIVE_URL="$1"  # Passed by dist as an argument (the .tar.xz URL)
 
 echo "Installing r2x-cli to $INSTALL_DIR..."
 
-# Download and extract the archive
-#curl -L "$ARCHIVE_URL" | tar -xz -C "$TMPDIR"
+echo "Archive URL: $ARCHIVE_URL"
+echo "Checksum URL: ${ARCHIVE_URL}.sha256"
 
-# Download and extract the archive
-# Or install from local path (for testing)
+# Download the archive and its checksum file
+ARCHIVE_FILE="$TMPDIR/archive.tar.xz"
+SHA_FILE="$TMPDIR/archive.tar.xz.sha256"
+
 if [[ "$ARCHIVE_URL" =~ ^https?:// ]]; then
-    curl -L "$ARCHIVE_URL" | xz -d | tar -x -C "$TMPDIR"
+    echo "Downloading archive..."
+    curl -L "$ARCHIVE_URL" -o "$ARCHIVE_FILE"
+    echo "Downloading checksum..."
+    curl -L "$ARCHIVE_URL.sha256" -o "$SHA_FILE"
 else
-    xz -d < "$ARCHIVE_URL" | tar -x -C "$TMPDIR"
+    # For local paths, assume files exist
+    ARCHIVE_FILE="$ARCHIVE_URL"
+    SHA_FILE="${ARCHIVE_URL}.sha256"
+fi
+
+# Verify checksum if SHA file exists
+if [ -f "$SHA_FILE" ]; then
+    expected_hash=$(awk '{print $1}' "$SHA_FILE")
+    computed_hash=$(sha256sum "$ARCHIVE_FILE" | awk '{print $1}')
+    if [ "$computed_hash" != "$expected_hash" ]; then
+        echo "Checksum verification failed!" >&2
+        exit 1
+    fi
+    echo "Checksum verified."
+else
+    echo "Warning: No checksum file found, skipping verification."
+fi
+
+# Extract the archive
+if [[ "$ARCHIVE_URL" =~ ^https?:// ]]; then
+    xz -d < "$ARCHIVE_FILE" | tar -x -C "$TMPDIR"
+else
+    xz -d < "$ARCHIVE_FILE" | tar -x -C "$TMPDIR"
 fi
 
 

@@ -37,8 +37,24 @@ $TempDir = New-TemporaryDirectory
 
 Write-Host "Installing r2x-cli to $InstallDir..."
 
-# Download and extract the archive
+Write-Host "Archive URL: $ArchiveUrl"
+Write-Host "Checksum URL: $($ArchiveUrl).sha256"
+
+# Download the archive and checksum
 Invoke-WebRequest -Uri $ArchiveUrl -OutFile "$TempDir\archive.zip"
+$ShaUrl = "$ArchiveUrl.sha256"
+Invoke-WebRequest -Uri $ShaUrl -OutFile "$TempDir\archive.zip.sha256"
+
+# Verify checksum
+$expectedHash = (Get-Content "$TempDir\archive.zip.sha256").Trim().Split()[0].ToLower()
+$computedHash = (Get-FileHash "$TempDir\archive.zip" -Algorithm SHA256).Hash.ToLower()
+if ($computedHash -ne $expectedHash) {
+    Write-Host "Checksum verification failed!" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Checksum verified."
+
+# Extract the archive
 Expand-Archive -Path "$TempDir\archive.zip" -DestinationPath $TempDir
 
 # Ensure install dir exists
