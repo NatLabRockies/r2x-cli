@@ -9,7 +9,6 @@ manifest_path = sys.argv[1]
 hashes = {}
 
 old_checksums = {}
-
 # Update .sha256 files
 for pattern in ["target/distrib/r2x-*.tar.xz", "target/distrib/r2x-*.zip"]:
     for file in glob.glob(pattern):
@@ -27,7 +26,11 @@ if os.path.exists(manifest_path):
     # Collect old checksums before updating
     for release in data.get("releases", []):
         for art in release.get("artifacts", []):
-            if isinstance(art, str) and art in data.get("artifacts", {}):
+            if (
+                isinstance(art, str)
+                and art in data.get("artifacts", {})
+                and "checksums" in data["artifacts"][art]
+            ):
                 old_checksums[art] = data["artifacts"][art]["checksums"]["sha256"]
     for release in data.get("releases", []):
         for art in release.get("artifacts", []):
