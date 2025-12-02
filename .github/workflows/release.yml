@@ -132,6 +132,10 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: mkdir python-shim
+        shell: bash
+        run: mkdir python-shim
+
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -295,60 +299,14 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
 
-      - name: Add Python shim to bundle
+      - name: Verify Cdylib Bundling
         shell: bash
         run: |
+          echo "Verifying root layout"
+          ls -l target/distrib/{{$TARGET_TRIPLE}}
 
-          BUNDLE_FILE=$(ls target/distrib/r2x-${TARGET_TRIPLE}.* 2>/dev/null | grep -E '\.(tar\.xz|zip)$' | head -1)
-
-          if [[ -z "$BUNDLE_FILE" ]]; then
-            echo "Bundle file not found"
-            exit 1
-          fi
-          if [[ "$BUNDLE_FILE" == *.zip ]]; then
-
-            mkdir -p r2x-${TARGET_TRIPLE}
-            unzip "$BUNDLE_FILE" -d r2x-${TARGET_TRIPLE} 2>/dev/null || true
-
-            cp python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/ 2>/dev/null || true
-
-            7z a "$BUNDLE_FILE" ./r2x-${TARGET_TRIPLE}/*
-            rm -rf r2x-${TARGET_TRIPLE}
-          elif [[ "$BUNDLE_FILE" == *.tar.* ]]; then
-
-            tar -xf "$BUNDLE_FILE" 2>/dev/null || true
-            mkdir -p r2x-${TARGET_TRIPLE}
-
-            cp -r python-shim/${TARGET_TRIPLE}/* r2x-${TARGET_TRIPLE}/ 2>/dev/null || true
-
-            tar -cJf "$BUNDLE_FILE" r2x-${TARGET_TRIPLE}/
-            rm -rf r2x-${TARGET_TRIPLE}
-          else
-            echo "Unknown bundle format: $BUNDLE_FILE"
-            exit 1
-          fi
-
-
-      - name: Verify cdylibs in Bundle
-        shell: bash
-        run: |
-          # Set target triple from matrix
-          IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
-          TARGET_TRIPLE="${targets[0]}"
-          TAR_FILE=$(ls target/distrib/r2x-${TARGET_TRIPLE}.* | grep -E '\.(tar\.xz|zip)$' | head -1)
-          if [[ "$TAR_FILE" == *.zip ]]; then
-            CONTENTS=$(unzip -l "$TAR_FILE" | tail -n +4 | awk '{print $4}')
-          else
-            CONTENTS=$(tar -tf "$TAR_FILE")
-          fi
-          echo "Archive contents:"
-          echo "$CONTENTS"
-          if echo "$CONTENTS" | grep -q "libpython\|python.*\.dll"; then
-            echo "cdylibs verified in bundle for $TARGET_TRIPLE."
-          else
-            echo "cdylibs not found in bundle for $TARGET_TRIPLE."
-            exit 1
-          fi
+          echo "Verifying python-shim layout"
+          ls -l target/distrib/{{$TARGET_TRIPLE}}/python-shim/${{TARGET_TRIPLE}}
 
       - id: cargo-dist
         name: Post-build
@@ -411,13 +369,7 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: Update Checksums
-        shell: bash
-        run: |
-            echo "Listing target/distrib contents"
-            ls -l target/distrib
-            echo "Updating checksums"
-            python3 scripts/update_checksums.py $BUILD_MANIFEST_NAME
+
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:

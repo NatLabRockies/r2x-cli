@@ -14,7 +14,7 @@ installers = ["shell", "powershell", "msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Path that installers should place binaries in
-install-path = "CARGO_HOME"
+install-path = "~/.r2x/bin"
 # Whether to install an updater program
 install-updater = false
 # Skip checking whether the specified configuration files are up to date
@@ -24,9 +24,16 @@ compression = "xz"
 
 copy-cdylibs = true
 
+include = [
+    "./python-shim"
+]
+
+package-libraries = ["cdylib", "cstaticlib"]
+install-libraries = ["cdylib", "cstaticlib"]
+
+
 [dist.target."x86_64-pc-windows-msvc"]
 package-format = "zip"
-
 
 
 [workspace.metadata.dist]
