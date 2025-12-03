@@ -35,7 +35,7 @@ jobs:
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: ${{ env.PY_VERSION }}
+          version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
       - name: Archive Shim
@@ -63,7 +63,7 @@ jobs:
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: ${{ env.PY_VERSION }}
+          version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
       - name: Archive Shim
@@ -91,7 +91,7 @@ jobs:
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: ${{ env.PY_VERSION }}
+          version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
       - name: Archive Shim
@@ -119,7 +119,7 @@ jobs:
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: ${{ env.PY_VERSION }}
+          version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh
       - name: Archive Shim
@@ -147,7 +147,7 @@ jobs:
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: ${{ env.PY_VERSION }}
+          version: ${{ env.PY_VERSION }}
       - name: Prepare shim
         shell: bash
         run: PY_VERSION=${{ env.PY_VERSION }} TARGET_TRIPLE=${{ env.TARGET_TRIPLE }} ./scripts/prepare_python_shim.sh

@@ -15,7 +15,7 @@ def modify_installer_script(script_path):
 
     # Code to insert: Copy from python-shim/{target}/* to install dir root
     insert_code = (
-        "    # Copy contents of python-shim/{target} to install dir root\n"
+        "    # Link contents of python-shim/{target} to install dir root\n"
         '    if [ -d "$_src_dir/python-shim/$_arch" ]; then\n'
         '        cp "$_src_dir/python-shim/$_arch"/* "$_install_dir/"\n'
         '        say "  python-shim/{target} contents (copied to root)"\n'
@@ -42,8 +42,6 @@ def modify_installer_script(script_path):
         f.write(new_content)
 
     print(f"Successfully modified '{script_path}' to include python-shim copy logic.")
-    return True
-
     return True
 
 
