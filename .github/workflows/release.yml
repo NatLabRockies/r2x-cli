@@ -213,18 +213,6 @@ jobs:
                   name: python-shim-${{ env.TARGET_TRIPLE }}
                   path: .
 
-            - name: Check downloaded shim file
-              shell: bash
-              run: |
-                  ls -la .
-                  SHIM_FILE=$(ls python-shim-${{ env.TARGET_TRIPLE }}.* 2>/dev/null)
-                  if [[ -n "$SHIM_FILE" ]]; then
-                    ls -l "$SHIM_FILE"
-                  else
-                    echo "Shim file not found"
-                    exit 1
-                  fi
-
             - name: Extract Specific Python Shim
               shell: bash
               run: |
@@ -241,10 +229,6 @@ jobs:
                     echo "Unknown archive format: $SHIM_FILE"
                     exit 1
                   fi
-
-            - name: List python-shim contents after extract
-              shell: bash
-              run: echo "Python-shim contents after extract:" && find $GITHUB_WORKSPACE -path "*/python-shim/*" -type f
 
             - name: Install uv & python
               uses: ./.github/actions/setup-uv-python
@@ -285,13 +269,6 @@ jobs:
               shell: bash
               run: |
                   ${{ matrix.packages_install }}
-
-            - name: List all files in project directory
-              shell: bash
-              run: |
-                  find $GITHUB_WORKSPACE -type f
-                  echo "Printing PYO3_PYTHON"
-                  echo $PYO3_PYTHON
 
             - name: Build artifacts
               shell: bash
