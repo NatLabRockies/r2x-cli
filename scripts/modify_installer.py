@@ -31,11 +31,13 @@ def modify_installer_script(script_path):
         # Code to insert for PowerShell script
         insert_code = (
             "    # Copy contents of python-shim/{target} to install dir bin\n"
-            '    $shim_dir = "$tmp\\python-shim\\$arch"\n'
+            "    $tmp_dir = Split-Path $bin_path\n"
+            '    $shim_dir = "$tmp_dir\\python-shim\\$arch"\n'
             "    if (Test-Path $shim_dir) {\n"
+            '        Get-ChildItem "$shim_dir" | ForEach-Object { Write-Information "DEBUG: $_" }\n'
             '        Copy-Item "$shim_dir\\*" -Destination "$dest_dir" -Recurse\n'
             '        Write-Information "  python-shim/{target} contents (copied to bin)"\n'
-            '        Remove-Item "$tmp\\python-shim" -Recurse -Force\n'
+            '        Remove-Item "$tmp_dir\\python-shim" -Recurse -Force\n'
             "    }\n"
         )
         target_line = 'Write-Information "everything\'s installed!"'
