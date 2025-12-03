@@ -249,7 +249,7 @@ jobs:
             - name: Install uv & python
               uses: ./.github/actions/setup-uv-python
               with:
-                  python-version: ${{ matrix.python }}
+                  python-version: "3.12"
 
             - name: Set Shim Library Path
               shell: bash
@@ -288,7 +288,10 @@ jobs:
 
             - name: List all files in project directory
               shell: bash
-              run: find $GITHUB_WORKSPACE -type f
+              run: |
+                  find $GITHUB_WORKSPACE -type f
+                  echo "Printing PYO3_PYTHON"
+                  echo $PYO3_PYTHON
 
             - name: Build artifacts
               shell: bash
