@@ -1,0 +1,34 @@
+name: 'Build Python Shim'
+description: 'Build and archive a Python shim for a specific target triple'
+
+inputs:
+  target_triple:
+    description: 'The Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+  py_version:
+    description: 'Python version to use for the shim'
+    required: false
+    default: '3.12'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install uv & python
+      uses: ./.github/actions/setup-uv-python
+      with:
+        python-version: ${{ inputs.py_version }}
+    - name: Prepare shim
+      shell: bash
+      run: PY_VERSION=${{ inputs.py_version }} TARGET_TRIPLE=${{ inputs.target_triple }} ./scripts/prepare_python_shim.sh
+    - name: Archive Shim
+      shell: bash
+      run: |
+        if [[ "${{ inputs.target_triple }}" == *"windows"* ]]; then
+          tar -czf python-shim-${{ inputs.target_triple }}.tar.gz python-shim/${{ inputs.target_triple }}
+        else
+          tar -cJf python-shim-${{ inputs.target_triple }}.tar.xz python-shim/${{ inputs.target_triple }}
+        fi
+    - uses: actions/upload-artifact@v4
+      with:
+        name: python-shim-${{ inputs.target_triple }}
+        path: python-shim-${{ inputs.target_triple }}.${{ contains(inputs.target_triple, 'windows') && 'tar.gz' || 'tar.xz' }}

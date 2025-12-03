@@ -38,10 +38,18 @@ if [[ ! -f "scripts/detect_uv_python.py" ]]; then
     exit 1
 fi
 
-PY_PREFIX="$(PY_VERSION="${PY_VERSION}" "${PYTHON_BIN}" scripts/detect_uv_python.py)"
+
+# Prefer PYO3_PYTHON for prefix if set (e.g., in CI workflows)
+PY_BIN_DIR="$(dirname "$PYO3_PYTHON")"
+# Check if Python exe is in a 'bin' subdirectory (Linux/Mac) or directly in the install root (Windows)
+if [[ "$PY_BIN_DIR" == *"/bin" ]] || [[ "$PY_BIN_DIR" == *"\bin" ]]; then
+    PY_PREFIX="$(dirname "$PY_BIN_DIR")"
+else
+    PY_PREFIX="$PY_BIN_DIR"
+fi
 
 if [[ -z "${PY_PREFIX}" ]]; then
-    echo "error: failed to resolve python prefix from uv output" >&2
+    echo "error: failed to resolve python prefix" >&2
     exit 1
 fi
 

@@ -15,7 +15,7 @@
 
 name: Release
 permissions:
-  "contents": "write"
+    "contents": "write"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -39,306 +39,406 @@ permissions:
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
 on:
-  pull_request:
-  push:
-    tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+    pull_request:
+    push:
+        tags:
+            - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
-  # Run 'dist plan' (or host) to determine what tasks we need to do
-  plan:
-    runs-on: "ubuntu-22.04"
-    outputs:
-      val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
-      publishing: ${{ !github.event.pull_request }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
-        with:
-          python-version: "3.12"
-      - name: Install dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
-        shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.30.2/cargo-dist-installer.sh | sh"
+    build-shim-macos-arm:
+        if: ${{ !github.event.pull_request }}
+        runs-on: macos-14
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+            - uses: ./.github/actions/build-python-shim
+              with:
+                  target_triple: aarch64-apple-darwin
+                  py_version: 3.12
 
-      - name: Cache dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/dist
-      # sure would be cool if github gave us proper conditionals...
-      # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
-      # functionality based on whether this is a pull_request, and whether it's from a fork.
-      # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
-      # but also really annoying to build CI around when it needs secrets to work right.)
-      - id: plan
-        run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
-          echo "dist ran successfully"
-          cat plan-dist-manifest.json
-          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
-      - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-plan-dist-manifest
-          path: plan-dist-manifest.json
+    build-shim-macos-intel:
+        if: ${{ !github.event.pull_request }}
+        runs-on: macos-13
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+            - uses: ./.github/actions/build-python-shim
+              with:
+                  target_triple: x86_64-apple-darwin
+                  py_version: 3.12
 
-  # Build and packages all the platform-specific things
-  build-local-artifacts:
-    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
-    # Let the initial task tell us to not run (currently very blunt)
-    needs:
-      - plan
-    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
-    strategy:
-      fail-fast: false
-      # Target platforms/runners are computed by dist in create-release.
-      # Each member of the matrix has the following arguments:
-      #
-      # - runner: the github runner
-      # - dist-args: cli flags to pass to dist
-      # - install-dist: expression to run to install dist on the runner
-      #
-      # Typically there will be:
-      # - 1 "global" task that builds universal installers
-      # - N "local" tasks that build each platform's binaries and platform-specific installers
-      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
-    runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container && matrix.container.image || null }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
-    steps:
-      - name: enable windows longpaths
-        run: |
-          git config --global core.longpaths true
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
+    build-shim-linux-x86:
+        if: ${{ !github.event.pull_request }}
+        runs-on: ubuntu-22.04
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+            - uses: ./.github/actions/build-python-shim
+              with:
+                  target_triple: x86_64-unknown-linux-gnu
+                  py_version: 3.12
 
-      - name: Install Rust non-interactively if not already installed
-        if: ${{ matrix.container }}
-        run: |
-          if ! command -v cargo > /dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          fi
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
-        with:
-          python-version: "3.12"
-      - name: Install dist
-        run: ${{ matrix.install_dist.run }}
-      # Get the dist-manifest
-      - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
-      - name: Install dependencies
-        run: |
-          ${{ matrix.packages_install }}
-      - name: Prepare Python shim
-        shell: bash
+    build-shim-linux-arm:
+        if: ${{ !github.event.pull_request }}
+        runs-on: ubuntu-22.04-arm
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+            - uses: ./.github/actions/build-python-shim
+              with:
+                  target_triple: aarch64-unknown-linux-gnu
+                  py_version: 3.12
+
+    build-shim-windows-x86:
+        if: ${{ !github.event.pull_request }}
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+            - uses: ./.github/actions/build-python-shim
+              with:
+                  target_triple: x86_64-pc-windows-msvc
+                  py_version: 3.12
+
+    # Run 'dist plan' (or host) to determine what tasks we need to do
+    plan:
+        needs:
+            - build-shim-macos-arm
+            - build-shim-macos-intel
+            - build-shim-linux-x86
+            - build-shim-linux-arm
+            - build-shim-windows-x86
+        runs-on: "ubuntu-22.04"
+        outputs:
+            val: ${{ steps.plan.outputs.manifest }}
+            tag: ${{ !github.event.pull_request && github.ref_name || '' }}
+            tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
+            publishing: ${{ !github.event.pull_request }}
         env:
-          DIST_TARGETS: ${{ join(matrix.targets, ' ') }}
-          PY_VERSION: "3.12"
-        run: |
-          set -euo pipefail
-          IFS=' ' read -r -a targets <<< "$DIST_TARGETS"
-          if [ "${#targets[@]}" -ne 1 ]; then
-            echo "error: expected exactly one target triple but got: ${targets[*]}" >&2
-            exit 1
-          fi
-          target="${targets[0]}"
-          export TARGET_TRIPLE="${target}"
-          echo "Preparing python shim for ${target}"
-          PY_VERSION="${PY_VERSION}" ./scripts/prepare_python_shim.sh
-          shim_dir=$(python - <<'PY'
-          import os
-          from pathlib import Path
-          target = os.environ["TARGET_TRIPLE"]
-          workspace = Path(os.environ["GITHUB_WORKSPACE"])
-          print((workspace / "python-shim" / target).resolve())
-          PY
-          )
-          printf 'R2X_PYTHON_SHIM_DIR=%s\n' "$shim_dir" >> "$GITHUB_ENV"
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
 
-      - name: Verify python shim
-        run: |
-          echo "Contents of python-shim/:"
-          find python-shim/ -type f || echo "No Files found"
-          echo "Contents of python-shim/dist/:"
-          ls -la python-shim/dist/ || echo "Dir empty or missing"
-      - name: Build artifacts
-        run: |
-          # Actually do builds and make zips and whatnot
-          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
-          echo "dist ran successfully"
-      - id: cargo-dist
-        name: Post-build
-        # We force bash here just because github makes it really hard to get values up
-        # to "real" actions without writing to env-vars, and writing to env-vars has
-        # inconsistent syntax between shell and powershell.
-        shell: bash
-        run: |
-          # Parse out what we just built and upload it to scratch storage
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+            - name: mkdir python-shim
+              shell: bash
+              run: mkdir python-shim
 
-          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
-          path: |
-            ${{ steps.cargo-dist.outputs.paths }}
-            ${{ env.BUILD_MANIFEST_NAME }}
+            - name: Install dist
+              # we specify bash to get pipefail; it guards against the `curl` command
+              # failing. otherwise `sh` won't catch that `curl` returned non-0
+              shell: bash
+              run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.30.2/cargo-dist-installer.sh | sh"
 
-  # Build and package all the platform-agnostic(ish) things
-  build-global-artifacts:
-    needs:
-      - plan
-      - build-local-artifacts
-    runs-on: "ubuntu-22.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
+            - name: Cache dist
+              uses: actions/upload-artifact@v4
+              with:
+                  name: cargo-dist-cache
+                  path: ~/.cargo/bin/dist
+            # sure would be cool if github gave us proper conditionals...
+            # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
+            # functionality based on whether this is a pull_request, and whether it's from a fork.
+            # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
+            # but also really annoying to build CI around when it needs secrets to work right.)
+            - id: plan
+              run: |
+                  dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+                  echo "dist ran successfully"
+                  cat plan-dist-manifest.json
+                  echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+            - name: "Upload dist-manifest.json"
+              uses: actions/upload-artifact@v4
+              with:
+                  name: artifacts-plan-dist-manifest
+                  path: plan-dist-manifest.json
 
-      - name: Install uv & python
-        uses: ./.github/actions/setup-uv-python
-        with:
-          python-version: "3.12"
-      - name: Install cached dist
-        uses: actions/download-artifact@v4
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/
-      - run: chmod +x ~/.cargo/bin/dist
-      # Get all the local artifacts for the global tasks to use (for e.g. checksums)
-      - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
-      - id: cargo-dist
-        shell: bash
-        run: |
-          dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
-          echo "dist ran successfully"
-
-          # Parse out what we just built and upload it to scratch storage
-          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
-          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-build-global
-          path: |
-            ${{ steps.cargo-dist.outputs.paths }}
-            ${{ env.BUILD_MANIFEST_NAME }}
-  # Determines if we should publish/announce
-  host:
-    needs:
-      - plan
-      - build-local-artifacts
-      - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    runs-on: "ubuntu-22.04"
-    outputs:
-      val: ${{ steps.host.outputs.manifest }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Install cached dist
-        uses: actions/download-artifact@v4
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/
-      - run: chmod +x ~/.cargo/bin/dist
-      # Fetch artifacts from scratch-storage
-      - name: Fetch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
-      - id: host
-        shell: bash
-        run: |
-          dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
-          echo "artifacts uploaded and released successfully"
-          cat dist-manifest.json
-          echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
-      - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
-        with:
-          # Overwrite the previous copy
-          name: artifacts-dist-manifest
-          path: dist-manifest.json
-      # Create a GitHub Release while uploading all files to it
-      - name: "Download GitHub Artifacts"
-        uses: actions/download-artifact@v4
-        with:
-          pattern: artifacts-*
-          path: artifacts
-          merge-multiple: true
-      - name: Cleanup
-        run: |
-          # Remove the granular manifests
-          rm -f artifacts/*-dist-manifest.json
-
-      - name: Create GitHub Release
+    # Build and packages all the platform-specific things
+    build-local-artifacts:
+        name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+        # Let the initial task tell us to not run (currently very blunt)
+        needs:
+            - plan
+        if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+        strategy:
+            fail-fast: false
+            # Target platforms/runners are computed by dist in create-release.
+            # Each member of the matrix has the following arguments:
+            #
+            # - runner: the github runner
+            # - dist-args: cli flags to pass to dist
+            # - install-dist: expression to run to install dist on the runner
+            #
+            # Typically there will be:
+            # - 1 "global" task that builds universal installers
+            # - N "local" tasks that build each platform's binaries and platform-specific installers
+            matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+        runs-on: ${{ matrix.runner }}
+        container: ${{ matrix.container && matrix.container.image || null }}
         env:
-          PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
-          ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
-          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
-        run: |
-          # Write and read notes from a file to avoid quoting breaking things
-          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+        steps:
+            - name: enable windows longpaths
+              shell: bash
+              run: |
+                  git config --global core.longpaths true
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+            - name: Set Target Triple
+              shell: bash
+              run: |
+                  IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
+                  TARGET_TRIPLE="${targets[0]}"
+                  echo "Debug: TARGET_TRIPLE is $TARGET_TRIPLE"
+                  echo "TARGET_TRIPLE=${TARGET_TRIPLE}" >> $GITHUB_ENV
 
-  announce:
-    needs:
-      - plan
-      - host
-    # use "always() && ..." to allow us to wait for all publish jobs while
-    # still allowing individual publish jobs to skip themselves (for prereleases).
-    # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' }}
-    runs-on: "ubuntu-22.04"
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          submodules: recursive
+            - name: Download Specific Python Shim
+              uses: actions/download-artifact@v4
+              with:
+                  name: python-shim-${{ env.TARGET_TRIPLE }}
+                  path: .
+
+            - name: Extract Specific Python Shim
+              shell: bash
+              run: |
+                  SHIM_FILE=$(ls python-shim-${{ env.TARGET_TRIPLE }}.* 2>/dev/null)
+                  if [[ -z "$SHIM_FILE" ]]; then
+                    echo "Shim file not found"
+                    exit 1
+                  fi
+                  if [[ "$SHIM_FILE" == *.zip ]]; then
+                    unzip "$SHIM_FILE"
+                  elif [[ "$SHIM_FILE" == *.tar.* ]]; then
+                    tar -xf "$SHIM_FILE"
+                  else
+                    echo "Unknown archive format: $SHIM_FILE"
+                    exit 1
+                  fi
+
+            - name: Install uv & python
+              uses: ./.github/actions/setup-uv-python
+              with:
+                  python-version: "3.12"
+
+            - name: Set Shim Library Path
+              shell: bash
+              run: |
+                  SHIM_DIR="$PWD/python-shim/${TARGET_TRIPLE}"
+                  if [[ "${{ runner.os }}" == "Linux" ]]; then
+                    echo "LIBRARY_PATH=$SHIM_DIR:$LIBRARY_PATH" >> $GITHUB_ENV
+                    echo "LD_LIBRARY_PATH=$SHIM_DIR:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+                  elif [[ "${{ runner.os }}" == "macOS" ]]; then
+                    echo "DYLD_LIBRARY_PATH=$SHIM_DIR:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
+                  elif [[ "${{ runner.os }}" == "Windows" ]]; then
+                    echo "PATH=$SHIM_DIR;$PATH" >> $GITHUB_ENV
+                  fi
+
+            - name: Install Rust non-interactively if not already installed
+              if: ${{ matrix.container }}
+              shell: bash
+              run: |
+                  if ! command -v cargo > /dev/null 2>&1; then
+                    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                    echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+                  fi
+            - name: Install dist
+              run: ${{ matrix.install_dist.run }}
+            # Get the dist-manifest
+            - name: Fetch local artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: artifacts-*
+                  path: target/distrib/
+                  merge-multiple: true
+            - name: Install dependencies
+              shell: bash
+              run: |
+                  ${{ matrix.packages_install }}
+
+            - name: Build artifacts
+              shell: bash
+              run: |
+                  # Actually do builds and make zips and whatnot
+                  dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+                  echo "dist ran successfully"
+
+            - id: cargo-dist
+              name: Post-build
+              # We force bash here just because github makes it really hard to get values up
+              # to "real" actions without writing to env-vars, and writing to env-vars has
+              # inconsistent syntax between shell and powershell.
+              shell: bash
+              run: |
+                  # Parse out what we just built and upload it to scratch storage
+                  echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+                  dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+                  echo "EOF" >> "$GITHUB_OUTPUT"
+
+                  cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+            - name: "Upload artifacts"
+              uses: actions/upload-artifact@v4
+              with:
+                  name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+                  path: |
+                      ${{ steps.cargo-dist.outputs.paths }}
+                      ${{ env.BUILD_MANIFEST_NAME }}
+
+    # Build and package all the platform-agnostic(ish) things
+    build-global-artifacts:
+        needs:
+            - plan
+            - build-local-artifacts
+        runs-on: "ubuntu-22.04"
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+
+            - name: Install cached dist
+              uses: actions/download-artifact@v4
+              with:
+                  name: cargo-dist-cache
+                  path: ~/.cargo/bin/
+            - run: chmod +x ~/.cargo/bin/dist
+            # Get all the local artifacts for the global tasks to use (for e.g. checksums)
+            - name: Fetch local artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: artifacts-*
+                  path: target/distrib/
+                  merge-multiple: true
+            - id: cargo-dist
+              shell: bash
+              run: |
+                  dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
+                  echo "dist ran successfully"
+
+                  # Parse out what we just built and upload it to scratch storage
+                  echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+                  jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
+                  echo "EOF" >> "$GITHUB_OUTPUT"
+
+                  cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+
+            - name: Modify installer script to copy python-shim
+              shell: bash
+              run: |
+                  find $GITHUB_WORKSPACE -type f
+                  python scripts/modify_installer.py target/distrib/r2x-installer.sh
+
+            - name: Modify PowerShell installer script to copy python-shim
+              shell: bash
+              run: |
+                  python scripts/modify_installer.py target/distrib/r2x-installer.ps1
+
+            - name: "Upload artifacts"
+              uses: actions/upload-artifact@v4
+              with:
+                  name: artifacts-build-global
+                  path: |
+                      ${{ steps.cargo-dist.outputs.paths }}
+                      ${{ env.BUILD_MANIFEST_NAME }}
+    # Determines if we should publish/announce
+    host:
+        needs:
+            - plan
+            - build-local-artifacts
+            - build-global-artifacts
+        # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
+        if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        runs-on: "ubuntu-22.04"
+        outputs:
+            val: ${{ steps.host.outputs.manifest }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+            - name: Install cached dist
+              uses: actions/download-artifact@v4
+              with:
+                  name: cargo-dist-cache
+                  path: ~/.cargo/bin/
+            - run: chmod +x ~/.cargo/bin/dist
+            # Fetch artifacts from scratch-storage
+            - name: Fetch artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: artifacts-*
+                  path: target/distrib/
+                  merge-multiple: true
+            - id: host
+              shell: bash
+              run: |
+                  dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
+                  echo "artifacts uploaded and released successfully"
+                  cat dist-manifest.json
+                  echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
+            - name: "Upload dist-manifest.json"
+              uses: actions/upload-artifact@v4
+              with:
+                  # Overwrite the previous copy
+                  name: artifacts-dist-manifest
+                  path: dist-manifest.json
+            # Create a GitHub Release while uploading all files to it
+            - name: "Download GitHub Artifacts"
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: artifacts-*
+                  path: artifacts
+                  merge-multiple: true
+            - name: Cleanup
+              shell: bash
+              run: |
+                  # Remove the granular manifests
+                  rm -f artifacts/*-dist-manifest.json
+
+            - name: Create GitHub Release
+              env:
+                  PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
+                  ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
+                  ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
+                  RELEASE_COMMIT: "${{ github.sha }}"
+              run: |
+                  # Write and read notes from a file to avoid quoting breaking things
+                  echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+
+                  gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+
+    announce:
+        needs:
+            - plan
+            - host
+        # use "always() && ..." to allow us to wait for all publish jobs while
+        # still allowing individual publish jobs to skip themselves (for prereleases).
+        # "host" however must run to completion, no skipping allowed!
+        if: ${{ always() && needs.host.result == 'success' }}
+        runs-on: "ubuntu-22.04"
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
