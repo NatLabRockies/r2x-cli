@@ -362,7 +362,8 @@ jobs:
             - name: Modify installer script to copy python-shim
               shell: bash
               run: |
-                  python scripts/modify_installer.py artifacts/target/distrib/r2x-installer.sh
+                  find $GITHUB_WORKSPACE -type f
+                  python scripts/modify_installer.py target/distrib/r2x-installer.sh
 
             - name: "Upload artifacts"
               uses: actions/upload-artifact@v4
