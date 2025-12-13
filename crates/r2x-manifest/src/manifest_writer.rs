@@ -45,8 +45,8 @@ pub fn read_from_path(manifest_path: &Path) -> Result<Manifest> {
 mod tests {
     use super::*;
     use crate::types::{
-        ArgumentSpec, IOContract, ImplementationType, InvocationSpec, Metadata, Package,
-        PluginKind, PluginSpec,
+        ArgumentSource, ArgumentSpec, IOContract, ImplementationType, InvocationSpec, Metadata,
+        Package, PluginKind, PluginSpec,
     };
     use tempfile::TempDir;
 
@@ -70,23 +70,32 @@ mod tests {
                 entry: "example_module.ExampleParser".to_string(),
                 invocation: InvocationSpec {
                     implementation: ImplementationType::Class,
-                    method: None,
+                    method: Some("build_system".to_string()),
                     constructor: vec![ArgumentSpec {
-                        name: "name".to_string(),
-                        annotation: Some("str".to_string()),
-                        default: Some("example-plugin".to_string()),
-                        required: false,
+                        name: "config".to_string(),
+                        source: ArgumentSource::Config,
+                        optional: false,
+                        default: None,
+                        description: None,
                     }],
-                    call: vec![],
+                    call: vec![ArgumentSpec {
+                        name: "store".to_string(),
+                        source: ArgumentSource::Store,
+                        optional: false,
+                        default: None,
+                        description: None,
+                    }],
                 },
                 io: IOContract {
                     consumes: vec![],
                     produces: vec![],
+                    description: None,
                 },
                 resources: None,
                 upgrade: None,
                 description: None,
                 tags: vec![],
+                metadata: std::collections::HashMap::new(),
             }],
             decorator_registrations: vec![],
         }];

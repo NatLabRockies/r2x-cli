@@ -15,9 +15,10 @@ pub mod types;
 
 pub use runtime::{build_runtime_bindings, RuntimeBindings};
 pub use types::{
-    ArgumentSpec, ConfigField, ConfigSpec, DecoratorRegistration, FunctionParameter,
-    FunctionSignature, IOContract, IOSlot, ImplementationType, InvocationSpec, Manifest, Metadata,
-    Package, PluginKind, PluginSpec, ResourceSpec, StoreMode, StoreSpec, UpgradeSpec, VarArgType,
+    ArgumentSource, ArgumentSpec, ConfigField, ConfigSpec, DecoratorRegistration, FunctionParameter,
+    FunctionSignature, IOContract, IOSlot, IOSlotKind, ImplementationType, InvocationSpec,
+    Manifest, Metadata, Package, PluginKind, PluginSpec, ResourceSpec, StoreMode, StoreSpec,
+    UpgradeSpec, UpgradeStepSpec, UpgradeType, VarArgType,
 };
 
 pub use errors::ManifestError;

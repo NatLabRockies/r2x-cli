@@ -1,4 +1,6 @@
-use crate::types::{ArgumentSpec, ConfigSpec, ImplementationType, PluginKind, PluginSpec};
+use crate::types::{
+    ArgumentSpec, ConfigSpec, ImplementationType, PluginKind, PluginSpec, ResourceSpec, StoreMode,
+};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeBindings {
@@ -7,24 +9,22 @@ pub struct RuntimeBindings {
     pub implementation_type: ImplementationType,
     pub plugin_kind: PluginKind,
     pub config: Option<ConfigSpec>,
+    pub resources: Option<ResourceSpec>,
     pub call_method: Option<String>,
     pub requires_store: bool,
-    pub entry_parameters: Vec<ArgumentSpec>,
+    pub constructor_args: Vec<ArgumentSpec>,
+    pub call_args: Vec<ArgumentSpec>,
 }
 
 pub fn build_runtime_bindings(plugin: &PluginSpec) -> RuntimeBindings {
     let (entry_module, entry_name) = parse_entry_point(&plugin.entry);
 
-    let requires_store = plugin
+    let store_required = plugin
         .resources
         .as_ref()
         .and_then(|r| r.store.as_ref())
-        .is_some();
-
-    let entry_parameters = match plugin.invocation.implementation {
-        ImplementationType::Class => plugin.invocation.constructor.clone(),
-        ImplementationType::Function => plugin.invocation.call.clone(),
-    };
+        .map(|s| s.required || s.modes.contains(&StoreMode::Folder))
+        .unwrap_or(false);
 
     let call_method = plugin
         .invocation
@@ -38,18 +38,22 @@ pub fn build_runtime_bindings(plugin: &PluginSpec) -> RuntimeBindings {
         implementation_type: plugin.invocation.implementation.clone(),
         plugin_kind: plugin.kind.clone(),
         config: plugin.resources.as_ref().and_then(|r| r.config.clone()),
+        resources: plugin.resources.clone(),
         call_method,
-        requires_store,
-        entry_parameters,
+        requires_store: store_required,
+        constructor_args: plugin.invocation.constructor.clone(),
+        call_args: plugin.invocation.call.clone(),
     }
 }
 
 fn parse_entry_point(entry: &str) -> (String, String) {
-    if let Some(pos) = entry.rfind('.') {
-        (entry[..pos].to_string(), entry[pos + 1..].to_string())
-    } else {
-        (String::new(), entry.to_string())
+    if let Some(pos) = entry.rfind(':') {
+        return (entry[..pos].to_string(), entry[pos + 1..].to_string());
     }
+    entry
+        .rfind('.')
+        .map(|pos| (entry[..pos].to_string(), entry[pos + 1..].to_string()))
+        .unwrap_or((String::new(), entry.to_string()))
 }
 
 fn default_method_for_kind(kind: &crate::types::PluginKind) -> Option<String> {

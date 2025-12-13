@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 /// Top-level manifest structure for R2X plugin metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,11 +74,14 @@ pub struct PluginSpec {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, JsonValue>,
 }
 
 /// Plugin kind/type enumeration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(rename_all = "lowercase")]
 pub enum PluginKind {
     Parser,
     Exporter,
@@ -101,21 +106,43 @@ pub struct InvocationSpec {
 
 /// Implementation type for plugins
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(rename_all = "lowercase")]
 pub enum ImplementationType {
     Class,
     Function,
+}
+
+/// Source for an argument value
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArgumentSource {
+    System,
+    Store,
+    #[serde(rename = "store_manifest")]
+    StoreManifest,
+    #[serde(rename = "store_inline")]
+    StoreInline,
+    Config,
+    #[serde(rename = "config_path")]
+    ConfigPath,
+    Path,
+    Stdin,
+    Context,
+    Literal,
+    Custom,
 }
 
 /// Argument specification for constructor or call
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgumentSpec {
     pub name: String,
+    pub source: ArgumentSource,
+    #[serde(default)]
+    pub optional: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotation: Option<String>,
+    pub default: Option<JsonValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
-    pub required: bool,
+    pub description: Option<String>,
 }
 
 /// Input/output contract for a plugin
@@ -127,18 +154,43 @@ pub struct IOContract {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub produces: Vec<IOSlot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// I/O slot type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum IOSlot {
+pub struct IOSlot {
+    pub kind: IOSlotKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub optional: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// I/O slot kinds
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IOSlotKind {
     System,
-    ConfigFile,
+    #[serde(rename = "store_folder")]
     StoreFolder,
+    #[serde(rename = "store_manifest")]
+    StoreManifest,
+    #[serde(rename = "store_inline")]
+    StoreInline,
+    #[serde(rename = "config_file")]
+    ConfigFile,
+    #[serde(rename = "config_inline")]
+    ConfigInline,
     File,
     Folder,
-    Data,
+    Stdin,
+    Stdout,
+    Artifact,
+    Void,
 }
 
 /// Resource requirements (config and data store)
@@ -148,14 +200,25 @@ pub struct ResourceSpec {
     pub store: Option<StoreSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSpec>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub extra: HashMap<String, JsonValue>,
 }
 
 /// Data store specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreSpec {
-    pub mode: StoreMode,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<StoreMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub default_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Data store mode
@@ -170,14 +233,19 @@ pub enum StoreMode {
 /// Configuration specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigSpec {
-    pub module: String,
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<ConfigField>,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defaults_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_mapping_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
-/// Configuration field specification
+/// Configuration field specification (legacy)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigField {
     pub name: String,
@@ -186,17 +254,6 @@ pub struct ConfigField {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     pub required: bool,
-}
-
-/// Upgrade specification for upgrader plugins
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpgradeSpec {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version_strategy_json: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version_reader_json: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub upgrade_steps_json: Option<String>,
 }
 
 /// Function registration via decorator
@@ -238,4 +295,46 @@ pub struct FunctionParameter {
 pub enum VarArgType {
     Args,
     Kwargs,
+}
+
+/// Upgrade step specification aligned with r2x-core
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpgradeStepSpec {
+    pub name: String,
+    pub entry: String,
+    pub upgrade_type: UpgradeType,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub consumes: Vec<IOSlot>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub produces: Vec<IOSlot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, JsonValue>,
+}
+
+/// Upgrade type (FILE or SYSTEM)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum UpgradeType {
+    File,
+    System,
+}
+
+/// Upgrade specification for upgrader plugins
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpgradeSpec {
+    pub strategy: String,
+    pub reader: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<UpgradeStepSpec>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, JsonValue>,
 }
