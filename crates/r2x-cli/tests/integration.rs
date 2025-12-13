@@ -300,57 +300,51 @@ decorator_registrations = []
 
 [[packages.plugins]]
 name = "r2x_reeds.upgrader"
-kind = "UPGRADER"
-entry = "r2x_reeds.upgrader.data_upgrader.ReEDSUpgrader"
+kind = "upgrader"
+entry = "r2x_reeds.upgrader.data_upgrader:ReEDSUpgrader"
 
 [packages.plugins.invocation]
-implementation = "CLASS"
-method = "upgrade"
-
-[[packages.plugins.invocation.constructor]]
-name = "folder_path"
-required = true
-
-[[packages.plugins.invocation.constructor]]
-name = "steps"
-required = false
+implementation = "class"
+method = "run"
+constructor = [{ name = "folder_path", source = "path", optional = false }]
+call = []
 
 [packages.plugins.io]
-consumes = []
-produces = []
+consumes = [{ kind = "store_folder", optional = false }]
+produces = [{ kind = "store_folder", optional = false }]
+
+[packages.plugins.resources.store]
+required = true
+modes = ["folder"]
 
 [[packages.plugins]]
 name = "r2x_reeds.parser"
-kind = "PARSER"
-entry = "r2x_reeds.parser.ReEDSParser"
+kind = "parser"
+entry = "r2x_reeds.parser:ReEDSParser"
 
 [packages.plugins.invocation]
-implementation = "CLASS"
+implementation = "class"
 method = "build_system"
-
-[[packages.plugins.invocation.constructor]]
-name = "config"
-required = false
-
-[[packages.plugins.invocation.constructor]]
-name = "data_store"
-required = false
+constructor = [
+  { name = "config", source = "config", optional = false },
+  { name = "data_store", source = "store", optional = false }
+]
+call = []
 
 [packages.plugins.io]
-consumes = ["STORE_FOLDER", "CONFIG_FILE"]
-produces = ["SYSTEM"]
+consumes = [
+  { kind = "store_folder", optional = false },
+  { kind = "config_file", optional = true }
+]
+produces = [{ kind = "system", optional = false }]
+
+[packages.plugins.resources.store]
+required = true
+modes = ["folder"]
 
 [packages.plugins.resources.config]
-module = "r2x_reeds.parser"
-name = "ReEDSConfig"
-
-[[packages.plugins.resources.config.fields]]
-name = "weather_year"
-required = false
-
-[[packages.plugins.resources.config.fields]]
-name = "solve_year"
-required = false
+model = "r2x_reeds.parser:ReEDSConfig"
+required = true
 
 [[packages]]
 name = "r2x-sienna"
@@ -361,44 +355,50 @@ decorator_registrations = []
 
 [[packages.plugins]]
 name = "r2x-sienna.upgrader"
-kind = "UPGRADER"
-entry = "r2x_sienna.upgrader.SiennaUpgrader"
+kind = "upgrader"
+entry = "r2x_sienna.upgrader:SiennaUpgrader"
 
 [packages.plugins.invocation]
-implementation = "CLASS"
-method = "upgrade"
-
-[[packages.plugins.invocation.constructor]]
-name = "path"
-required = true
+implementation = "class"
+method = "run"
+constructor = [{ name = "path", source = "path", optional = false }]
+call = []
 
 [packages.plugins.io]
-consumes = []
-produces = []
+consumes = [{ kind = "store_folder", optional = false }]
+produces = [{ kind = "store_folder", optional = false }]
+
+[packages.plugins.resources.store]
+required = true
+modes = ["folder"]
 
 [[packages.plugins]]
 name = "r2x-sienna.parser"
-kind = "PARSER"
-entry = "r2x_sienna.parser.SiennaParser"
+kind = "parser"
+entry = "r2x_sienna.parser:SiennaParser"
 
 [packages.plugins.invocation]
-implementation = "CLASS"
+implementation = "class"
 method = "build_system"
-
-[[packages.plugins.invocation.constructor]]
-name = "config"
-required = false
+constructor = [
+  { name = "config", source = "config", optional = true },
+  { name = "path", source = "path", optional = true }
+]
+call = []
 
 [packages.plugins.io]
-consumes = ["STORE_FOLDER", "CONFIG_FILE"]
-produces = ["SYSTEM"]
+consumes = [
+  { kind = "store_folder", optional = false },
+  { kind = "config_file", optional = true }
+]
+produces = [{ kind = "system", optional = false }]
+
+[packages.plugins.resources.store]
+required = true
+modes = ["folder"]
 
 [packages.plugins.resources.config]
-module = "r2x_sienna.parser"
-name = "SiennaConfig"
-
-[[packages.plugins.resources.config.fields]]
-name = "system_name"
+model = "r2x_sienna.parser:SiennaConfig"
 required = false
 "#
     .to_string()

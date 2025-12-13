@@ -8,7 +8,6 @@ use crate::r2x_manifest::{self, Manifest};
 use crate::GlobalOpts;
 use colored::Colorize;
 use r2x_config::Config;
-use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -324,23 +323,20 @@ fn determine_json_path_field(
     bindings: &r2x_manifest::runtime::RuntimeBindings,
     plugin_name: &str,
 ) -> Option<&'static str> {
-    if let Some(config) = &bindings.config {
-        if config.fields.iter().any(|f| f.name == "json_path") {
-            return Some("json_path");
-        }
-        if config.fields.iter().any(|f| f.name == "path") {
-            return Some("path");
-        }
-    }
-
     if bindings
-        .entry_parameters
+        .constructor_args
         .iter()
+        .chain(bindings.call_args.iter())
         .any(|p| p.name == "json_path")
     {
         return Some("json_path");
     }
-    if bindings.entry_parameters.iter().any(|p| p.name == "path") {
+    if bindings
+        .constructor_args
+        .iter()
+        .chain(bindings.call_args.iter())
+        .any(|p| p.name == "path")
+    {
         return Some("path");
     }
 
@@ -413,126 +409,25 @@ fn build_plugin_config(
         }
     }
 
-    let mut final_config = serde_json::Map::new();
-    let mut store_value_for_folder: Option<serde_json::Value> = None;
-    if bindings.implementation_type == r2x_manifest::ImplementationType::Class {
-        let mut config_class_params = serde_json::Map::new();
-        let mut constructor_params = serde_json::Map::new();
-        let config_param_names: HashSet<String> = bindings
-            .config
-            .as_ref()
-            .map(|config_meta| config_meta.fields.iter().map(|f| f.name.clone()).collect())
-            .unwrap_or_default();
+    let mut final_config = match yaml_config {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
 
-        if let serde_json::Value::Object(ref yaml_map) = yaml_config {
-            for (key, value) in yaml_map {
-                if key == "store" {
-                    continue;
-                } else if config_param_names.contains(key) {
-                    config_class_params.insert(key.clone(), value.clone());
-                } else if bindings.entry_parameters.iter().any(|p| p.name == *key) {
-                    constructor_params.insert(key.clone(), value.clone());
-                } else {
-                    config_class_params.insert(key.clone(), value.clone());
-                }
-            }
-        }
+    if bindings.requires_store {
+        let store_value = final_config
+            .get("store")
+            .cloned()
+            .or_else(|| final_config.get("store_path").cloned())
+            .or_else(|| inherited_store_path.map(|p| serde_json::Value::String(p.to_string())))
+            .unwrap_or_else(|| fallback_store_value(package_name, output_folder).unwrap_or_default());
 
-        if !config_class_params.is_empty()
-            && bindings.entry_parameters.iter().any(|p| p.name == "config")
-        {
-            final_config.insert(
-                "config".to_string(),
-                serde_json::Value::Object(config_class_params),
-            );
-        }
-
-        final_config.extend(constructor_params);
-
-        if bindings.entry_parameters.iter().any(|p| p.name == "path")
-            && !final_config.contains_key("path")
-            && matches!(yaml_config, serde_json::Value::Object(_))
-        {
-            if let serde_json::Value::Object(ref yaml_map) = yaml_config {
-                if let Some(path_value) = yaml_map
-                    .get("path")
-                    .or_else(|| yaml_map.get("store_path"))
-                    .cloned()
-                {
-                    final_config.insert("path".to_string(), path_value);
-                }
-            }
-        }
-
-        let needs_store = bindings.requires_store
-            || bindings
-                .entry_parameters
-                .iter()
-                .any(|p| p.name == "data_store");
-
-        if needs_store {
-            let store_value = if let serde_json::Value::Object(ref yaml_map) = yaml_config {
-                match yaml_map.get("store") {
-                    Some(value) => value.clone(),
-                    None => {
-                        if let Some(explicit_path) = yaml_map.get("store_path").cloned() {
-                            explicit_path
-                        } else if let Some(inherited) = inherited_store_path {
-                            serde_json::Value::String(inherited.to_string())
-                        } else {
-                            fallback_store_value(package_name, output_folder)?
-                        }
-                    }
-                }
-            } else {
-                if let Some(inherited) = inherited_store_path {
-                    serde_json::Value::String(inherited.to_string())
-                } else {
-                    fallback_store_value(package_name, output_folder)?
-                }
-            };
-
-            store_value_for_folder = Some(store_value.clone());
-            final_config.insert("data_store".to_string(), store_value);
-        }
-
-        if bindings
-            .entry_parameters
-            .iter()
-            .any(|p| p.name == "folder_path")
-            && !final_config.contains_key("folder_path")
-        {
-            let explicit_folder = if let serde_json::Value::Object(ref yaml_map) = yaml_config {
-                yaml_map
-                    .get("folder_path")
-                    .or_else(|| yaml_map.get("store_path"))
-                    .or_else(|| yaml_map.get("path"))
-                    .cloned()
-            } else {
-                None
-            };
-
-            let folder_value = explicit_folder
-                .or_else(|| {
-                    store_value_for_folder
-                        .as_ref()
-                        .and_then(|value| match value {
-                            serde_json::Value::String(s) => {
-                                Some(serde_json::Value::String(s.clone()))
-                            }
-                            _ => None,
-                        })
-                })
-                .or_else(|| {
-                    inherited_store_path.map(|path| serde_json::Value::String(path.to_string()))
-                });
-
-            if let Some(value) = folder_value {
-                final_config.insert("folder_path".to_string(), value);
-            }
-        }
-    } else if let serde_json::Value::Object(ref yaml_map) = yaml_config {
-        final_config.extend(yaml_map.clone());
+        final_config
+            .entry("store_path".to_string())
+            .or_insert(store_value.clone());
+        final_config
+            .entry("path".to_string())
+            .or_insert(store_value.clone());
     }
 
     serde_json::to_string(&serde_json::Value::Object(final_config))

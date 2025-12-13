@@ -91,50 +91,39 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
         println!("Method: {}", call_method);
     }
 
-    if !bindings.entry_parameters.is_empty() {
+    let mut all_params = Vec::new();
+    all_params.extend(bindings.constructor_args.iter());
+    all_params.extend(bindings.call_args.iter());
+
+    if !all_params.is_empty() {
         println!("\nCallable Parameters:");
-        for param in &bindings.entry_parameters {
-            let annotation = param.annotation.as_deref().unwrap_or("Any");
-            let required = if param.required {
-                "required"
-            } else {
-                "optional"
-            };
+        for param in &all_params {
+            let required = if param.optional { "optional" } else { "required" };
             let default = param
                 .default
-                .as_deref()
+                .as_ref()
                 .map(|d| format!(" (default: {})", d))
                 .unwrap_or_default();
             println!(
                 "  --{:<20} {:<15} {}{}",
-                param.name, annotation, required, default
+                param.name,
+                format!("{:?}", param.source),
+                required,
+                default
             );
         }
     }
 
     // Show config parameters
     if let Some(config) = &bindings.config {
-        println!("\nConfiguration Class: {}.{}", config.module, config.name);
-        if !config.fields.is_empty() {
-            println!("\nConfiguration Parameters:");
-            for field in &config.fields {
-                let annotation = field.annotation.as_deref().unwrap_or("Any");
-                let required = if field.required {
-                    "required"
-                } else {
-                    "optional"
-                };
-                let default = field
-                    .default
-                    .as_deref()
-                    .map(|d| format!(" (default: {})", d))
-                    .unwrap_or_default();
-                println!(
-                    "  --{:<20} {:<15} {}{}",
-                    field.name, annotation, required, default
-                );
-            }
-        }
+        println!(
+            "\nConfiguration Model: {} (required: {})",
+            config
+                .model
+                .as_deref()
+                .unwrap_or("Unknown config model"),
+            if config.required { "yes" } else { "no" }
+        );
     }
 
     println!("\nUsage:");
