@@ -1,6 +1,7 @@
 #![allow(private_interfaces)]
 
 use super::*;
+use r2x_logger::debug;
 
 pub(super) struct ParameterEntry {
     pub name: String,
@@ -87,17 +88,20 @@ impl PluginExtractor {
             // Get the function name from the identifier
             if let Some(name_node) = func_node.field("name") {
                 let found_name = name_node.text();
-                eprintln!("DEBUG: Found function in AST: {}", found_name);
+                debug(&format!("Found function in AST: {}", found_name));
 
                 if found_name.to_string() == function_name {
-                    eprintln!("DEBUG: Match! Extracting signature for: {}", function_name);
+                    debug(&format!(
+                        "Match! Extracting signature for: {}",
+                        function_name
+                    ));
                     // Get the parameters field from the function_definition
                     if let Some(params_node) = func_node.field("parameters") {
                         let params_text = params_node.text().to_string();
-                        eprintln!(
-                            "DEBUG: Parameters text: {}",
+                        debug(&format!(
+                            "Parameters text: {}",
                             params_text.chars().take(100).collect::<String>()
-                        );
+                        ));
                         // Build the signature: def function_name(params)
                         let signature = format!(
                             "def {}({})",
@@ -110,7 +114,7 @@ impl PluginExtractor {
             }
         }
 
-        eprintln!("DEBUG: Function '{}' not found in AST", function_name);
+        debug(&format!("Function '{}' not found in AST", function_name));
 
         None
     }
