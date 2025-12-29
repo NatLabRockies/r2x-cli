@@ -141,7 +141,20 @@ impl PluginExtractor {
         let name = self.find_kwarg_value(&kwargs, "name")?;
         let entry_value = self.find_kwarg_value(&kwargs, "entry")?;
         let entry = self.qualify_symbol(&entry_value);
-        let constructor_args = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
+
+        // Infer implementation type from the entry point
+        let implementation = Self::infer_invocation_type(&entry);
+
+        let (constructor_args, call_args) = match implementation {
+            ImplementationType::Class => {
+                let constructor = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
+                (constructor, Vec::new())
+            }
+            ImplementationType::Function => {
+                let call = self.resolve_entry_parameters(&entry, &ImplementationType::Function);
+                (Vec::new(), call)
+            }
+        };
 
         let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
 
@@ -149,10 +162,10 @@ impl PluginExtractor {
         let resolved_method = method_param.or_else(|| Self::default_method_for_kind(&kind));
 
         let invocation = InvocationSpec {
-            implementation: ImplementationType::Class,
+            implementation,
             method: resolved_method,
             constructor: constructor_args,
-            call: Vec::new(),
+            call: call_args,
         };
 
         let io = self.infer_io_contract(&kind);
@@ -221,15 +234,29 @@ impl PluginExtractor {
         let entry = self.find_entry_reference(&kwargs)?;
         let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
         let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
-        let constructor_args = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
+
+        // Infer implementation type from the entry point
+        let implementation = Self::infer_invocation_type(&entry);
+
+        let (constructor_args, call_args) = match implementation {
+            ImplementationType::Class => {
+                let constructor = self.resolve_entry_parameters(&entry, &ImplementationType::Class);
+                (constructor, Vec::new())
+            }
+            ImplementationType::Function => {
+                let call = self.resolve_entry_parameters(&entry, &ImplementationType::Function);
+                (Vec::new(), call)
+            }
+        };
+
         let kind = self.infer_kind_from_constructor(constructor);
         let resolved_method = method_param.or_else(|| Self::default_method_for_kind(&kind));
 
         let invocation = InvocationSpec {
-            implementation: Self::infer_invocation_type(&entry),
+            implementation,
             method: resolved_method,
             constructor: constructor_args,
-            call: Vec::new(),
+            call: call_args,
         };
 
         let io = self.infer_io_contract(&kind);
@@ -293,7 +320,10 @@ impl PluginExtractor {
     ) -> Vec<ArgumentSpec> {
         let (module_path, symbol) = match Self::split_entry(entry) {
             Some(parts) => parts,
-            None => return Vec::new(),
+            None => {
+                debug!("Failed to split entry point: {}", entry);
+                return Vec::new();
+            }
         };
 
         let source = match self.load_module_source(&module_path) {

@@ -40,7 +40,12 @@ enum Commands {
         action: Option<ConfigAction>,
     },
     /// List installed plugins
-    List,
+    List {
+        /// Optional plugin name to filter by (e.g., r2x-reeds)
+        plugin: Option<String>,
+        /// Optional module/function name to filter by (e.g., break_gens)
+        module: Option<String>,
+    },
     /// Install a plugin
     Install {
         plugin: Option<String>,
@@ -163,8 +168,8 @@ fn main() {
         Commands::Config { action } => {
             config::handle_config(action, cli.global);
         }
-        Commands::List => {
-            if let Err(e) = plugins::list_plugins(&cli.global) {
+        Commands::List { plugin, module } => {
+            if let Err(e) = plugins::list_plugins(&cli.global, plugin, module) {
                 logger::error(&e);
             }
         }
