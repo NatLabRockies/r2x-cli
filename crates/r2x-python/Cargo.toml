@@ -21,4 +21,4 @@ thiserror = "2.0"
 r2x-config = { workspace = true }
 r2x-logger = { workspace = true }
 r2x-manifest = { workspace = true }
-which = "6.0"
+which = "8.0"
