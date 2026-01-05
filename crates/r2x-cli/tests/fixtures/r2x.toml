@@ -1,3 +1,3 @@
 cache_path = "/tmp/r2x-cache"
-uv_path = "/Users/mwebb/.local/bin/uv"
+uv_path = "/Users/psanchez/.local/bin/uv"
 python_version = "3.12"
