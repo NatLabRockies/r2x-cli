@@ -169,7 +169,10 @@ impl AstDiscovery {
                         if let Ok(sp_entries) = fs::read_dir(&site_packages) {
                             for sp_entry in sp_entries.flatten() {
                                 let name = sp_entry.file_name().to_string_lossy().to_string();
-                                if name.starts_with(&normalized_name)
+                                // Match exact package name followed by version (e.g., "r2x_reeds-0.3.0.dist-info")
+                                // Use format!("{}-", normalized_name) to avoid false matches like
+                                // "r2x_reeds" matching "r2x_reeds_to_sienna-0.0.0.dist-info"
+                                if name.starts_with(&format!("{}-", normalized_name))
                                     && name.ends_with(".dist-info")
                                 {
                                     let entry_points = sp_entry.path().join("entry_points.txt");
@@ -188,7 +191,10 @@ impl AstDiscovery {
             if let Ok(entries) = fs::read_dir(parent) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with(&normalized_name) && name.ends_with(".dist-info") {
+                    // Match exact package name followed by version
+                    if name.starts_with(&format!("{}-", normalized_name))
+                        && name.ends_with(".dist-info")
+                    {
                         let entry_points = entry.path().join("entry_points.txt");
                         if entry_points.exists() {
                             return Ok(entry_points);

@@ -69,6 +69,11 @@ pub fn discover_and_register_entry_points_with_deps(
         let package_path = find_package_path(package_name_full)
             .map_err(|e| format!("Failed to locate package '{}': {}", package_name_full, e))?;
 
+        logger::debug(&format!(
+            "Found package path for '{}': {:?}",
+            package_name_full, package_path
+        ));
+
         AstDiscovery::discover_plugins(
             &package_path,
             package_name_full,

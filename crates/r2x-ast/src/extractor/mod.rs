@@ -130,6 +130,7 @@ impl PluginExtractor {
             "function" => PluginKind::Modifier,
             "upgrader" => PluginKind::Upgrader,
             "utility" => PluginKind::Utility,
+            "translation" => PluginKind::Translation,
             _ => return Err(anyhow!("Unknown PluginSpec helper method: {}", method)),
         };
 

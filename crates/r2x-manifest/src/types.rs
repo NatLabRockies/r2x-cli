@@ -83,6 +83,7 @@ pub enum PluginKind {
     Modifier,
     Upgrader,
     Utility,
+    Translation,
 }
 
 /// How to construct and invoke a plugin
