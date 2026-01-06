@@ -5,7 +5,7 @@ use crate::logger;
 use crate::r2x_manifest::Manifest;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VerificationResult {
@@ -213,7 +213,8 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
         .arg("install")
         .arg("--python")
         .arg(&python_exe)
-        .arg("--prerelease=allow");
+        .arg("--prerelease=allow")
+        .arg("--no-progress");
 
     // Add all packages
     for package in &packages {
@@ -222,17 +223,18 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
 
     logger::debug(&format!("Running: {:?}", cmd));
 
-    let output = cmd
-        .output()
+    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
+    let status = cmd
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .map_err(|e| VerificationError::ReinstallFailed(format!("Failed to execute uv: {}", e)))?;
 
-    logger::capture_output(&format!("uv pip install {}", packages.join(" ")), &output);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
         return Err(VerificationError::ReinstallFailed(format!(
-            "uv pip install failed: {}",
-            stderr
+            "uv pip install failed: exit code {}",
+            status.code().unwrap_or(-1)
         )));
     }
 

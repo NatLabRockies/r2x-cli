@@ -8,7 +8,7 @@ use crate::plugins::{
 use crate::r2x_manifest::Manifest;
 use crate::GlobalOpts;
 use colored::Colorize;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Options for git-based package installation
 pub struct GitOptions {
@@ -80,14 +80,15 @@ pub fn install_plugin(
         return Ok(());
     }
 
-    logger::spinner_start(&format!("Installing: {}", package));
+    // Print status without spinner since we need interactive terminal for SSH prompts
+    logger::info(&format!("Installing: {}", package));
     let start = std::time::Instant::now();
     match run_pip_install(&uv_path, &python_path, &package_spec, editable, no_cache) {
         Ok(_) => {
             logger::debug(&format!("pip install took: {:?}", start.elapsed()));
         }
         Err(e) => {
-            logger::spinner_error(&format!("Failed to install: {}", package));
+            logger::error(&format!("Failed to install: {}", package));
             return Err(e);
         }
     }
@@ -119,8 +120,6 @@ pub fn install_plugin(
         "discover_and_register_entry_points took: {:?}",
         start.elapsed()
     ));
-
-    logger::spinner_stop();
 
     print_install_summary(
         &package_name_for_query,
@@ -176,6 +175,7 @@ fn run_pip_install(
         "--python".to_string(),
         python_path.to_string(),
         "--prerelease=allow".to_string(),
+        "--no-progress".to_string(),
     ];
 
     if no_cache {
@@ -203,35 +203,24 @@ fn run_pip_install(
         uv_path, debug_flags, python_path, package
     ));
 
-    let output = Command::new(uv_path)
+    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
+    let status = Command::new(uv_path)
         .args(&install_args)
-        .output()
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .map_err(|e| {
             logger::error(&format!("Failed to run pip install: {}", e));
             format!("Failed to run pip install: {}", e)
         })?;
 
-    logger::capture_output(&format!("uv pip install {}", package), &output);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
+    if !status.success() {
         logger::error(&format!("pip install failed for package '{}'", package));
-
-        if !stderr.is_empty() {
-            logger::error(&format!("STDERR:\n{}", stderr));
-            eprintln!("Error details:\n{}", stderr);
-        }
-
-        if !stdout.is_empty() {
-            logger::debug(&format!("STDOUT:\n{}", stdout));
-        }
-
         return Err(format!(
-            "pip install failed for package '{}': {}",
+            "pip install failed for package '{}': exit code {}",
             package,
-            stderr.lines().next().unwrap_or("unknown error")
+            status.code().unwrap_or(-1)
         ));
     }
 
