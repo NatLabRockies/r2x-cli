@@ -60,7 +60,7 @@ jobs:
 
     build-shim-macos-intel:
         if: ${{ !github.event.pull_request }}
-        runs-on: macos-13
+        runs-on: macos-15
         steps:
             - uses: actions/checkout@v6
               with:
