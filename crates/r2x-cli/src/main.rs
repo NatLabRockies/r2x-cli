@@ -1,11 +1,8 @@
 use clap::{Parser, Subcommand};
 use r2x::{
     commands::{
-        cache::{self, CacheAction},
         config::{self, ConfigAction},
-        init, plugins,
-        python::{self, PythonAction, VenvAction},
-        read, run,
+        init, plugins, read, run,
     },
     config_manager, logger, GlobalOpts,
 };
@@ -27,12 +24,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Cache configuration
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    Cache {
-        #[command(subcommand)]
-        action: CacheAction,
-    },
     /// Configure r2x tool
     #[command(subcommand_required = false, arg_required_else_help = false)]
     Config {
@@ -84,21 +75,7 @@ enum Commands {
         /// Optional filename for the pipeline (default: pipeline.yaml)
         file: Option<String>,
     },
-    /// Configure Python installation
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    Python {
-        #[command(subcommand)]
-        action: PythonAction,
-    },
-    /// Manage virtual environment
-    #[command(subcommand_required = false, arg_required_else_help = false)]
-    Venv {
-        #[command(subcommand)]
-        action: Option<VenvAction>,
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
+
     /// Run pipelines or plugins
     Run(run::RunCommand),
     /// Read a system from JSON (stdin or file) and open an interactive IPython session
@@ -162,9 +139,6 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Cache { action } => {
-            cache::handle_cache(action, cli.global);
-        }
         Commands::Config { action } => {
             config::handle_config(action, cli.global);
         }
@@ -222,12 +196,7 @@ fn main() {
         Commands::Init { file } => {
             init::handle_init(file, cli.global);
         }
-        Commands::Python { action } => {
-            python::handle_python(action, cli.global);
-        }
-        Commands::Venv { action, yes } => {
-            python::handle_venv(action, yes, cli.global);
-        }
+
         Commands::Run(cmd) => {
             if let Err(e) = run::handle_run(cmd, cli.global) {
                 logger::error(&format!("Run command failed: {}", e));

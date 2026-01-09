@@ -208,20 +208,36 @@ impl super::Bridge {
             "Looking for entry_points.txt for package: {}",
             full_package_name
         ));
+        logger::debug(&format!(
+            "Venv path: {}",
+            venv_path.display()
+        ));
 
-        // Find site-packages directory
-        let site_packages = venv_path.join("lib");
-        let entries = fs::read_dir(&site_packages).ok()?;
-
-        let python_version_dir = entries
-            .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().starts_with("python"))?;
-
-        let site_packages_path = python_version_dir.path().join("site-packages");
+        // Find site-packages directory using centralized resolver
+        let site_packages_path = match super::resolve_site_package_path(&venv_path) {
+            Ok(path) => {
+                logger::debug(&format!(
+                    "Found site-packages at: {}",
+                    path.display()
+                ));
+                path
+            }
+            Err(e) => {
+                logger::debug(&format!(
+                    "Failed to resolve site-packages path: {}",
+                    e
+                ));
+                return None;
+            }
+        };
 
         // Find dist-info directory matching the package name (with version)
         // dist-info dirs are named like: r2x_reeds-0.0.1.dist-info
         // We need to match exactly: package_name + "-" to avoid matching r2x_sienna when looking for r2x_sienna_to_plexos
+        logger::debug(&format!(
+            "Searching for dist-info directory in: {}",
+            site_packages_path.display()
+        ));
         let mut dist_info_dir = None;
         if let Ok(entries) = fs::read_dir(&site_packages_path) {
             for entry in entries.flatten() {
@@ -229,14 +245,27 @@ impl super::Bridge {
                 // Match package name followed by hyphen (for version) to ensure exact match
                 let expected_prefix = format!("{}-", full_package_name);
                 if file_name.starts_with(&expected_prefix) && file_name.ends_with(".dist-info") {
+                    logger::debug(&format!(
+                        "Found dist-info directory: {}",
+                        file_name
+                    ));
                     dist_info_dir = Some(entry.path());
                     break;
                 }
             }
+        } else {
+            logger::debug(&format!(
+                "Failed to read site-packages directory: {}",
+                site_packages_path.display()
+            ));
         }
 
         let dist_info_dir = dist_info_dir?;
         let entry_points_path = dist_info_dir.join("entry_points.txt");
+        logger::debug(&format!(
+            "Looking for entry_points.txt at: {}",
+            entry_points_path.display()
+        ));
 
         logger::debug(&format!(
             "Entry points path: {}",

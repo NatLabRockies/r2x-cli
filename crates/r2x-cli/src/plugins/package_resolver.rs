@@ -67,17 +67,39 @@ fn try_find_package_via_pth(normalized_package_name: &str) -> Result<PathBuf, St
         }
 
         // Look for .pth file matching the package name
-        let pth_path = hash_path.join(format!("{}.pth", normalized_package_name));
-        if pth_path.exists() {
-            // Read the path from the .pth file
-            match std::fs::read_to_string(&pth_path) {
-                Ok(content) => {
-                    let package_path = content.trim();
-                    if !package_path.is_empty() {
-                        return Ok(PathBuf::from(package_path));
-                    }
-                }
+        // UV creates files like: __editable__.{package_name}-{version}.pth
+        let pth_entries = match std::fs::read_dir(&hash_path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for pth_entry in pth_entries {
+            let pth_entry = match pth_entry {
+                Ok(e) => e,
                 Err(_) => continue,
+            };
+
+            let pth_file_name = pth_entry.file_name().to_string_lossy().to_string();
+
+            // Match both patterns:
+            // 1. {package_name}.pth (older pattern)
+            // 2. __editable__.{package_name}-{version}.pth (UV editable installs)
+            let matches = pth_file_name == format!("{}.pth", normalized_package_name)
+                || (pth_file_name.starts_with("__editable__.")
+                    && pth_file_name.contains(&format!("{}-", normalized_package_name))
+                    && pth_file_name.ends_with(".pth"));
+
+            if matches {
+                // Read the path from the .pth file
+                match std::fs::read_to_string(pth_entry.path()) {
+                    Ok(content) => {
+                        let package_path = content.trim();
+                        if !package_path.is_empty() {
+                            return Ok(PathBuf::from(package_path));
+                        }
+                    }
+                    Err(_) => continue,
+                }
             }
         }
     }

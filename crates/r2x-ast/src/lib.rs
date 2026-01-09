@@ -40,8 +40,22 @@ impl AstDiscovery {
         logger::debug(&format!("AST discovery started for: {}", package_name_full));
 
         // Find the plugins.py file using entry_points.txt
-        let (plugins_py, plugin_module) =
-            Self::find_plugins_py_via_entry_points(package_path, package_name_full, venv_path)?;
+        let (plugins_py, plugin_module) = match Self::find_plugins_py_via_entry_points(
+            package_path,
+            package_name_full,
+            venv_path,
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                // If no entry_points.txt or no r2x_plugin entry point found,
+                // this package doesn't define any plugins - return empty list
+                logger::debug(&format!(
+                    "No r2x_plugin entry point found for '{}': {}",
+                    package_name_full, e
+                ));
+                return Ok((Vec::new(), Vec::new()));
+            }
+        };
         logger::debug(&format!("Found plugins.py at: {:?}", plugins_py));
 
         // Phase 1: Extract plugins with constructor_args
@@ -137,54 +151,100 @@ impl AstDiscovery {
     ) -> Result<std::path::PathBuf> {
         use std::fs;
         let normalized_name = package_name_full.replace('-', "_");
+        logger::debug(&format!(
+            "Looking for entry_points.txt for package: {} (normalized: {})",
+            package_name_full, normalized_name
+        ));
+
         // Try venv site-packages first if provided
         if let Some(venv) = venv_path {
             let venv_path = std::path::PathBuf::from(venv);
-            let lib_dir = venv_path.join("lib");
-            if let Ok(entries) = fs::read_dir(&lib_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir()
-                        && path
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .starts_with("python")
-                    {
-                        let site_packages = path.join("site-packages");
-                        if let Ok(sp_entries) = fs::read_dir(&site_packages) {
-                            for sp_entry in sp_entries.flatten() {
-                                let name = sp_entry.file_name().to_string_lossy().to_string();
-                                if name.starts_with(&normalized_name)
-                                    && name.ends_with(".dist-info")
-                                {
-                                    let entry_points = sp_entry.path().join("entry_points.txt");
-                                    if entry_points.exists() {
-                                        return Ok(entry_points);
-                                    }
-                                }
+            logger::debug(&format!(
+                "Searching in venv site-packages: {}",
+                venv_path.display()
+            ));
+
+            // Use the centralized site-packages resolver
+            if let Ok(site_packages) = r2x_python::resolve_site_package_path(&venv_path) {
+                logger::debug(&format!(
+                    "Searching site-packages at: {}",
+                    site_packages.display()
+                ));
+                if let Ok(sp_entries) = fs::read_dir(&site_packages) {
+                    for sp_entry in sp_entries.flatten() {
+                        let name = sp_entry.file_name().to_string_lossy().to_string();
+                        // Match exact package name followed by version (e.g., "r2x_reeds-0.3.0.dist-info")
+                        // Use format!("{}-", normalized_name) to avoid false matches like
+                        // "r2x_reeds" matching "r2x_reeds_to_sienna-0.0.0.dist-info"
+                        if name.starts_with(&format!("{}-", normalized_name))
+                            && name.ends_with(".dist-info")
+                        {
+                            logger::debug(&format!(
+                                "Found dist-info directory: {}",
+                                name
+                            ));
+                            let entry_points = sp_entry.path().join("entry_points.txt");
+                            if entry_points.exists() {
+                                logger::debug(&format!(
+                                    "Found entry_points.txt at: {}",
+                                    entry_points.display()
+                                ));
+                                return Ok(entry_points);
                             }
                         }
                     }
+                } else {
+                    logger::debug(&format!(
+                        "Failed to read site-packages directory: {}",
+                        site_packages.display()
+                    ));
                 }
+            } else {
+                logger::debug(&format!(
+                    "Failed to resolve site-packages path for venv: {}",
+                    venv_path.display()
+                ));
             }
         }
         // Fallback: look near package_path
+        logger::debug(&format!(
+            "Falling back to search near package_path: {}",
+            package_path.display()
+        ));
         if let Some(parent) = package_path.parent() {
+            logger::debug(&format!(
+                "Searching in parent directory: {}",
+                parent.display()
+            ));
             if let Ok(entries) = fs::read_dir(parent) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with(&normalized_name) && name.ends_with(".dist-info") {
+                    // Match exact package name followed by version
+                    if name.starts_with(&format!("{}-", normalized_name))
+                        && name.ends_with(".dist-info")
+                    {
+                        logger::debug(&format!(
+                            "Found dist-info directory near package: {}",
+                            name
+                        ));
                         let entry_points = entry.path().join("entry_points.txt");
                         if entry_points.exists() {
+                            logger::debug(&format!(
+                                "Found entry_points.txt at: {}",
+                                entry_points.display()
+                            ));
                             return Ok(entry_points);
                         }
                     }
                 }
             }
         }
+        logger::debug(&format!(
+            "entry_points.txt not found for package: {}",
+            package_name_full
+        ));
         Err(anyhow!(
-            "Could not find entry_points.txt for package: {}",
+            "Package '{}' has no entry_points.txt (not an r2x plugin package)",
             package_name_full
         ))
     }
@@ -216,7 +276,7 @@ impl AstDiscovery {
             }
         }
         Err(anyhow!(
-            "No [r2x_plugin] entry point found in entry_points.txt"
+            "Package has entry_points.txt but no [r2x_plugin] section (not an r2x plugin package)"
         ))
     }
     /// Scan entire package directory for decorator registrations

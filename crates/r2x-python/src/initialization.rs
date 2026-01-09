@@ -14,18 +14,115 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use which::which;
 
 #[cfg(windows)]
 const PYTHON_BIN_DIR_NAME: &str = "Scripts";
 #[cfg(not(windows))]
 const PYTHON_BIN_DIR_NAME: &str = "bin";
-#[cfg(windows)]
-const SYSTEM_PYTHON_CANDIDATES: &[&str] = &["python.exe", "py.exe"];
-#[cfg(not(windows))]
-const SYSTEM_PYTHON_CANDIDATES: &[&str] = &["python3", "python"];
-const REQUIRED_PYTHON_MAJOR: i32 = 3;
-const REQUIRED_PYTHON_MINOR: i32 = 12;
+
+/// Get the Python version this binary was compiled against
+/// Returns version string like "3.12"
+/// This requires querying the Python interpreter, so it can only be called
+/// after Python initialization or during runtime checks
+fn get_compiled_python_version() -> Result<String, BridgeError> {
+    // Use the PYO3_PYTHON environment variable set at build time if available
+    // Otherwise, we need to query Python at runtime
+    if let Ok(pyo3_python) = env::var("PYO3_PYTHON") {
+        // Try to extract version from path like "python3.12"
+        if let Some(version) = pyo3_python.split('/').last() {
+            if let Some(ver) = version.strip_prefix("python") {
+                if ver.matches('.').count() >= 1 {
+                    let parts: Vec<&str> = ver.split('.').take(2).collect();
+                    if parts.len() == 2 {
+                        return Ok(format!("{}.{}", parts[0], parts[1]));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: default to 3.12 which is our standard version
+    Ok("3.12".to_string())
+}
+
+/// Ensure the compiled Python version is installed via uv
+/// If not found, automatically install it with user notification
+fn ensure_python_installed(config: &Config) -> Result<(), BridgeError> {
+    let uv_path = config
+        .uv_path
+        .as_ref()
+        .ok_or_else(|| BridgeError::Initialization("UV path not configured".to_string()))?;
+
+    let compiled_version = get_compiled_python_version()?;
+
+    logger::debug(&format!(
+        "Checking if Python {} is installed",
+        compiled_version
+    ));
+
+    // Check if Python is already installed
+    let check_output = Command::new(uv_path)
+        .arg("python")
+        .arg("list")
+        .arg("--only-installed")
+        .arg(&compiled_version)
+        .output()
+        .map_err(|e| {
+            BridgeError::Initialization(format!("Failed to check Python installation: {}", e))
+        })?;
+
+    if check_output.status.success() {
+        let stdout = String::from_utf8_lossy(&check_output.stdout);
+        // Check if the output contains the version (means it's installed)
+        if stdout.contains(&compiled_version) {
+            logger::debug(&format!("Python {} is already installed", compiled_version));
+            return Ok(());
+        }
+    }
+
+    // Python not found, install it
+    logger::step(&format!(
+        "Installing Python {} (required by this binary)...",
+        compiled_version
+    ));
+    logger::info(&format!(
+        "This binary was compiled against Python {}. Installing now.",
+        compiled_version
+    ));
+
+    let install_output = Command::new(uv_path)
+        .arg("python")
+        .arg("install")
+        .arg(&compiled_version)
+        .output()
+        .map_err(|e| {
+            BridgeError::Initialization(format!(
+                "Failed to install Python {}: {}",
+                compiled_version, e
+            ))
+        })?;
+
+    logger::capture_output(
+        &format!("uv python install {}", compiled_version),
+        &install_output,
+    );
+
+    if !install_output.status.success() {
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
+        return Err(BridgeError::Initialization(format!(
+            "Failed to install Python {}.\n\
+            Please ensure uv can access the network.\n\
+            Error: {}",
+            compiled_version, stderr
+        )));
+    }
+
+    logger::success(&format!(
+        "Python {} installed successfully",
+        compiled_version
+    ));
+    Ok(())
+}
 
 pub struct Bridge {}
 
@@ -198,16 +295,19 @@ impl Bridge {
 /// Detect the Python version from the embedded interpreter and store it in config
 ///
 /// This function:
-/// 1. Gets the Python version from sys.version_info (the compiled/embedded version)
-/// 2. Compares it with what's stored in config
-/// 3. If missing or mismatched, updates config to the actual version
-/// 4. Logs warnings if there's a mismatch (indicates config was manually edited)
+/// 1. Gets the Python version from sys.version_info (the actual running version)
+/// 2. Compares it with the compiled version from PyO3
+/// 3. Warns if there's a mismatch (which could cause runtime issues)
+/// 4. Stores the compiled version in config for future use
 fn detect_and_store_python_version() -> Result<(), BridgeError> {
     let mut config = Config::load()
         .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
-    // Get Python version from sys.version_info (the actual compiled version)
-    let version_str = pyo3::Python::attach(|py| {
+    // Get the compiled version
+    let compiled_version = get_compiled_python_version()?;
+
+    // Get Python version from sys.version_info (the actual running version)
+    let runtime_version = pyo3::Python::attach(|py| {
         let sys = PyModule::import(py, "sys")
             .map_err(|e| BridgeError::Python(format!("Failed to import sys: {}", e)))?;
         let version_info = sys
@@ -229,32 +329,30 @@ fn detect_and_store_python_version() -> Result<(), BridgeError> {
         Ok::<String, BridgeError>(format!("{}.{}", major, minor))
     })?;
 
-    logger::debug(&format!("Detected Python version: {}", version_str));
+    logger::debug(&format!(
+        "Python versions - compiled: {}, runtime: {}",
+        compiled_version, runtime_version
+    ));
 
-    // Check if config version matches detected version
-    if let Some(ref config_version) = config.python_version {
-        if config_version == &version_str {
-            // Versions match, nothing to do
-            return Ok(());
-        } else {
-            // Mismatch detected - config was likely manually edited
-            logger::warn(&format!(
-                "Python version mismatch: binary was compiled with {}, but config shows {}. Updating config to match compiled version.",
-                version_str, config_version
-            ));
-        }
-    } else {
-        // First time detection
-        logger::debug("First time detecting Python version for this binary");
+    // Verify that runtime matches compiled version
+    if runtime_version != compiled_version {
+        logger::warn(&format!(
+            "Python version mismatch! Binary compiled with {}, but running {}. This may cause undefined behavior.",
+            compiled_version, runtime_version
+        ));
     }
 
-    // Store/update the actual compiled version in config
-    config.python_version = Some(version_str.clone());
-    config
-        .save()
-        .map_err(|e| BridgeError::Initialization(format!("Failed to save config: {}", e)))?;
-
-    logger::info(&format!("Python version {} stored in config", version_str));
+    // Store/update the compiled version in config
+    if config.python_version.as_deref() != Some(&compiled_version) {
+        config.python_version = Some(compiled_version.clone());
+        config
+            .save()
+            .map_err(|e| BridgeError::Initialization(format!("Failed to save config: {}", e)))?;
+        logger::debug(&format!(
+            "Stored compiled Python version {} in config",
+            compiled_version
+        ));
+    }
 
     Ok(())
 }
@@ -318,6 +416,24 @@ pub fn configure_python_venv() -> Result<PythonEnvironment, BridgeError> {
     let mut config = Config::load()
         .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
+    // Get the compiled Python version - this is what we MUST use
+    let compiled_version = get_compiled_python_version()?;
+
+    // Update config to use the compiled version if it's different
+    if config.python_version.as_deref() != Some(&compiled_version) {
+        logger::debug(&format!(
+            "Updating config to use compiled Python version: {}",
+            compiled_version
+        ));
+        config.python_version = Some(compiled_version.clone());
+        config
+            .save()
+            .map_err(|e| BridgeError::Initialization(format!("Failed to save config: {}", e)))?;
+    }
+
+    // Ensure Python is installed before trying to create venv
+    ensure_python_installed(&config)?;
+
     let venv_path = PathBuf::from(config.get_venv_path());
 
     let python_path_result = resolve_python_path(&venv_path);
@@ -339,22 +455,27 @@ pub fn configure_python_venv() -> Result<PythonEnvironment, BridgeError> {
             .ensure_uv_path()
             .map_err(|e| BridgeError::Initialization(format!("Failed to ensure uv: {}", e)))?;
 
-        // Use the Python version from config, or default to 3.12
-        let python_version = config.python_version.as_deref().unwrap_or("3.12");
+        logger::info(&format!(
+            "Using Python {} (version this binary was compiled with)",
+            compiled_version
+        ));
 
         let output = Command::new(&uv_path)
             .arg("venv")
             .arg(&venv_path)
             .arg("--python")
-            .arg(python_version)
+            .arg(&compiled_version)
             .output()?;
 
-        logger::capture_output(&format!("uv venv --python {}", python_version), &output);
+        logger::capture_output(&format!("uv venv --python {}", compiled_version), &output);
 
         if !output.status.success() {
-            return Err(BridgeError::Initialization(
-                "Failed to create Python virtual environment".to_string(),
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BridgeError::Initialization(format!(
+                "Failed to create Python virtual environment with Python {}.\n\
+                Error: {}",
+                compiled_version, stderr
+            )));
         }
 
         python_path = resolve_python_path(&venv_path).unwrap_or_else(|_| PathBuf::new());
@@ -374,17 +495,21 @@ pub fn configure_python_venv() -> Result<PythonEnvironment, BridgeError> {
     }
 
     if python_path.as_os_str().is_empty() || !python_path.exists() {
-        logger::warn("Python binary not found in configured venv; attempting system fallback");
-        if let Some((fallback, home)) = find_system_python() {
+        logger::warn(
+            "Python binary not found in configured venv; attempting uv-managed Python fallback",
+        );
+        if let Some((fallback, home)) = find_uv_python(&config)? {
             return Ok(PythonEnvironment {
                 interpreter: fallback,
                 python_home: Some(home),
             });
         }
 
-        return Err(BridgeError::Initialization(
-            "Failed to locate a usable Python interpreter".to_string(),
-        ));
+        return Err(BridgeError::Initialization(format!(
+            "Failed to locate a usable Python interpreter.\n\
+            This binary requires Python {}.",
+            compiled_version
+        )));
     }
 
     let python_home = resolve_python_home(&venv_path);
@@ -443,63 +568,69 @@ fn resolve_python_home(venv_path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn detect_python_runtime(
-    python_bin: &Path,
-) -> Option<(PathBuf, i32, i32)> {
-    let output = Command::new(python_bin)
-        .arg("-c")
-        .arg(
-            "import sys\nprint(sys.base_prefix)\nprint(sys.version_info.major)\nprint(sys.version_info.minor)",
-        )
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        logger::debug(&format!(
-            "Failed to probe python runtime (status {:?})",
-            output.status.code()
-        ));
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let mut lines = stdout
-        .lines()
-        .map(|s| s.trim().to_string())
-        .collect::<Vec<_>>();
-    if lines.len() < 3 {
-        return None;
-    }
-    let minor = lines
-        .pop()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-    let major = lines
-        .pop()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-    let prefix = PathBuf::from(lines.pop().unwrap_or_default());
-    Some((prefix, major, minor))
-}
+/// Find and use uv-managed Python instead of system Python
+/// This avoids conflicts with system Python installations and the Windows Store popup
+fn find_uv_python(config: &Config) -> Result<Option<(PathBuf, PathBuf)>, BridgeError> {
+    let uv_path = config
+        .uv_path
+        .as_ref()
+        .ok_or_else(|| BridgeError::Initialization("UV path not configured".to_string()))?;
 
-fn find_system_python() -> Option<(PathBuf, PathBuf)> {
-    for candidate in SYSTEM_PYTHON_CANDIDATES {
-        if let Ok(path) = which(candidate) {
-            if let Some((home, major, minor)) = detect_python_runtime(&path) {
-                if major == REQUIRED_PYTHON_MAJOR && minor == REQUIRED_PYTHON_MINOR {
-                    logger::warn(&format!(
-                        "Falling back to system Python at {}",
-                        path.display()
-                    ));
-                    return Some((path, home));
-                } else {
-                    logger::debug(&format!(
-                        "Skipping system python {} (version {}.{})",
-                        path.display(),
-                        major,
-                        minor
-                    ));
-                }
-            }
-        }
+    // Use the compiled Python version - this is what the binary requires
+    let compiled_version = get_compiled_python_version()?;
+
+    logger::debug(&format!(
+        "Attempting to use uv-managed Python {} (compiled version)",
+        compiled_version
+    ));
+
+    // Use `uv run python` to get the Python path
+    // This ensures we use uv's managed Python installations
+    let output = Command::new(uv_path)
+        .arg("run")
+        .arg("--python")
+        .arg(&compiled_version)
+        .arg("python")
+        .arg("-c")
+        .arg("import sys; print(sys.executable); print(sys.base_prefix)")
+        .output()
+        .map_err(|e| BridgeError::Initialization(format!("Failed to run uv python: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        logger::debug(&format!(
+            "Failed to probe uv-managed Python {} (status {:?}): {}",
+            compiled_version,
+            output.status.code(),
+            stderr
+        ));
+        return Ok(None);
     }
-    None
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let mut lines: Vec<String> = stdout.lines().map(|s| s.trim().to_string()).collect();
+
+    if lines.len() < 2 {
+        logger::debug("Unexpected output from uv python probe");
+        return Ok(None);
+    }
+
+    let prefix = PathBuf::from(lines.pop().unwrap_or_default());
+    let executable = PathBuf::from(lines.pop().unwrap_or_default());
+
+    if !executable.exists() {
+        logger::debug(&format!(
+            "UV-managed Python executable does not exist: {}",
+            executable.display()
+        ));
+        return Ok(None);
+    }
+
+    logger::info(&format!(
+        "Using uv-managed Python {} at {}",
+        compiled_version,
+        executable.display()
+    ));
+
+    Ok(Some((executable, prefix)))
 }

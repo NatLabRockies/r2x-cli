@@ -304,25 +304,35 @@ fn install_package_with_spinner(
         .arg("install")
         .arg("--python")
         .arg(python_exe)
+        .arg("--no-progress")
         .arg(package_spec);
 
     logger::debug(&format!("Running: {:?}", install_cmd));
-    logger::spinner_start(&format!("Installing {} into venv...", display_name));
+    // Print status without spinner since we need interactive terminal for SSH prompts
+    logger::info(&format!("Installing {} into venv...", display_name));
 
-    let output = install_cmd.output().map_err(|e| {
-        logger::spinner_error(&format!("Failed to install {} into venv", display_name));
-        format!("Failed to run uv pip install: {}", e)
-    })?;
+    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
+    let status = install_cmd
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| {
+            logger::error(&format!("Failed to install {} into venv", display_name));
+            format!("Failed to run uv pip install: {}", e)
+        })?;
 
-    logger::capture_output(&format!("uv pip install {}", package_spec), &output);
-
-    if !output.status.success() {
-        logger::spinner_error(&format!("Failed to install {} into venv", display_name));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("uv pip install {} failed: {}", package_spec, stderr).into());
+    if !status.success() {
+        logger::error(&format!("Failed to install {} into venv", display_name));
+        return Err(format!(
+            "uv pip install {} failed: exit code {}",
+            package_spec,
+            status.code().unwrap_or(-1)
+        )
+        .into());
     }
 
-    logger::spinner_success(&format!("Installed {} into venv", display_name));
+    logger::success(&format!("Installed {} into venv", display_name));
     Ok(())
 }
 

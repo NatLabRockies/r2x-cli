@@ -3,9 +3,10 @@
 use crate::config_manager::Config;
 use crate::logger;
 use crate::r2x_manifest::Manifest;
+use r2x_python::resolve_site_package_path;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VerificationResult {
@@ -137,31 +138,15 @@ fn check_packages_installed(
 
 /// Get the site-packages directory from venv
 fn get_site_packages_dir(venv_path: &PathBuf) -> Result<PathBuf, VerificationError> {
-    let lib_dir = venv_path.join("lib");
+    logger::debug(&format!(
+        "Getting site-packages directory for venv: {}",
+        venv_path.display()
+    ));
 
-    if !lib_dir.exists() {
-        return Err(VerificationError::VenvNotFound(venv_path.clone()));
-    }
-
-    // Find python3.X directory
-    let entries = std::fs::read_dir(&lib_dir).map_err(|e| {
-        VerificationError::VerificationFailed(format!("Failed to read lib directory: {}", e))
-    })?;
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("python") && entry.path().is_dir() {
-            let site_packages = entry.path().join("site-packages");
-            if site_packages.exists() {
-                return Ok(site_packages);
-            }
-        }
-    }
-
-    Err(VerificationError::VerificationFailed(
-        "site-packages directory not found".to_string(),
-    ))
+    resolve_site_package_path(venv_path).map_err(|e| match e {
+        r2x_python::BridgeError::VenvNotFound(path) => VerificationError::VenvNotFound(path),
+        _ => VerificationError::VerificationFailed(format!("{}", e)),
+    })
 }
 
 /// Check if a dist-info directory matching the pattern exists
@@ -213,7 +198,8 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
         .arg("install")
         .arg("--python")
         .arg(&python_exe)
-        .arg("--prerelease=allow");
+        .arg("--prerelease=allow")
+        .arg("--no-progress");
 
     // Add all packages
     for package in &packages {
@@ -222,17 +208,18 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
 
     logger::debug(&format!("Running: {:?}", cmd));
 
-    let output = cmd
-        .output()
+    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
+    let status = cmd
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .map_err(|e| VerificationError::ReinstallFailed(format!("Failed to execute uv: {}", e)))?;
 
-    logger::capture_output(&format!("uv pip install {}", packages.join(" ")), &output);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
         return Err(VerificationError::ReinstallFailed(format!(
-            "uv pip install failed: {}",
-            stderr
+            "uv pip install failed: exit code {}",
+            status.code().unwrap_or(-1)
         )));
     }
 

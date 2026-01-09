@@ -21,4 +21,6 @@ thiserror = "2.0"
 r2x-config = { workspace = true }
 r2x-logger = { workspace = true }
 r2x-manifest = { workspace = true }
-which = "8.0"
+
+[dev-dependencies]
+tempfile = "3.0"

@@ -57,6 +57,7 @@ fn default_method_for_kind(kind: &crate::types::PluginKind) -> Option<String> {
     match kind {
         Parser => Some("build_system".to_string()),
         Exporter => Some("export".to_string()),
+        Translation => Some("run".to_string()),
         _ => None,
     }
 }

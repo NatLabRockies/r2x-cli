@@ -8,7 +8,9 @@ use crate::plugins::{
 use crate::r2x_manifest::Manifest;
 use crate::GlobalOpts;
 use colored::Colorize;
-use std::process::Command;
+use std::fs;
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 /// Options for git-based package installation
 pub struct GitOptions {
@@ -34,11 +36,22 @@ pub fn install_plugin(
     let total_start = std::time::Instant::now();
     let package_spec = build_package_spec(
         package,
-        git_opts.host,
-        git_opts.branch,
-        git_opts.tag,
-        git_opts.commit,
+        git_opts.host.clone(),
+        git_opts.branch.clone(),
+        git_opts.tag.clone(),
+        git_opts.commit.clone(),
     )?;
+
+    // Check if this is a workspace installation
+    if is_workspace_package(&package_spec)? {
+        logger::info("Detected workspace repository, installing all members...");
+        // Just install the workspace - uv will handle all members
+        run_pip_install(&uv_path, &python_path, &package_spec, editable, no_cache)?;
+
+        // Now discover all packages with entry points (like sync command)
+        logger::info("Discovering plugins from installed packages...");
+        return discover_all_installed_packages(&uv_path, &python_path, no_cache, total_start);
+    }
 
     let package_name_for_query = extract_package_name(package)?;
 
@@ -80,14 +93,15 @@ pub fn install_plugin(
         return Ok(());
     }
 
-    logger::spinner_start(&format!("Installing: {}", package));
+    // Print status without spinner since we need interactive terminal for SSH prompts
+    logger::info(&format!("Installing: {}", package));
     let start = std::time::Instant::now();
     match run_pip_install(&uv_path, &python_path, &package_spec, editable, no_cache) {
         Ok(_) => {
             logger::debug(&format!("pip install took: {:?}", start.elapsed()));
         }
         Err(e) => {
-            logger::spinner_error(&format!("Failed to install: {}", package));
+            logger::error(&format!("Failed to install: {}", package));
             return Err(e);
         }
     }
@@ -119,8 +133,6 @@ pub fn install_plugin(
         "discover_and_register_entry_points took: {:?}",
         start.elapsed()
     ));
-
-    logger::spinner_stop();
 
     print_install_summary(
         &package_name_for_query,
@@ -159,6 +171,13 @@ pub fn show_install_help() -> Result<(), String> {
     println!(
         "\n  Install in editable mode for development:\n    r2x install -e ./packages/r2x-reeds"
     );
+    println!("\n  Install workspace (all packages in monorepo):\n    r2x install https://github.com/NREL/R2X --branch v2.0.0");
+    println!("\n  Install local workspace:\n    r2x install ./R2X");
+    println!();
+    println!("{}", "Workspace Installation:".bold());
+    println!("  When installing from a repository with [tool.uv.workspace] in its");
+    println!("  pyproject.toml, r2x will automatically detect and install all workspace");
+    println!("  members (e.g., packages in packages/*), registering their entry points.");
     println!();
     Ok(())
 }
@@ -176,6 +195,7 @@ fn run_pip_install(
         "--python".to_string(),
         python_path.to_string(),
         "--prerelease=allow".to_string(),
+        "--no-progress".to_string(),
     ];
 
     if no_cache {
@@ -203,35 +223,24 @@ fn run_pip_install(
         uv_path, debug_flags, python_path, package
     ));
 
-    let output = Command::new(uv_path)
+    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
+    let status = Command::new(uv_path)
         .args(&install_args)
-        .output()
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .map_err(|e| {
             logger::error(&format!("Failed to run pip install: {}", e));
             format!("Failed to run pip install: {}", e)
         })?;
 
-    logger::capture_output(&format!("uv pip install {}", package), &output);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
+    if !status.success() {
         logger::error(&format!("pip install failed for package '{}'", package));
-
-        if !stderr.is_empty() {
-            logger::error(&format!("STDERR:\n{}", stderr));
-            eprintln!("Error details:\n{}", stderr);
-        }
-
-        if !stdout.is_empty() {
-            logger::debug(&format!("STDOUT:\n{}", stdout));
-        }
-
         return Err(format!(
-            "pip install failed for package '{}': {}",
+            "pip install failed for package '{}': exit code {}",
             package,
-            stderr.lines().next().unwrap_or("unknown error")
+            status.code().unwrap_or(-1)
         ));
     }
 
@@ -250,4 +259,157 @@ fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::t
         format!("{}=={}", pkg.bold(), version)
     };
     println!(" {} {}", "+".bold().green(), disp);
+}
+
+/// Check if a package is a workspace (by detecting [tool.uv.workspace] in pyproject.toml)
+fn is_workspace_package(package_spec: &str) -> Result<bool, String> {
+    // Only check for local paths or git URLs
+    let is_local_path = package_spec.starts_with("./")
+        || package_spec.starts_with("../")
+        || package_spec.starts_with('/');
+
+    let is_git_url = package_spec.starts_with("git+") || package_spec.starts_with("git@");
+
+    if !is_local_path && !is_git_url {
+        return Ok(false);
+    }
+
+    // For local paths, check directly
+    if is_local_path {
+        let pyproject_path = Path::new(package_spec).join("pyproject.toml");
+        if !pyproject_path.exists() {
+            return Ok(false);
+        }
+
+        let content = fs::read_to_string(&pyproject_path)
+            .map_err(|e| format!("Failed to read pyproject.toml: {}", e))?;
+
+        return Ok(content.contains("[tool.uv.workspace]"));
+    }
+
+    // For git URLs, use heuristic: if it's a git URL pointing to NREL/R2X, assume it's a workspace
+    if is_git_url && (package_spec.contains("NREL/R2X") || package_spec.contains("NREL/r2x")) {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Discover all installed packages with r2x_plugin entry points
+fn discover_all_installed_packages(
+    uv_path: &str,
+    python_path: &str,
+    no_cache: bool,
+    total_start: std::time::Instant,
+) -> Result<(), String> {
+    // Use Python to query only packages with r2x_plugin entry points
+    let python_script = r#"
+import sys
+try:
+    from importlib.metadata import entry_points
+    eps = entry_points()
+    # Handle both dict and SelectableGroups API
+    if hasattr(eps, 'select'):
+        r2x_eps = eps.select(group='r2x_plugin')
+    else:
+        r2x_eps = eps.get('r2x_plugin', [])
+
+    # Get unique package names
+    packages = set()
+    for ep in r2x_eps:
+        # entry point value is like "module.submodule:function"
+        # we need to get the distribution/package name
+        if hasattr(ep, 'dist') and ep.dist:
+            packages.add(ep.dist.name)
+
+    for pkg in sorted(packages):
+        print(pkg)
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"#;
+
+    let output = Command::new(python_path)
+        .arg("-c")
+        .arg(python_script)
+        .output()
+        .map_err(|e| format!("Failed to query r2x_plugin entry points: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to query entry points: {}", stderr));
+    }
+
+    let packages: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if packages.is_empty() {
+        logger::warn("No packages with r2x_plugin entry points found");
+        return Ok(());
+    }
+
+    logger::info(&format!(
+        "Found {} package(s) with r2x_plugin entry points",
+        packages.len()
+    ));
+
+    let mut discovered_count = 0;
+    let mut total_entry_points = 0;
+
+    for package_name in packages {
+        logger::debug(&format!("Checking for plugins in: {}", package_name));
+
+        // Get package info
+        let (package_version, dependencies) =
+            match get_package_info(uv_path, python_path, &package_name) {
+                Ok((version, deps)) => (version, deps),
+                Err(_) => continue,
+            };
+
+        // Try to discover entry points
+        match discover_and_register_entry_points_with_deps(
+            uv_path,
+            python_path,
+            DiscoveryOptions {
+                package: package_name.clone(),
+                package_name_full: package_name.clone(),
+                dependencies,
+                package_version: package_version.clone(),
+                no_cache,
+            },
+        ) {
+            Ok(entry_count) => {
+                if entry_count > 0 {
+                    let version_str = package_version.as_deref().unwrap_or("");
+                    let disp = if version_str.is_empty() {
+                        format!("{}", package_name.bold())
+                    } else {
+                        format!("{}=={}", package_name.bold(), version_str)
+                    };
+                    println!(" {} {}", "+".bold().green(), disp);
+                    discovered_count += 1;
+                    total_entry_points += entry_count;
+                }
+            }
+            Err(_) => {
+                // Not every package has r2x_plugin entry points, skip silently
+            }
+        }
+    }
+
+    let elapsed_ms = total_start.elapsed().as_millis();
+    println!(
+        "{}",
+        format!(
+            "Discovered {} package(s) with {} plugin(s) in {}ms",
+            discovered_count, total_entry_points, elapsed_ms
+        )
+        .bold()
+        .dimmed()
+    );
+
+    Ok(())
 }
