@@ -132,6 +132,7 @@ impl Bridge {
             ))
         })?;
 
+        logger::step(&format!("Class '{}' constructor kwargs: {:?}", class_name, kwargs));
         let instance = class.call((), Some(kwargs)).map_err(|err| {
             let raw_msg = err.to_string();
             let mut formatted = format_python_error(
