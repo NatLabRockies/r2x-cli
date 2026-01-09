@@ -79,7 +79,10 @@ impl Bridge {
                 continue;
             }
 
-            if param.name == "store" || param.name == "data_store" || annotation.contains("DataStore") {
+            if param.name == "store"
+                || param.name == "data_store"
+                || annotation.contains("DataStore")
+            {
                 logger::step(&format!("Processing store parameter: {}", param.name));
                 // Look for store value: prefer "store" key, then param name, then "path"
                 let value = config_dict

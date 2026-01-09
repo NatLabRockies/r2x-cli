@@ -464,11 +464,8 @@ fn build_plugin_config(
 
         // Check if plugin requires a DataStore instance.
         // If so, create it from the `path` config value.
-        let needs_store = bindings.requires_store
-            || bindings
-                .entry_parameters
-                .iter()
-                .any(|p| p.name == "store");
+        let needs_store =
+            bindings.requires_store || bindings.entry_parameters.iter().any(|p| p.name == "store");
 
         if needs_store {
             // Use `path` as primary source for store, with fallbacks
@@ -478,7 +475,9 @@ fn build_plugin_config(
                     .or_else(|| yaml_map.get("store"))
                     .or_else(|| yaml_map.get("store_path"))
                     .cloned()
-                    .or_else(|| inherited_store_path.map(|p| serde_json::Value::String(p.to_string())))
+                    .or_else(|| {
+                        inherited_store_path.map(|p| serde_json::Value::String(p.to_string()))
+                    })
                     .map_or_else(|| fallback_store_value(package_name, output_folder), Ok)?
             } else if let Some(inherited) = inherited_store_path {
                 serde_json::Value::String(inherited.to_string())
