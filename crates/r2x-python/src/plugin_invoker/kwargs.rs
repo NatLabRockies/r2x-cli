@@ -113,10 +113,18 @@ impl Bridge {
                     kwargs.set_item("path", path_alias)?;
                 }
             } else if param.required {
-                logger::warn(&format!(
-                    "Required parameter '{}' missing in config",
-                    param.name
-                ));
+                let stdin_param = param.name == "stdin" || param.name == "system";
+                if stdin_param && stdin_obj.is_some() {
+                    logger::debug(&format!(
+                        "Required parameter '{}' will be provided via stdin",
+                        param.name
+                    ));
+                } else {
+                    logger::warn(&format!(
+                        "Required parameter '{}' missing in config",
+                        param.name
+                    ));
+                }
             }
         }
 
