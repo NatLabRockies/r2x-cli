@@ -179,10 +179,7 @@ impl AstDiscovery {
                         if name.starts_with(&format!("{}-", normalized_name))
                             && name.ends_with(".dist-info")
                         {
-                            logger::debug(&format!(
-                                "Found dist-info directory: {}",
-                                name
-                            ));
+                            logger::debug(&format!("Found dist-info directory: {}", name));
                             let entry_points = sp_entry.path().join("entry_points.txt");
                             if entry_points.exists() {
                                 logger::debug(&format!(
@@ -223,10 +220,7 @@ impl AstDiscovery {
                     if name.starts_with(&format!("{}-", normalized_name))
                         && name.ends_with(".dist-info")
                     {
-                        logger::debug(&format!(
-                            "Found dist-info directory near package: {}",
-                            name
-                        ));
+                        logger::debug(&format!("Found dist-info directory near package: {}", name));
                         let entry_points = entry.path().join("entry_points.txt");
                         if entry_points.exists() {
                             logger::debug(&format!(

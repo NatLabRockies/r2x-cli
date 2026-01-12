@@ -41,24 +41,39 @@ fn candidate_shim_dirs(manifest_dir: &Path, target: &str) -> Vec<PathBuf> {
 
 fn find_python_lib(dir: &Path) -> Option<PathBuf> {
     if let Ok(entries) = dir.read_dir() {
+        // On Linux, prefer the versioned SONAME (e.g., libpython3.12.so.1.0)
+        // This is what the binary will look for at runtime
+        let mut fallback = None;
+
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if name.starts_with("libpython")
-                    && (name.ends_with(".dylib") || name.ends_with(".so"))
-                {
+                // Prioritize versioned .so files on Linux (e.g., libpython3.12.so.1.0)
+                if name.starts_with("libpython") && name.contains(".so.") {
                     return Some(path);
                 }
+                // macOS dylib
+                if name.starts_with("libpython") && name.ends_with(".dylib") {
+                    return Some(path);
+                }
+                // Windows DLL
                 if name.starts_with("python") && name.ends_with(".dll") {
                     return Some(path);
                 }
+                // Fallback to unversioned .so (shouldn't happen with our setup)
+                if name.starts_with("libpython") && name.ends_with(".so") && fallback.is_none() {
+                    fallback = Some(path.clone());
+                }
             }
         }
+
+        fallback
+    } else {
+        None
     }
-    None
 }
 
 fn add_rpath(target: &str) {

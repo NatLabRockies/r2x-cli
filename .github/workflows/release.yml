@@ -74,7 +74,12 @@ jobs:
   build-shim-linux-x86:
     if: ${{ !github.event.pull_request }}
     runs-on: ubuntu-22.04
+    container: rockylinux:8
     steps:
+      - name: Install prerequisites in Rocky Linux 8 container
+        shell: bash
+        run: |
+          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -87,7 +92,12 @@ jobs:
   build-shim-linux-arm:
     if: ${{ !github.event.pull_request }}
     runs-on: ubuntu-22.04-arm
+    container: rockylinux:8
     steps:
+      - name: Install prerequisites in Rocky Linux 8 container
+        shell: bash
+        run: |
+          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -190,7 +200,13 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
     steps:
+      - name: Install prerequisites in Rocky Linux 8 container
+        if: ${{ matrix.container }}
+        shell: bash
+        run: |
+          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel
       - name: enable windows longpaths
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           git config --global core.longpaths true

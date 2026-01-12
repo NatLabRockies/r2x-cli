@@ -327,31 +327,13 @@ impl PluginExtractor {
             }
         };
 
-        let source = match self.load_module_source(&module_path) {
-            Some(src) => src,
-            None => {
-                debug!(
-                    "Unable to load module '{}' while resolving parameters for '{}'",
-                    module_path, entry
-                );
-                return Vec::new();
-            }
-        };
-
-        let entries = match implementation {
-            ImplementationType::Class => self
-                .extract_class_parameters_from_content(&source, &symbol)
-                .unwrap_or_else(|e| {
-                    debug!("Failed to parse constructor for '{}': {}", entry, e);
-                    Vec::new()
-                }),
-            ImplementationType::Function => self
-                .extract_function_parameters_from_content(&source, &symbol)
-                .unwrap_or_else(|e| {
-                    debug!("Failed to parse function '{}' parameters: {}", entry, e);
-                    Vec::new()
-                }),
-        };
+        // Try to resolve parameters, following imports if necessary
+        let entries = self.resolve_parameters_with_import_follow(
+            &module_path,
+            &symbol,
+            implementation,
+            0, // depth counter to prevent infinite loops
+        );
 
         entries
             .into_iter()
@@ -362,6 +344,155 @@ impl PluginExtractor {
                 required: param.is_required,
             })
             .collect()
+    }
+
+    /// Resolve parameters for a symbol, following imports if the symbol is re-exported
+    fn resolve_parameters_with_import_follow(
+        &self,
+        module_path: &str,
+        symbol: &str,
+        implementation: &ImplementationType,
+        depth: usize,
+    ) -> Vec<parameters::ParameterEntry> {
+        const MAX_IMPORT_DEPTH: usize = 5;
+
+        if depth > MAX_IMPORT_DEPTH {
+            debug!(
+                "Max import depth reached while resolving '{}' in '{}'",
+                symbol, module_path
+            );
+            return Vec::new();
+        }
+
+        let source = match self.load_module_source(module_path) {
+            Some(src) => src,
+            None => {
+                debug!(
+                    "Unable to load module '{}' while resolving parameters for '{}'",
+                    module_path, symbol
+                );
+                return Vec::new();
+            }
+        };
+
+        // First, try to extract parameters directly from this module
+        let result = match implementation {
+            ImplementationType::Class => {
+                self.extract_class_parameters_from_content(&source, symbol)
+            }
+            ImplementationType::Function => {
+                self.extract_function_parameters_from_content(&source, symbol)
+            }
+        };
+
+        match result {
+            Ok(entries) => entries,
+            Err(_) => {
+                // Symbol not found directly - check if it's imported from another module
+                debug!(
+                    "Symbol '{}' not found in '{}', checking for imports",
+                    symbol, module_path
+                );
+
+                if let Some(import_source) =
+                    self.find_import_source_module(&source, symbol, module_path)
+                {
+                    debug!(
+                        "Found import: '{}' is imported from '{}'",
+                        symbol, import_source
+                    );
+                    // Recursively resolve from the source module
+                    self.resolve_parameters_with_import_follow(
+                        &import_source,
+                        symbol,
+                        implementation,
+                        depth + 1,
+                    )
+                } else {
+                    debug!(
+                        "No import found for '{}' in '{}', returning empty",
+                        symbol, module_path
+                    );
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    /// Find the source module for an imported symbol
+    /// Handles patterns like:
+    /// - `from .parser import ReEDSParser`
+    /// - `from .submodule.parser import ReEDSParser`
+    /// - `from r2x_reeds.parser import ReEDSParser`
+    fn find_import_source_module(
+        &self,
+        content: &str,
+        symbol: &str,
+        current_module: &str,
+    ) -> Option<String> {
+        for line in content.lines() {
+            let trimmed = line.trim();
+
+            // Match: from X import Y or from X import Y, Z, ...
+            if let Some(rest) = trimmed.strip_prefix("from ") {
+                if let Some(import_idx) = rest.find(" import ") {
+                    let from_part = rest[..import_idx].trim();
+                    let import_part = rest[import_idx + 8..].trim();
+
+                    // Check if our symbol is in the import list
+                    let imports: Vec<&str> = import_part
+                        .split(',')
+                        .map(|s| {
+                            // Handle "X as Y" - we want X
+                            s.trim().split(" as ").next().unwrap_or(s.trim()).trim()
+                        })
+                        .collect();
+
+                    if imports.contains(&symbol) {
+                        // Resolve the module path
+                        return Some(self.resolve_relative_import(from_part, current_module));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a relative import path to an absolute module path
+    /// - `.parser` in module `r2x_reeds` -> `r2x_reeds.parser`
+    /// - `..utils` in module `r2x_reeds.sub` -> `r2x_reeds.utils`
+    /// - `r2x_reeds.parser` -> `r2x_reeds.parser` (already absolute)
+    fn resolve_relative_import(&self, from_part: &str, current_module: &str) -> String {
+        if !from_part.starts_with('.') {
+            // Absolute import
+            return from_part.to_string();
+        }
+
+        // Count leading dots for relative import level
+        let dot_count = from_part.chars().take_while(|&c| c == '.').count();
+        let relative_path = &from_part[dot_count..];
+
+        // Split current module into parts
+        let mut parts: Vec<&str> = current_module.split('.').collect();
+
+        // Go up `dot_count - 1` levels (one dot means same package)
+        for _ in 0..(dot_count.saturating_sub(1)) {
+            parts.pop();
+        }
+
+        // If we have a relative path, append it
+        if !relative_path.is_empty() {
+            // Replace the last part or append
+            if dot_count == 1 {
+                // Single dot - same package, replace __init__ reference
+                // e.g., `.parser` in `r2x_reeds` -> `r2x_reeds.parser`
+                parts.push(relative_path);
+            } else {
+                parts.push(relative_path);
+            }
+        }
+
+        parts.join(".")
     }
 
     fn split_entry(entry: &str) -> Option<(String, String)> {

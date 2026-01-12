@@ -426,9 +426,7 @@ fn build_plugin_config(
 
         if let serde_json::Value::Object(ref yaml_map) = yaml_config {
             for (key, value) in yaml_map {
-                if key == "store" {
-                    continue;
-                } else if config_param_names.contains(key) {
+                if config_param_names.contains(key) {
                     config_class_params.insert(key.clone(), value.clone());
                 } else if bindings.entry_parameters.iter().any(|p| p.name == *key) {
                     constructor_params.insert(key.clone(), value.clone());
@@ -464,36 +462,31 @@ fn build_plugin_config(
             }
         }
 
-        let needs_store = bindings.requires_store
-            || bindings
-                .entry_parameters
-                .iter()
-                .any(|p| p.name == "data_store");
+        // Check if plugin requires a DataStore instance.
+        // If so, create it from the `path` config value.
+        let needs_store =
+            bindings.requires_store || bindings.entry_parameters.iter().any(|p| p.name == "store");
 
         if needs_store {
+            // Use `path` as primary source for store, with fallbacks
             let store_value = if let serde_json::Value::Object(ref yaml_map) = yaml_config {
-                match yaml_map.get("store") {
-                    Some(value) => value.clone(),
-                    None => {
-                        if let Some(explicit_path) = yaml_map.get("store_path").cloned() {
-                            explicit_path
-                        } else if let Some(inherited) = inherited_store_path {
-                            serde_json::Value::String(inherited.to_string())
-                        } else {
-                            fallback_store_value(package_name, output_folder)?
-                        }
-                    }
-                }
+                yaml_map
+                    .get("path")
+                    .or_else(|| yaml_map.get("store"))
+                    .or_else(|| yaml_map.get("store_path"))
+                    .cloned()
+                    .or_else(|| {
+                        inherited_store_path.map(|p| serde_json::Value::String(p.to_string()))
+                    })
+                    .map_or_else(|| fallback_store_value(package_name, output_folder), Ok)?
+            } else if let Some(inherited) = inherited_store_path {
+                serde_json::Value::String(inherited.to_string())
             } else {
-                if let Some(inherited) = inherited_store_path {
-                    serde_json::Value::String(inherited.to_string())
-                } else {
-                    fallback_store_value(package_name, output_folder)?
-                }
+                fallback_store_value(package_name, output_folder)?
             };
 
             store_value_for_folder = Some(store_value.clone());
-            final_config.insert("data_store".to_string(), store_value);
+            final_config.insert("store".to_string(), store_value);
         }
 
         if bindings

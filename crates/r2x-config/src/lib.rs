@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use which::which;
-
-#[cfg(unix)]
 use std::process::Command;
+use which::which;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -273,15 +271,52 @@ impl Config {
             return Ok(path_str);
         }
 
+        // Auto-install uv if not found
+        eprintln!("uv not found. Installing uv using official installer...\n");
+
         #[cfg(target_os = "windows")]
         {
-            return Err("uv is not installed. Please install it from: https://docs.astral.sh/uv/getting-started/installation/".into());
+            // On Windows, use PowerShell to download and run the installer
+            let status = Command::new("powershell")
+                .args([
+                    "-ExecutionPolicy",
+                    "ByPass",
+                    "-Command",
+                    "irm https://astral.sh/uv/install.ps1 | iex",
+                ])
+                .status()?;
+
+            if !status.success() {
+                return Err("Failed to install uv. Please install it manually from: https://docs.astral.sh/uv/getting-started/installation/".into());
+            }
+
+            eprintln!("\nuv installation completed. Verifying installation...");
+
+            // On Windows, uv is typically installed to %USERPROFILE%\.local\bin or %USERPROFILE%\.cargo\bin
+            // Try to find it using where.exe
+            if let Ok(output) = Command::new("where.exe").arg("uv").output() {
+                if output.status.success() {
+                    let path = String::from_utf8(output.stdout)?
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !path.is_empty() {
+                        eprintln!("Found uv at: {}", path);
+                        self.uv_path = Some(path.clone());
+                        self.save()?;
+                        return Ok(path);
+                    }
+                }
+            }
+
+            return Err("Failed to locate uv after installation. Please add %USERPROFILE%\\.local\\bin to your PATH and restart your terminal".into());
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            eprintln!("uv not found. Installing uv using official installer...\n");
-
+            // On Unix systems, use curl to download and run the installer
             let status = Command::new("sh")
                 .arg("-c")
                 .arg("curl -LsSf https://astral.sh/uv/install.sh | sh")

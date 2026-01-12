@@ -11,16 +11,6 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-    if command -v python >/dev/null 2>&1; then
-        PYTHON_BIN="python"
-    else
-        echo "error: python3/python not found" >&2
-        exit 1
-    fi
-fi
-
 PY_VERSION="${PY_VERSION:-3.12}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | sed -n 's/^host: //p')}"
 OUT_DIR="python-shim/${TARGET_TRIPLE}"
@@ -33,19 +23,24 @@ mkdir -p "${SHIM_DIST_DIR}"
 echo "Ensuring Python ${PY_VERSION} is installed via uv..."
 uv python install "${PY_VERSION}" >/dev/null
 
-if [[ ! -f "scripts/detect_uv_python.py" ]]; then
-    echo "error: scripts/detect_uv_python.py not found" >&2
+# Use 'uv run python' to get the Python executable and base prefix
+# This matches the approach used by the CLI application itself
+echo "Detecting Python ${PY_VERSION} via uv..."
+UV_PYTHON_INFO=$(uv run --python "${PY_VERSION}" python -c "import sys; print(sys.executable); print(sys.base_prefix)" 2>/dev/null)
+
+if [[ -z "${UV_PYTHON_INFO}" ]]; then
+    echo "error: failed to detect Python via 'uv run python'" >&2
+    echo "Make sure Python ${PY_VERSION} is installed via uv" >&2
     exit 1
 fi
 
+# Parse the output: first line is executable, second line is base prefix
+PYTHON_BIN=$(echo "${UV_PYTHON_INFO}" | head -n 1)
+PY_PREFIX=$(echo "${UV_PYTHON_INFO}" | tail -n 1)
 
-# Prefer PYO3_PYTHON for prefix if set (e.g., in CI workflows)
-PY_BIN_DIR="$(dirname "$PYO3_PYTHON")"
-# Check if Python exe is in a 'bin' subdirectory (Linux/Mac) or directly in the install root (Windows)
-if [[ "$PY_BIN_DIR" == *"/bin" ]] || [[ "$PY_BIN_DIR" == *"\bin" ]]; then
-    PY_PREFIX="$(dirname "$PY_BIN_DIR")"
-else
-    PY_PREFIX="$PY_BIN_DIR"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    echo "error: Python executable not found or not executable: ${PYTHON_BIN}" >&2
+    exit 1
 fi
 
 if [[ -z "${PY_PREFIX}" ]]; then
@@ -53,6 +48,7 @@ if [[ -z "${PY_PREFIX}" ]]; then
     exit 1
 fi
 
+echo "Using Python binary: ${PYTHON_BIN}"
 echo "Resolved Python prefix: ${PY_PREFIX}"
 
 PY_SUFFIX="$("${PYTHON_BIN}" - <<PY
@@ -73,8 +69,8 @@ case "${TARGET_TRIPLE}" in
         SRC_PATH="${PY_PREFIX}/lib/${LIB_NAME}"
         ;;
     *unknown-linux-gnu*|*unknown-linux-musl*)
-        LIB_NAME="libpython${PY_SUFFIX}.so"
-        SRC_PATH="${PY_PREFIX}/lib/${LIB_NAME}"
+        LIB_NAME="libpython${PY_SUFFIX}.so.1.0"
+        SRC_PATH="${PY_PREFIX}/lib/libpython${PY_SUFFIX}.so"
         ;;
     *pc-windows-msvc*|*windows-gnu*)
         CLEAN_SUFFIX="${PY_SUFFIX/.}"
@@ -95,12 +91,15 @@ if [[ ! -f "${SRC_PATH}" ]]; then
     exit 1
 fi
 
+echo "Copying Python library as ${LIB_NAME}..."
 cp "${SRC_PATH}" "${OUT_DIR}/${LIB_NAME}"
 cp "${SRC_PATH}" "${SHIM_DIST_DIR}/${LIB_NAME}"
 
 if [[ "${TARGET_TRIPLE}" == *"apple-darwin"* ]]; then
     install_name_tool -id "@rpath/${LIB_NAME}" "${OUT_DIR}/${LIB_NAME}"
 fi
+
+
 
 for shim_name in "${SHIM_NAMES[@]}"; do
     if [[ ! -f "${SHIM_DIST_DIR}/${shim_name}" ]]; then
