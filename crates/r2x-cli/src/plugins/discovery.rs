@@ -14,6 +14,8 @@ pub struct DiscoveryOptions {
     pub dependencies: Vec<String>,
     pub package_version: Option<String>,
     pub no_cache: bool,
+    pub editable: bool,
+    pub source_path: Option<String>,
 }
 
 /// Discover and register plugins from a package and its dependencies
@@ -55,33 +57,42 @@ pub fn discover_and_register_entry_points_with_deps(
         .iter()
         .any(|p| p.name == *package_name_full);
 
-    let (discovered_plugins, decorator_regs) = if has_package_cached && !no_cache {
-        if let Some(pkg) = manifest
-            .packages
-            .iter()
-            .find(|p| p.name == *package_name_full)
-        {
-            (pkg.plugins.clone(), pkg.decorator_registrations.clone())
+    // Check if cached package has plugins - force rediscovery if empty
+    let cached_has_plugins = manifest
+        .packages
+        .iter()
+        .find(|p| p.name == *package_name_full)
+        .map(|pkg| !pkg.plugins.is_empty())
+        .unwrap_or(false);
+
+    let (discovered_plugins, decorator_regs) =
+        if has_package_cached && !no_cache && cached_has_plugins {
+            if let Some(pkg) = manifest
+                .packages
+                .iter()
+                .find(|p| p.name == *package_name_full)
+            {
+                (pkg.plugins.clone(), pkg.decorator_registrations.clone())
+            } else {
+                (Vec::new(), Vec::new())
+            }
         } else {
-            (Vec::new(), Vec::new())
-        }
-    } else {
-        let package_path = find_package_path(package_name_full)
-            .map_err(|e| format!("Failed to locate package '{}': {}", package_name_full, e))?;
+            let package_path = find_package_path(package_name_full)
+                .map_err(|e| format!("Failed to locate package '{}': {}", package_name_full, e))?;
 
-        logger::debug(&format!(
-            "Found package path for '{}': {:?}",
-            package_name_full, package_path
-        ));
+            logger::debug(&format!(
+                "Found package path for '{}': {:?}",
+                package_name_full, package_path
+            ));
 
-        AstDiscovery::discover_plugins(
-            &package_path,
-            package_name_full,
-            venv_path.as_deref(),
-            Some(package_version),
-        )
-        .map_err(|e| format!("Failed to discover plugins for '{}': {}", package, e))?
-    };
+            AstDiscovery::discover_plugins(
+                &package_path,
+                package_name_full,
+                venv_path.as_deref(),
+                Some(package_version),
+            )
+            .map_err(|e| format!("Failed to discover plugins for '{}': {}", package, e))?
+        };
 
     for plugin in &discovered_plugins {
         logger::debug(&format!(
@@ -107,6 +118,12 @@ pub fn discover_and_register_entry_points_with_deps(
         pkg.entry_points_dist_info = String::new();
         pkg.plugins = discovered_plugins.clone();
         pkg.decorator_registrations = decorator_regs.clone();
+        // Only update editable fields if they're explicitly set (e.g., during install)
+        // During sync, these should be preserved from existing manifest
+        if opts.editable {
+            pkg.editable_install = true;
+            pkg.resolved_source_path = opts.source_path.clone();
+        }
     }
     manifest.mark_explicit(package_name_full);
 

@@ -16,11 +16,15 @@ pub fn remove_plugin(package: &str, _opts: &GlobalOpts) -> Result<(), String> {
             manifest.remove_decorator_registrations(package);
 
             if removed_count > 0 {
+                // Remove the package entirely from the manifest
+                manifest.remove_package(package);
+
                 for dep in &orphaned_dependencies {
                     let count = manifest.remove_plugins_by_package(dep);
                     manifest.remove_decorator_registrations(dep);
                     if count > 0 {
                         logger::info(&format!("Removing orphaned dependency package '{}'", dep));
+                        manifest.remove_package(dep);
                         removed_count += count;
                     }
                 }

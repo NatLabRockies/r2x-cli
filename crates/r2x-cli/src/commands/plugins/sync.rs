@@ -64,6 +64,9 @@ pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
                 package_version,
                 // Always re-scan when syncing so manifest reflects the latest plugin code
                 no_cache: true,
+                // During sync, preserve existing editable/source_path from manifest
+                editable: false,
+                source_path: None,
             },
         ) {
             Ok(_) => {
