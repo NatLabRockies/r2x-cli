@@ -31,24 +31,36 @@ impl Bridge {
 
         let mut needs_config_class = false;
         let mut config_param_name = String::new();
-        for param in &runtime.entry_parameters {
-            let annotation = param.annotation.as_deref().unwrap_or("");
-            if param.name == "config" || annotation.contains("Config") {
+
+        // Use ConfigSpec metadata as the authoritative source for whether we need
+        // to instantiate a config class. This avoids relying on naming heuristics
+        // like checking if param.name == "config" or annotation.contains("Config").
+        if runtime.config.is_some() {
+            // Find the parameter that will receive the config instance
+            for param in &runtime.entry_parameters {
+                let annotation = param.annotation.as_deref().unwrap_or("");
+                if param.name == "config" || annotation.contains("Config") {
+                    needs_config_class = true;
+                    config_param_name = param.name.clone();
+                    break;
+                }
+            }
+            // If we have config metadata but no matching param, still instantiate
+            // and use "config" as the default param name
+            if !needs_config_class {
                 needs_config_class = true;
-                config_param_name = param.name.clone();
-                break;
+                config_param_name = "config".to_string();
             }
         }
 
         let mut config_instance: Option<pyo3::Py<pyo3::PyAny>> = None;
         if needs_config_class {
-            let config_params = if let Ok(Some(existing_config)) = config_dict.get_item("config") {
-                if let Ok(config_dict_value) = existing_config.cast::<PyDict>() {
-                    config_dict_value.clone()
-                } else {
-                    PyDict::new(py)
-                }
-            } else {
+            // Always pass the full config dict to the config class.
+            // The config class (e.g., ZonalToNodal which extends PluginConfig) may have
+            // its own nested "config" field, but it needs ALL top-level fields too
+            // (name, output_folder, etc.). We filter out store-related keys since those
+            // are handled separately.
+            let config_params = {
                 let params = PyDict::new(py);
                 for (key, value) in config_dict.iter() {
                     let key_str = key.extract::<String>()?;

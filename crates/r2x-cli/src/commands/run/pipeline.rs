@@ -436,15 +436,11 @@ fn build_plugin_config(
             }
         }
 
-        if !config_class_params.is_empty()
-            && bindings.entry_parameters.iter().any(|p| p.name == "config")
-        {
-            final_config.insert(
-                "config".to_string(),
-                serde_json::Value::Object(config_class_params),
-            );
-        }
-
+        // For Class-based plugins (parsers, exporters), pass config fields flat.
+        // The Python bridge (kwargs.rs) will instantiate the PluginConfig class
+        // from these flat fields and pass the instance as the `config` parameter.
+        // We do NOT wrap under a `config` key here - that would create double nesting.
+        final_config.extend(config_class_params);
         final_config.extend(constructor_params);
 
         if bindings.entry_parameters.iter().any(|p| p.name == "path")
