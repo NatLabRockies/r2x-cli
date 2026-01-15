@@ -712,6 +712,7 @@ mod tests {
             quiet: 1,
             verbose: 0,
             log_python: false,
+            no_stdout: false,
         }
     }
 
@@ -720,6 +721,7 @@ mod tests {
             quiet: 0,
             verbose: 1,
             log_python: false,
+            no_stdout: false,
         }
     }
 
@@ -728,6 +730,7 @@ mod tests {
             quiet: 0,
             verbose: 0,
             log_python: false,
+            no_stdout: false,
         }
     }
 
