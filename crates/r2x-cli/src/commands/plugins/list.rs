@@ -1,3 +1,5 @@
+use crate::config_manager::Config;
+use crate::plugins::get_package_info;
 use crate::r2x_manifest::{ImplementationType, Manifest};
 use crate::GlobalOpts;
 use colored::Colorize;
@@ -45,8 +47,46 @@ pub fn list_plugins(
 
     if has_plugins {
         println!("{}", "Plugins:".bold().green());
+
+        // Get package version info
+        let config = Config::load().ok();
+        let python_path = config.as_ref().map(|c| c.get_venv_python_path());
+        let uv_path = config
+            .as_ref()
+            .and_then(|c| c.uv_path.as_deref())
+            .unwrap_or("uv");
+
         for (package_name, plugin_names) in &packages {
-            println!(" {}:", package_name.bold().blue());
+            // Get package metadata
+            let pkg = manifest.packages.iter().find(|p| p.name == *package_name);
+            let is_editable = pkg.map(|p| p.editable_install).unwrap_or(false);
+
+            // Get version info
+            let version_info = if let Some(ref py_path) = python_path {
+                get_package_info(uv_path, py_path, package_name)
+                    .ok()
+                    .and_then(|(v, _)| v)
+            } else {
+                None
+            };
+
+            // Build package header with version and editable status
+            let mut package_header = format!(" {}:", package_name.bold().blue());
+            if let Some(version) = version_info {
+                package_header.push_str(&format!(" {}", format!("v{}", version).dimmed()));
+            }
+            if is_editable {
+                if let Some(source_path) = pkg.and_then(|p| p.resolved_source_path.as_ref()) {
+                    package_header.push_str(&format!(
+                        " {}",
+                        format!("(file://{})", source_path).dimmed()
+                    ));
+                } else {
+                    package_header.push_str(&format!(" {}", "[editable]".yellow()));
+                }
+            }
+            println!("{}", package_header);
+
             for plugin_name in plugin_names {
                 println!("    - {}", plugin_name);
             }
@@ -106,11 +146,38 @@ fn show_plugin_details(
         .find(|pkg| pkg.name == plugin_filter)
         .ok_or_else(|| format!("Plugin package '{}' not found", plugin_filter))?;
 
-    println!(
+    // Build package header with version and editable info
+    let config = Config::load().ok();
+    let python_path = config.as_ref().map(|c| c.get_venv_python_path());
+    let uv_path = config
+        .as_ref()
+        .and_then(|c| c.uv_path.as_deref())
+        .unwrap_or("uv");
+
+    let version_info = if let Some(ref py_path) = python_path {
+        get_package_info(uv_path, py_path, &package.name)
+            .ok()
+            .and_then(|(v, _)| v)
+    } else {
+        None
+    };
+
+    print!(
         "{} {}",
         "Package:".bold().green(),
         package.name.bold().blue()
     );
+    if let Some(version) = version_info {
+        print!(" {}", format!("v{}", version).dimmed());
+    }
+    if package.editable_install {
+        if let Some(ref source_path) = package.resolved_source_path {
+            print!(" {}", format!("(file://{})", source_path).dimmed());
+        } else {
+            print!(" {}", "[editable]".yellow());
+        }
+    }
+    println!();
     println!();
 
     // Filter plugins by module name if provided

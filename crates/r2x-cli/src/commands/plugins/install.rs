@@ -117,6 +117,20 @@ pub fn install_plugin(
         };
     logger::debug(&format!("get_package_info took: {:?}", start.elapsed()));
 
+    // Resolve source path for editable installs
+    let source_path = if editable {
+        // If it's a local path, canonicalize it
+        if Path::new(package).exists() {
+            fs::canonicalize(package)
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let start = std::time::Instant::now();
     let entry_count = discover_and_register_entry_points_with_deps(
         &uv_path,
@@ -127,6 +141,8 @@ pub fn install_plugin(
             dependencies,
             package_version: package_version.clone(),
             no_cache,
+            editable,
+            source_path,
         },
     )?;
     logger::debug(&format!(
@@ -379,6 +395,8 @@ except Exception as e:
                 dependencies,
                 package_version: package_version.clone(),
                 no_cache,
+                editable: false,
+                source_path: None,
             },
         ) {
             Ok(entry_count) => {

@@ -242,6 +242,11 @@ impl Bridge {
 
     /// Configure Python loguru logging to integrate with Rust logger
     fn configure_python_logging() -> Result<(), BridgeError> {
+        Self::configure_python_logging_with_plugin(None)
+    }
+
+    /// Configure Python loguru logging with optional plugin context
+    fn configure_python_logging_with_plugin(plugin_name: Option<&str>) -> Result<(), BridgeError> {
         let log_file = logger::get_log_path_string();
         let verbosity = logger::get_verbosity();
         let log_level = match verbosity {
@@ -251,15 +256,25 @@ impl Bridge {
             _ => "TRACE",
         };
 
-        // Format to match Rust logger: [YYYY-MM-DD HH:MM:SS] [PYTHON] LEVEL message
-        let fmt = "[{time:YYYY-MM-DD HH:mm:ss}] [PYTHON] {level: <8} {message}";
+        // Format to match Rust logger with plugin context
+        let fmt = if let Some(name) = plugin_name {
+            format!(
+                "[{{time:YYYY-MM-DD HH:mm:ss}}] [PYTHON] [{}] {{level: <8}} {{message}}",
+                name
+            )
+        } else {
+            "[{time:YYYY-MM-DD HH:mm:ss}] [PYTHON] {level: <8} {message}".to_string()
+        };
 
         // Check if Python logs should be shown on console
         let enable_console = logger::get_log_python();
 
+        // Check if stdout should be suppressed from logs
+        let no_stdout = logger::get_no_stdout();
+
         logger::debug(&format!(
-            "Configuring Python logging with level={}, file={}, enable_console={}",
-            log_level, log_file, enable_console
+            "Configuring Python logging with level={}, file={}, enable_console={}, no_stdout={}, plugin={}",
+            log_level, log_file, enable_console, no_stdout, plugin_name.unwrap_or("none")
         ));
 
         pyo3::Python::attach(|py| {
@@ -274,8 +289,9 @@ impl Bridge {
             let kwargs = pyo3::types::PyDict::new(py);
             kwargs.set_item("level", log_level)?;
             kwargs.set_item("log_file", &log_file)?;
-            kwargs.set_item("fmt", fmt)?;
+            kwargs.set_item("fmt", &fmt)?;
             kwargs.set_item("enable_console_log", enable_console)?;
+            kwargs.set_item("suppress_stdout", no_stdout)?;
             setup_logging.call((), Some(&kwargs))?;
 
             // Explicitly enable logging for r2x modules
@@ -288,6 +304,11 @@ impl Bridge {
 
             Ok::<(), BridgeError>(())
         })
+    }
+
+    /// Reconfigure Python logging for a specific plugin
+    pub fn reconfigure_logging_for_plugin(plugin_name: &str) -> Result<(), BridgeError> {
+        Self::configure_python_logging_with_plugin(Some(plugin_name))
     }
 }
 

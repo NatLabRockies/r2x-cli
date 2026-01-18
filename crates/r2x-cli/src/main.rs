@@ -124,9 +124,12 @@ enum PluginsAction {
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize logger with verbosity level and log_python flag
-    if let Err(e) = logger::init_with_verbosity(cli.global.verbosity_level(), cli.global.log_python)
-    {
+    // Initialize logger with verbosity level, log_python flag, and no_stdout flag
+    if let Err(e) = logger::init_with_verbosity(
+        cli.global.verbosity_level(),
+        cli.global.log_python,
+        cli.global.no_stdout,
+    ) {
         eprintln!("Warning: Failed to initialize logger: {}", e);
     }
 

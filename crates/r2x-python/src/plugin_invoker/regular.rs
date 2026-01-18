@@ -2,8 +2,9 @@ use super::{
     logger, BridgeError, PluginInvocationResult, PluginInvocationTimings, RuntimeBindings,
 };
 use crate::Bridge;
-use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyModule};
+use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyTuple, PyTupleMethods};
 use pyo3::PyResult;
+use r2x_manifest::ArgumentSpec;
 use std::time::{Duration, Instant};
 
 impl Bridge {
@@ -51,7 +52,13 @@ impl Bridge {
             logger::debug("Starting plugin invocation");
             let call_start = Instant::now();
             let result_py = if callable_path.contains('.') {
-                Self::invoke_class_callable(&module, callable_path, stdin_obj.as_ref(), &kwargs)?
+                Self::invoke_class_callable(
+                    &module,
+                    callable_path,
+                    stdin_obj.as_ref(),
+                    &kwargs,
+                    runtime_bindings,
+                )?
             } else {
                 Self::invoke_function_callable(
                     py,
@@ -117,6 +124,7 @@ impl Bridge {
         callable_path: &str,
         stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
         kwargs: &pyo3::Bound<'py, PyDict>,
+        runtime_bindings: Option<&RuntimeBindings>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let parts: Vec<&str> = callable_path.split('.').collect();
         if parts.len() != 2 {
@@ -136,7 +144,91 @@ impl Bridge {
             "Class '{}' constructor kwargs: {:?}",
             class_name, kwargs
         ));
-        let instance = class.call((), Some(kwargs)).map_err(|err| {
+
+        // Build positional args tuple from constructor spec
+        // Only pass CONFIG and SYSTEM arguments as positional (they are positional-only in base classes)
+        // Everything else (STORE, etc.) should be keyword-only
+        let py = module.py();
+        let (args, remaining_kwargs) = if let Some(bindings) = runtime_bindings {
+            let mut positional_args = Vec::new();
+            let remaining = pyo3::types::PyDict::new(py);
+
+            // For exporters, always try config and system (even if *args hides them from AST)
+            // For parsers, only pass config positionally
+            let mut positional_param_names: Vec<String> = Vec::new();
+
+            use r2x_manifest::PluginKind;
+            if bindings.plugin_kind == PluginKind::Exporter {
+                // Exporters need config and system as positional args (BaseExporter signature)
+                positional_param_names.push("config".to_string());
+                positional_param_names.push("system".to_string());
+            } else {
+                // For other plugins, determine from entry_parameters
+                positional_param_names = bindings
+                    .entry_parameters
+                    .iter()
+                    .filter(|arg_spec| should_be_positional(arg_spec))
+                    .map(|arg_spec| arg_spec.name.clone())
+                    .collect();
+            }
+
+            logger::step(&format!(
+                "Plugin kind: {:?}, Positional parameters: {:?}",
+                bindings.plugin_kind, positional_param_names
+            ));
+
+            // Extract positional arguments in order
+            for param_name in &positional_param_names {
+                if let Ok(Some(value)) = kwargs.get_item(param_name.as_str()) {
+                    positional_args.push(value);
+                } else if param_name == "system" && stdin_obj.is_some() {
+                    // System comes from stdin for exporters
+                    let stdin = stdin_obj.expect("checked above");
+                    logger::step("Adding system from stdin as positional arg");
+
+                    // Use from_dict with a temporary directory for time series
+                    let system_module = PyModule::import(py, "infrasys")?;
+                    let system_class = system_module.getattr("System")?;
+                    let from_dict = system_class.getattr("from_dict")?;
+
+                    // Create a temp directory for time series (will use in-memory if that's what was serialized)
+                    let tempfile = PyModule::import(py, "tempfile")?;
+                    let mkdtemp = tempfile.getattr("mkdtemp")?;
+                    let temp_dir = mkdtemp.call0()?.extract::<String>()?;
+
+                    // Call System.from_dict(data, time_series_parent_dir, time_series_read_only=True)
+                    let kwargs_dict = pyo3::types::PyDict::new(py);
+                    kwargs_dict.set_item("time_series_read_only", true)?;
+                    let system_obj = from_dict.call((stdin, temp_dir), Some(&kwargs_dict))?;
+
+                    positional_args.push(system_obj);
+                } else {
+                    // Required positional arg missing, let Python raise the error
+                    break;
+                }
+            }
+
+            // Collect remaining kwargs (everything not passed as positional)
+            for (key, value) in kwargs.iter() {
+                let key_str = key.extract::<String>().unwrap_or_default();
+                if !positional_param_names.contains(&key_str) {
+                    remaining.set_item(key, value)?;
+                }
+            }
+
+            let args_tuple = PyTuple::new(py, positional_args)?;
+            (args_tuple, remaining)
+        } else {
+            // No bindings available, pass everything as kwargs
+            (PyTuple::empty(py), kwargs.clone())
+        };
+
+        logger::step(&format!(
+            "Calling class constructor with {} positional args and {} kwargs",
+            args.len(),
+            remaining_kwargs.len()
+        ));
+        let instance = class.call(args, Some(&remaining_kwargs)).map_err(|err| {
             let raw_msg = err.to_string();
             let mut formatted = format_python_error(
                 class.py(),
@@ -284,4 +376,22 @@ fn method_accepts_stdin(method: &pyo3::Bound<'_, PyAny>) -> PyResult<bool> {
     Ok(varnames[1..usable]
         .iter()
         .any(|name| name == "system" || name == "stdin"))
+}
+
+/// Determine if a parameter should be passed as a positional argument.
+/// Only CONFIG and SYSTEM arguments are positional-only in base classes.
+/// Everything else (STORE, etc.) should be passed as keyword arguments.
+fn should_be_positional(arg_spec: &ArgumentSpec) -> bool {
+    // Check if annotation contains the source type
+    if let Some(annotation) = &arg_spec.annotation {
+        let annotation_lower = annotation.to_lowercase();
+        // CONFIG and SYSTEM are positional-only in BaseParser/BaseExporter
+        if annotation_lower.contains("config") || annotation_lower.contains("system") {
+            return true;
+        }
+    }
+
+    // Fallback: check parameter name
+    // 'config' is always positional, 'system' is positional for exporters
+    arg_spec.name == "config" || arg_spec.name == "system"
 }

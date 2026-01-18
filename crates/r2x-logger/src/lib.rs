@@ -8,6 +8,8 @@ use std::sync::Mutex;
 static LOG_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static VERBOSITY: Mutex<u8> = Mutex::new(0);
 static LOG_PYTHON: Mutex<bool> = Mutex::new(false);
+static NO_STDOUT: Mutex<bool> = Mutex::new(false);
+static CURRENT_PLUGIN: Mutex<Option<String>> = Mutex::new(None);
 static SPINNER: Mutex<Option<ProgressBar>> = Mutex::new(None);
 
 /// Get the current verbosity level for use by other modules (e.g., Python bridge)
@@ -27,6 +29,30 @@ pub fn set_log_python(enabled: bool) {
     }
 }
 
+/// Get whether stdout logging is disabled
+pub fn get_no_stdout() -> bool {
+    NO_STDOUT.lock().ok().map(|v| *v).unwrap_or(false)
+}
+
+/// Set whether stdout logging is disabled
+pub fn set_no_stdout(disabled: bool) {
+    if let Ok(mut v) = NO_STDOUT.lock() {
+        *v = disabled;
+    }
+}
+
+/// Get the current plugin name being executed
+pub fn get_current_plugin() -> Option<String> {
+    CURRENT_PLUGIN.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// Set the current plugin name being executed
+pub fn set_current_plugin(plugin_name: Option<String>) {
+    if let Ok(mut v) = CURRENT_PLUGIN.lock() {
+        *v = plugin_name;
+    }
+}
+
 /// Convert verbosity level to loguru log level string
 /// 0 = warn only, 1 = debug (-v), 2 = trace (-vv)
 pub fn verbosity_to_loguru_level() -> String {
@@ -38,7 +64,7 @@ pub fn verbosity_to_loguru_level() -> String {
 }
 
 /// Initialize the logger with a log file path and verbosity level
-pub fn init_with_verbosity(verbosity: u8, log_python: bool) -> Result<(), String> {
+pub fn init_with_verbosity(verbosity: u8, log_python: bool, no_stdout: bool) -> Result<(), String> {
     // Set verbosity level
     if let Ok(mut v) = VERBOSITY.lock() {
         *v = verbosity;
@@ -46,6 +72,9 @@ pub fn init_with_verbosity(verbosity: u8, log_python: bool) -> Result<(), String
 
     // Set log_python flag
     set_log_python(log_python);
+
+    // Set no_stdout flag
+    set_no_stdout(no_stdout);
 
     init()
 }
@@ -87,11 +116,16 @@ fn get_config_dir() -> Result<PathBuf, String> {
 
 /// Write to log file
 fn write_to_log(message: &str) {
+    write_to_log_with_source(message, "RUST")
+}
+
+/// Write to log file with custom source tag
+fn write_to_log_with_source(message: &str, source: &str) {
     if let Ok(log_file_guard) = LOG_FILE.lock() {
         if let Some(ref log_path) = *log_file_guard {
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
                 let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                let _ = writeln!(file, "[{}] [RUST] {}", timestamp, message);
+                let _ = writeln!(file, "[{}] [{}] {}", timestamp, source, message);
             }
         }
     }

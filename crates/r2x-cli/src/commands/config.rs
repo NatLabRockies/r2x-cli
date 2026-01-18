@@ -137,6 +137,11 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                     cache_suffix.dimmed()
                 );
 
+                // Show log file location
+                if let Some(log_path) = r2x_logger::get_log_path() {
+                    println!("  {}: {}", "log-file".cyan(), log_path.display());
+                }
+
                 // Show other explicit config values
                 if let Some(ref uv) = config.uv_path {
                     println!("  {}: {}", "uv-path".cyan(), uv);
@@ -707,6 +712,7 @@ mod tests {
             quiet: 1,
             verbose: 0,
             log_python: false,
+            no_stdout: false,
         }
     }
 
@@ -715,6 +721,7 @@ mod tests {
             quiet: 0,
             verbose: 1,
             log_python: false,
+            no_stdout: false,
         }
     }
 
@@ -723,6 +730,7 @@ mod tests {
             quiet: 0,
             verbose: 0,
             log_python: false,
+            no_stdout: false,
         }
     }
 

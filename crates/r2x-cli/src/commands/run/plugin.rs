@@ -91,6 +91,17 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     logger::debug(&format!("Invoking plugin with target: {}", target));
     logger::debug(&format!("Config: {}", config_json));
 
+    // Set current plugin context for logging
+    logger::set_current_plugin(Some(plugin_name.to_string()));
+
+    // Reconfigure Python logging with plugin name
+    if let Err(e) = Bridge::reconfigure_logging_for_plugin(plugin_name) {
+        logger::warn(&format!(
+            "Failed to reconfigure Python logging for plugin {}: {}",
+            plugin_name, e
+        ));
+    }
+
     let start = Instant::now();
     let invocation_result = bridge.invoke_plugin(&target, &config_json, None, Some(plugin))?;
     let PluginInvocationResult {
@@ -100,9 +111,12 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     let elapsed = start.elapsed();
     let duration_msg = format!("({})", super::format_duration(elapsed).dimmed());
 
+    // Clear plugin context after execution
+    logger::set_current_plugin(None);
+
     if !result.is_empty() && result != "null" {
-        if opts.suppress_stdout() {
-            logger::debug("Plugin output suppressed due to -qq");
+        if opts.suppress_stdout() || opts.no_stdout {
+            logger::debug("Plugin output suppressed");
         } else {
             println!("{}", result);
         }

@@ -142,6 +142,11 @@ fn run_pipeline(
     let pipeline_start = Instant::now();
     eprintln!("{}", format!("Running: {}", pipeline_name).cyan().bold());
 
+    // Show log file location to user
+    if let Some(log_path) = logger::get_log_path() {
+        eprintln!("{}", format!("  Log file: {}", log_path.display()).dimmed());
+    }
+
     let mut current_stdin: Option<String> = None;
 
     let resolved_output_folder = if let Some(folder) = &config.output_folder {
@@ -208,6 +213,17 @@ fn run_pipeline(
         logger::debug(&format!("Invoking: {}", target));
         logger::debug(&format!("Config: {}", final_config_json));
 
+        // Set current plugin context for logging
+        logger::set_current_plugin(Some(plugin_name.to_string()));
+
+        // Reconfigure Python logging with plugin name
+        if let Err(e) = Bridge::reconfigure_logging_for_plugin(plugin_name) {
+            logger::warn(&format!(
+                "Failed to reconfigure Python logging for plugin {}: {}",
+                plugin_name, e
+            ));
+        }
+
         let invocation_result =
             match bridge.invoke_plugin(&target, &final_config_json, stdin_json, Some(plugin)) {
                 Ok(inv_result) => {
@@ -235,14 +251,23 @@ fn run_pipeline(
                         total_steps,
                         super::format_duration(elapsed)
                     ));
+                    // Clear plugin context before returning error
+                    logger::set_current_plugin(None);
                     return Err(RunError::Bridge(e));
                 }
             };
 
+        // Clear plugin context after execution
+        logger::set_current_plugin(None);
+
         let result = invocation_result.output;
 
         if !result.is_empty() && result != "null" {
-            logger::debug(&format!("Plugin produced output ({} bytes)", result.len()));
+            if !opts.no_stdout {
+                logger::debug(&format!("Plugin produced output ({} bytes)", result.len()));
+            } else {
+                logger::debug("Plugin produced output (suppressed by --no-stdout)");
+            }
             current_stdin = Some(result);
         } else {
             logger::debug("Plugin produced no output or output not used");
@@ -265,8 +290,8 @@ fn run_pipeline(
             std::fs::write(output_path, final_output.as_bytes())
                 .map_err(|e| RunError::Pipeline(PipelineError::Io(e)))?;
             logger::success(&format!("Output saved to: {}", output_path));
-        } else if opts.suppress_stdout() {
-            logger::debug("Pipeline output suppressed due to -qq");
+        } else if opts.suppress_stdout() || opts.no_stdout {
+            logger::debug("Pipeline output suppressed");
         } else {
             println!("{}", final_output);
         }
