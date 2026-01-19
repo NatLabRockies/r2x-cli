@@ -249,10 +249,10 @@ class TestConfig:
     assert_eq!(fields[1].default.as_deref(), Some("None"));
     assert_eq!(fields[2].default.as_deref(), Some("None"));
 
-    // Verify annotations don't contain comments
-    assert_eq!(fields[0].annotation.as_deref(), Some("str"));
-    assert_eq!(fields[1].annotation.as_deref(), Some("str | None"));
-    assert_eq!(fields[2].annotation.as_deref(), Some("dict | None"));
+    // Verify types don't contain comments
+    assert_eq!(fields[0].types, vec!["str"]);
+    assert_eq!(fields[1].types, vec!["str", "None"]);
+    assert_eq!(fields[2].types, vec!["dict", "None"]);
 
     Ok(())
 }
@@ -304,25 +304,19 @@ class PLEXOSConfig:
     assert_eq!(fields[4].name, "simulation_config");
 
     // Verify model_name doesn't contain timeseries_dir content
+    let model_name_types_str = fields[0].types.join(" | ");
     assert!(
-        !fields[0]
-            .annotation
-            .as_ref()
-            .unwrap()
-            .contains("timeseries_dir"),
-        "model_name annotation should not contain timeseries_dir: {}",
-        fields[0].annotation.as_ref().unwrap()
+        !model_name_types_str.contains("timeseries_dir"),
+        "model_name types should not contain timeseries_dir: {}",
+        model_name_types_str
     );
 
     // Verify timeseries_dir doesn't contain horizon_year content
+    let timeseries_types_str = fields[1].types.join(" | ");
     assert!(
-        !fields[1]
-            .annotation
-            .as_ref()
-            .unwrap()
-            .contains("horizon_year"),
-        "timeseries_dir annotation should not contain horizon_year: {}",
-        fields[1].annotation.as_ref().unwrap()
+        !timeseries_types_str.contains("horizon_year"),
+        "timeseries_dir types should not contain horizon_year: {}",
+        timeseries_types_str
     );
 
     Ok(())

@@ -91,15 +91,15 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
             .find_map(|pkg| {
                 pkg.plugins
                     .iter()
-                    .find(|p| p.name == *plugin_name)
+                    .find(|p| p.name.as_ref() == plugin_name.as_str())
                     .map(|p| (pkg, p))
             })
             .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
 
-        let bindings = r2x_manifest::build_runtime_bindings(plugin);
-        let has_obj = bindings.implementation_type == r2x_manifest::ImplementationType::Class;
+        // Check if it's a class-based plugin
+        let is_class = plugin.class_name.is_some();
         let input_marker = if index > 0 { "← stdin" } else { "" };
-        let output_marker = if has_obj { "→ stdout" } else { "" };
+        let output_marker = if is_class { "→ stdout" } else { "" };
 
         print!("  {}", plugin_name);
         if !input_marker.is_empty() {
@@ -172,12 +172,12 @@ fn run_pipeline(
             .find_map(|pkg| {
                 pkg.plugins
                     .iter()
-                    .find(|p| p.name == *plugin_name)
+                    .find(|p| p.name.as_ref() == plugin_name.as_str())
                     .map(|p| (pkg, p))
             })
             .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
 
-        let bindings = r2x_manifest::build_runtime_bindings(plugin);
+        let bindings = r2x_manifest::build_runtime_bindings_from_plugin(plugin);
 
         let yaml_config = if config.config.contains_key(plugin_name) {
             config.get_plugin_config_json(plugin_name)?
@@ -225,7 +225,7 @@ fn run_pipeline(
         }
 
         let invocation_result =
-            match bridge.invoke_plugin(&target, &final_config_json, stdin_json, Some(plugin)) {
+            match bridge.invoke_plugin(&target, &final_config_json, stdin_json, None) {
                 Ok(inv_result) => {
                     let elapsed = step_start.elapsed();
                     logger::spinner_success(&format!(

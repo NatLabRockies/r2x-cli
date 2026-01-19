@@ -5,11 +5,23 @@
 
 use r2x_python::resolve_site_package_path;
 use std::path::PathBuf;
-/// Find the path to an installed package
+
+/// Find the path to an installed package (loads config internally)
 pub fn find_package_path(package_name_full: &str) -> Result<PathBuf, String> {
     let config = crate::config_manager::Config::load()
         .map_err(|e| format!("Failed to load config: {}", e))?;
 
+    find_package_path_with_venv(package_name_full, &config.get_venv_path())
+}
+
+/// Find the path to an installed package using a pre-loaded venv path
+///
+/// This is more efficient when resolving multiple packages since it avoids
+/// reloading the config for each package.
+pub fn find_package_path_with_venv(
+    package_name_full: &str,
+    venv_path: &str,
+) -> Result<PathBuf, String> {
     let normalized_package_name = package_name_full.replace('-', "_");
 
     // First, try to find the package via UV's .pth file cache (for editable/local installs)
@@ -18,9 +30,8 @@ pub fn find_package_path(package_name_full: &str) -> Result<PathBuf, String> {
     }
 
     // Fallback: search in site-packages (for normally installed packages)
-    let venv_path = PathBuf::from(config.get_venv_path());
+    let venv_path = PathBuf::from(venv_path);
 
-    // FIXME, properly handle error propagation.
     let site_packages = resolve_site_package_path(&venv_path)
         .map_err(|e| format!("failed to resolve path to python packages: {}", e))?;
 

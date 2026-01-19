@@ -39,9 +39,9 @@ fn list_available_plugins() -> Result<(), RunError> {
     println!("Available plugins:\n");
     let mut packages: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for pkg in &manifest.packages {
-        let mut names: Vec<String> = pkg.plugins.iter().map(|p| p.name.clone()).collect();
+        let mut names: Vec<String> = pkg.plugins.iter().map(|p| p.name.to_string()).collect();
         names.sort();
-        packages.insert(pkg.name.clone(), names);
+        packages.insert(pkg.name.to_string(), names);
     }
 
     for (idx, (package_name, plugin_names)) in packages.iter().enumerate() {
@@ -71,12 +71,10 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
         .find_map(|pkg| {
             pkg.plugins
                 .iter()
-                .find(|p| p.name == plugin_name)
+                .find(|p| p.name.as_ref() == plugin_name)
                 .map(|p| (pkg, p))
         })
         .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
-
-    let bindings = r2x_manifest::build_runtime_bindings(plugin);
 
     package_verification::verify_and_ensure_plugin(&manifest, plugin_name)
         .map_err(|e| RunError::Verification(e.to_string()))?;
@@ -85,7 +83,17 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     let config_json = serde_json::to_string(&config_map)
         .map_err(|e| RunError::Config(format!("Failed to serialize config: {}", e)))?;
 
-    let target = super::build_call_target(&bindings)?;
+    // Build target string from plugin's module and class/function name
+    let target = if let Some(ref class_name) = plugin.class_name {
+        format!("{}.{}", plugin.module, class_name)
+    } else if let Some(ref function_name) = plugin.function_name {
+        format!("{}.{}", plugin.module, function_name)
+    } else {
+        return Err(RunError::Config(format!(
+            "Plugin '{}' has no class_name or function_name",
+            plugin_name
+        )));
+    };
 
     let bridge = Bridge::get()?;
     logger::debug(&format!("Invoking plugin with target: {}", target));
@@ -103,7 +111,8 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     }
 
     let start = Instant::now();
-    let invocation_result = bridge.invoke_plugin(&target, &config_json, None, Some(plugin))?;
+    // Pass None for plugin metadata since we don't have PluginSpec (execution type)
+    let invocation_result = bridge.invoke_plugin(&target, &config_json, None, None)?;
     let PluginInvocationResult {
         output: result,
         timings,

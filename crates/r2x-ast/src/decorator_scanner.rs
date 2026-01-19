@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 use walkdir::WalkDir;
 
-use r2x_manifest::{DecoratorRegistration, FunctionParameter, FunctionSignature, VarArgType};
+use crate::discovery_types::{DecoratorRegistration, FunctionParameter, FunctionSignature, VarArgType};
 
 /// Scanner for finding @Class.register_* decorators in Python packages using AST parsing
 pub struct DecoratorScanner {

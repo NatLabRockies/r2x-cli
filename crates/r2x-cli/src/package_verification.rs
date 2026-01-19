@@ -67,8 +67,8 @@ pub fn verify_plugin_packages(
         .find_map(|pkg| {
             pkg.plugins
                 .iter()
-                .find(|p| p.name == plugin_key)
-                .map(|_| pkg.name.clone())
+                .find(|p| p.name.as_ref() == plugin_key)
+                .map(|_| pkg.name.to_string())
         })
         .ok_or_else(|| {
             VerificationError::VerificationFailed(format!(
@@ -304,14 +304,15 @@ pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, Verif
     }
 
     // Collect all unique package names from manifest
-    let mut all_packages: HashSet<&str> = HashSet::new();
+    let mut all_packages: HashSet<String> = HashSet::new();
     for pkg in &manifest.packages {
-        all_packages.insert(&pkg.name);
+        all_packages.insert(pkg.name.to_string());
     }
 
     // Check which packages are missing
-    let packages_vec: Vec<&str> = all_packages.into_iter().collect();
-    let missing = check_packages_installed(&venv_path, &packages_vec)?;
+    let packages_vec: Vec<String> = all_packages.into_iter().collect();
+    let packages_refs: Vec<&str> = packages_vec.iter().map(|s| s.as_str()).collect();
+    let missing = check_packages_installed(&venv_path, &packages_refs)?;
 
     for package in missing {
         missing_packages.insert(package);

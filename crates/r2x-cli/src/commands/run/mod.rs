@@ -5,7 +5,7 @@ use crate::GlobalOpts;
 use clap::Parser;
 use pipeline::handle_pipeline_mode;
 use plugin::handle_plugin_command;
-use r2x_manifest::{runtime::RuntimeBindings, PluginKind};
+use r2x_manifest::runtime::RuntimeBindings;
 use r2x_python::plugin_invoker::PluginInvocationTimings;
 use std::time::Duration;
 
@@ -114,9 +114,7 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
 pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, RunError> {
     let target = match bindings.implementation_type {
         r2x_manifest::ImplementationType::Class => {
-            if bindings.plugin_kind == PluginKind::Upgrader {
-                format!("{}:{}", bindings.entry_module, bindings.entry_name)
-            } else if let Some(call_method) = &bindings.call_method {
+            if let Some(call_method) = &bindings.call_method {
                 format!(
                     "{}:{}.{}",
                     bindings.entry_module, bindings.entry_name, call_method

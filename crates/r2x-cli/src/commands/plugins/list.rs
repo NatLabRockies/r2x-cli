@@ -1,6 +1,6 @@
 use crate::config_manager::Config;
 use crate::plugins::get_package_info;
-use crate::r2x_manifest::{ImplementationType, Manifest};
+use crate::r2x_manifest::{Manifest, Plugin};
 use crate::GlobalOpts;
 use colored::Colorize;
 use std::collections::BTreeMap;
@@ -13,12 +13,8 @@ pub fn list_plugins(
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
     let has_plugins = !manifest.is_empty();
-    let has_decorators = manifest
-        .packages
-        .iter()
-        .any(|pkg| !pkg.decorator_registrations.is_empty());
 
-    if !has_plugins && !has_decorators {
+    if !has_plugins {
         println!("There are no current plugins installed.\n");
         println!(
             "To install a plugin, run:\n  {} install <package>",
@@ -40,9 +36,9 @@ pub fn list_plugins(
     // Otherwise, show the standard list view
     let mut packages: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for pkg in &manifest.packages {
-        let mut names: Vec<String> = pkg.plugins.iter().map(|p| p.name.clone()).collect();
+        let mut names: Vec<String> = pkg.plugins.iter().map(|p| p.name.to_string()).collect();
         names.sort();
-        packages.insert(pkg.name.clone(), names);
+        packages.insert(pkg.name.to_string(), names);
     }
 
     if has_plugins {
@@ -58,7 +54,7 @@ pub fn list_plugins(
 
         for (package_name, plugin_names) in &packages {
             // Get package metadata
-            let pkg = manifest.packages.iter().find(|p| p.name == *package_name);
+            let pkg = manifest.packages.iter().find(|p| p.name.as_ref() == package_name);
             let is_editable = pkg.map(|p| p.editable_install).unwrap_or(false);
 
             // Get version info
@@ -76,10 +72,10 @@ pub fn list_plugins(
                 package_header.push_str(&format!(" {}", format!("v{}", version).dimmed()));
             }
             if is_editable {
-                if let Some(source_path) = pkg.and_then(|p| p.resolved_source_path.as_ref()) {
+                if let Some(source_uri) = pkg.and_then(|p| p.source_uri.as_ref()) {
                     package_header.push_str(&format!(
                         " {}",
-                        format!("(file://{})", source_path).dimmed()
+                        format!("({})", source_uri).dimmed()
                     ));
                 } else {
                     package_header.push_str(&format!(" {}", "[editable]".yellow()));
@@ -96,40 +92,6 @@ pub fn list_plugins(
         println!("{}: {}", "Total plugin packages".bold(), packages.len());
     }
 
-    if has_decorators {
-        println!();
-        println!("{}", "Decorator Registrations:".bold().green());
-
-        let mut total_decorator_packages = 0;
-        for pkg in &manifest.packages {
-            if !pkg.decorator_registrations.is_empty() {
-                println!(
-                    " {} {}:",
-                    pkg.name.bold().blue(),
-                    format!("({} registrations)", pkg.decorator_registrations.len()).dimmed()
-                );
-
-                for reg in &pkg.decorator_registrations {
-                    println!(
-                        "    @{}.{}() -> {}",
-                        reg.decorator_class, reg.decorator_method, reg.function_name
-                    );
-                    if let Some(source) = &reg.source_file {
-                        println!("      {}: {}", "Source".dimmed(), source.dimmed());
-                    }
-                }
-                println!();
-                total_decorator_packages += 1;
-            }
-        }
-
-        println!(
-            "{}: {}",
-            "Total packages with decorators".bold(),
-            total_decorator_packages
-        );
-    }
-
     Ok(())
 }
 
@@ -143,7 +105,7 @@ fn show_plugin_details(
     let package = manifest
         .packages
         .iter()
-        .find(|pkg| pkg.name == plugin_filter)
+        .find(|pkg| pkg.name.as_ref() == plugin_filter)
         .ok_or_else(|| format!("Plugin package '{}' not found", plugin_filter))?;
 
     // Build package header with version and editable info
@@ -155,7 +117,7 @@ fn show_plugin_details(
         .unwrap_or("uv");
 
     let version_info = if let Some(ref py_path) = python_path {
-        get_package_info(uv_path, py_path, &package.name)
+        get_package_info(uv_path, py_path, package.name.as_ref())
             .ok()
             .and_then(|(v, _)| v)
     } else {
@@ -165,14 +127,14 @@ fn show_plugin_details(
     print!(
         "{} {}",
         "Package:".bold().green(),
-        package.name.bold().blue()
+        package.name.as_ref().bold().blue()
     );
     if let Some(version) = version_info {
         print!(" {}", format!("v{}", version).dimmed());
     }
     if package.editable_install {
-        if let Some(ref source_path) = package.resolved_source_path {
-            print!(" {}", format!("(file://{})", source_path).dimmed());
+        if let Some(ref source_uri) = package.source_uri {
+            print!(" {}", format!("({})", source_uri).dimmed());
         } else {
             print!(" {}", "[editable]".yellow());
         }
@@ -188,7 +150,8 @@ fn show_plugin_details(
             .filter(|p| {
                 // Match if the plugin name ends with the module filter
                 // e.g., "r2x_reeds.break_gens" matches module "break_gens"
-                let parts: Vec<&str> = p.name.split('.').collect();
+                let name_str = p.name.as_ref();
+                let parts: Vec<&str> = name_str.split('.').collect();
                 parts
                     .last()
                     .map(|&last| last == module_name)
@@ -218,162 +181,102 @@ fn show_plugin_details(
     Ok(())
 }
 
-fn show_plugin_compact(plugin: &crate::r2x_manifest::PluginSpec) {
-    println!("{} [{:?}]", plugin.name.bold().cyan(), plugin.kind);
+fn show_plugin_compact(plugin: &Plugin) {
+    println!("{} [{:?}]", plugin.name.as_ref().bold().cyan(), plugin.plugin_type);
 
-    if let Some(desc) = &plugin.description {
-        println!("  {}: {}", "Description".dimmed(), desc);
+    // Show module info
+    println!("  {}: {}", "Module".dimmed(), plugin.module);
+
+    // Show class or function name
+    if let Some(ref class_name) = plugin.class_name {
+        println!("  {}: {}", "Class".dimmed(), class_name);
+    }
+    if let Some(ref function_name) = plugin.function_name {
+        println!("  {}: {}", "Function".dimmed(), function_name);
     }
 
-    // Collect all parameters (constructor + call)
-    let mut all_params = Vec::new();
-
-    // Add constructor parameters if present
-    if !plugin.invocation.constructor.is_empty() {
-        all_params.extend(plugin.invocation.constructor.iter());
+    // Show config if available
+    if let Some(ref config_class) = plugin.config_class {
+        println!("  {}: {}", "Config".dimmed(), config_class);
     }
 
-    // Add call/method parameters
-    if !plugin.invocation.call.is_empty() {
-        all_params.extend(plugin.invocation.call.iter());
-    }
-
-    if !all_params.is_empty() {
-        println!("  {}:", "Parameters".dimmed());
-        for arg in all_params {
-            let default_str = arg
+    // Show arguments if available
+    if !plugin.parameters.is_empty() {
+        println!("  {}:", "Arguments".dimmed());
+        for param in &plugin.parameters {
+            let req_marker = if param.required { "*" } else { " " };
+            let default_str = param
                 .default
                 .as_ref()
-                .map(|d| format!(" (default={})", d))
+                .map(|d| format!(" = {}", d))
                 .unwrap_or_default();
+            println!("    {}{}: {}{}", req_marker, param.name, param.format_types(), default_str);
 
-            println!("    {}{}", arg.name, default_str);
+            if let Some(ref desc) = param.description {
+                println!("      {}", desc.dimmed());
+            }
         }
     }
 }
 
-fn show_plugin_verbose(plugin: &crate::r2x_manifest::PluginSpec) {
-    println!("{}", plugin.name.bold().cyan());
+fn show_plugin_verbose(plugin: &Plugin) {
+    println!("{}", plugin.name.as_ref().bold().cyan());
 
-    if let Some(desc) = &plugin.description {
-        println!("  {}: {}", "Description".dimmed(), desc);
+    println!("  {}: {:?}", "Type".dimmed(), plugin.plugin_type);
+    println!("  {}: {}", "Module".dimmed(), plugin.module);
+
+    // Show class or function name
+    if let Some(ref class_name) = plugin.class_name {
+        println!("  {}: {}", "Class".dimmed(), class_name);
+    }
+    if let Some(ref function_name) = plugin.function_name {
+        println!("  {}: {}", "Function".dimmed(), function_name);
     }
 
-    println!("  {}: {:?}", "Kind".dimmed(), plugin.kind);
-    println!("  {}: {}", "Entry".dimmed(), plugin.entry);
+    // Show config info
+    if let Some(ref config_class) = plugin.config_class {
+        print!("  {}: {}", "Config Class".dimmed(), config_class);
+        if let Some(ref config_module) = plugin.config_module {
+            print!(" ({})", config_module);
+        }
+        println!();
+    }
 
-    // Show implementation type
-    println!(
-        "  {}: {:?}",
-        "Implementation".dimmed(),
-        plugin.invocation.implementation
-    );
+    // Show hooks
+    if !plugin.hooks.is_empty() {
+        println!("  {}:", "Hooks".dimmed());
+        for hook in &plugin.hooks {
+            println!("    - {}", hook);
+        }
+    }
 
-    // Show constructor parameters if it's a class
-    if !plugin.invocation.constructor.is_empty() {
-        println!("\n  {}:", "Constructor Parameters".bold().yellow());
-        for arg in &plugin.invocation.constructor {
-            let req_marker = if arg.required { "*" } else { "" };
-            let annotation = arg.annotation.as_deref().unwrap_or("Any");
-            let default_str = arg
+    // Show arguments
+    if !plugin.parameters.is_empty() {
+        println!("  {}:", "Arguments".dimmed());
+        for param in &plugin.parameters {
+            let req_marker = if param.required { "*" } else { " " };
+            let module_str = param.module.as_ref()
+                .map(|m| format!(" ({})", m))
+                .unwrap_or_default();
+            let default_str = param
                 .default
                 .as_ref()
                 .map(|d| format!(" = {}", d))
                 .unwrap_or_default();
+            println!("    {}{}: {}{}{}", req_marker, param.name, param.format_types(), module_str, default_str);
 
-            println!(
-                "    {}{}: {}{}",
-                arg.name, req_marker, annotation, default_str
-            );
+            if let Some(ref desc) = param.description {
+                println!("      {}", desc.dimmed());
+            }
         }
     }
 
-    // Show call/method parameters
-    if !plugin.invocation.call.is_empty() {
-        let label = match plugin.invocation.implementation {
-            ImplementationType::Function => "Function Parameters",
-            ImplementationType::Class => {
-                let method_name = plugin.invocation.method.as_deref().unwrap_or("__call__");
-                println!(
-                    "\n  {} ({}):",
-                    "Method Parameters".bold().yellow(),
-                    method_name
-                );
-                ""
-            }
-        };
-
-        if !label.is_empty() {
-            println!("\n  {}:", label.bold().yellow());
-        }
-
-        for arg in &plugin.invocation.call {
-            let req_marker = if arg.required { "*" } else { "" };
-            let annotation = arg.annotation.as_deref().unwrap_or("Any");
-            let default_str = arg
-                .default
-                .as_ref()
-                .map(|d| format!(" = {}", d))
-                .unwrap_or_default();
-
-            println!(
-                "    {}{}{}{}",
-                arg.name,
-                req_marker,
-                if annotation != "Any" {
-                    format!(": {}", annotation)
-                } else {
-                    String::new()
-                },
-                default_str
-            );
-        }
-    }
-
-    // Show I/O contract
-    if !plugin.io.consumes.is_empty() || !plugin.io.produces.is_empty() {
-        println!("\n  {}:", "I/O Contract".bold().yellow());
-        if !plugin.io.consumes.is_empty() {
-            println!("    {}: {:?}", "Consumes".dimmed(), plugin.io.consumes);
-        }
-        if !plugin.io.produces.is_empty() {
-            println!("    {}: {:?}", "Produces".dimmed(), plugin.io.produces);
-        }
-    }
-
-    // Show resource requirements
-    if let Some(resources) = &plugin.resources {
-        println!("\n  {}:", "Resources".bold().yellow());
-
-        if let Some(config) = &resources.config {
-            println!("    {}:", "Config".dimmed());
-            println!("      Module: {}", config.module);
-            println!("      Class: {}", config.name);
-            if !config.fields.is_empty() {
-                println!("      Fields:");
-                for field in &config.fields {
-                    let req_marker = if field.required { "*" } else { "" };
-                    let annotation = field.annotation.as_deref().unwrap_or("Any");
-                    let default_str = field
-                        .default
-                        .as_ref()
-                        .map(|d| format!(" = {}", d))
-                        .unwrap_or_default();
-
-                    println!(
-                        "        {}{}: {}{}",
-                        field.name, req_marker, annotation, default_str
-                    );
-                }
-            }
-        }
-
-        if let Some(store) = &resources.store {
-            println!("    {}:", "Store".dimmed());
-            println!("      Mode: {:?}", store.mode);
-            if let Some(path) = &store.path {
-                println!("      Path: {}", path);
-            }
+    // Show config schema if available
+    if !plugin.config_schema.is_empty() {
+        println!("  {}:", "Config Schema".dimmed());
+        for (field_name, field) in plugin.config_schema.iter() {
+            let req_marker = if field.required { "*" } else { "" };
+            println!("    {}{}: {:?}", field_name, req_marker, field.field_type);
         }
     }
 }

@@ -24,8 +24,10 @@ pub use errors::PipelineError;
 pub use python_bridge::errors::BridgeError;
 pub use r2x_manifest::errors::ManifestError;
 
-// Re-export manifest types from new module for convenience
-pub use r2x_manifest::{
-    DecoratorRegistration, FunctionParameter, FunctionSignature, Manifest, Metadata, Package,
-    VarArgType,
+// Re-export manifest types for convenience
+pub use r2x_manifest::{Manifest, Package, Plugin};
+
+// Re-export discovery types from r2x_ast
+pub use r2x_ast::discovery_types::{
+    DecoratorRegistration, DiscoveredPlugin, FunctionParameter, FunctionSignature, VarArgType,
 };

@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use ast_grep_core::AstGrep;
 use ast_grep_language::Python;
-use r2x_manifest::{
-    ArgumentSpec, ConfigField, ConfigSpec, IOContract, IOSlot, ImplementationType, InvocationSpec,
-    PluginKind, PluginSpec, ResourceSpec, StoreMode, StoreSpec,
+use crate::discovery_types::{
+    ArgumentSpec, ConfigField, ConfigSpec, DiscoveredPlugin, IOContract, IOSlot,
+    ImplementationType, InvocationSpec, PluginKind, ResourceSpec, StoreMode, StoreSpec,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -48,7 +48,7 @@ impl PluginExtractor {
         })
     }
 
-    pub fn extract_plugins(&self) -> Result<Vec<PluginSpec>> {
+    pub fn extract_plugins(&self) -> Result<Vec<DiscoveredPlugin>> {
         debug!(
             "Extracting plugins via AST parsing from: {:?}",
             self.python_file_path
@@ -101,19 +101,23 @@ impl PluginExtractor {
         ))
     }
 
-    fn extract_plugin_from_add_call(&self, add_text: &str) -> Result<PluginSpec> {
+    fn extract_plugin_from_add_call(&self, add_text: &str) -> Result<DiscoveredPlugin> {
         debug!(
-            "Parsing PluginSpec from manifest.add(): {}",
+            "Parsing DiscoveredPlugin from manifest.add(): {}",
             add_text.lines().next().unwrap_or("")
         );
 
         let sg = AstGrep::new(add_text, Python);
         let root = sg.root();
 
-        let plugin_spec_calls: Vec<_> = root.find_all("PluginSpec.$METHOD($$$ARGS)").collect();
+        // Try both PluginSpec and DiscoveredPlugin patterns
+        let mut plugin_spec_calls: Vec<_> = root.find_all("PluginSpec.$METHOD($$$ARGS)").collect();
+        if plugin_spec_calls.is_empty() {
+            plugin_spec_calls = root.find_all("DiscoveredPlugin.$METHOD($$$ARGS)").collect();
+        }
 
         if plugin_spec_calls.is_empty() {
-            return Err(anyhow!("No PluginSpec helper call found in manifest.add()"));
+            return Err(anyhow!("No PluginSpec or DiscoveredPlugin helper call found in manifest.add()"));
         }
 
         let spec_match = &plugin_spec_calls[0];
@@ -131,7 +135,7 @@ impl PluginExtractor {
             "upgrader" => PluginKind::Upgrader,
             "utility" => PluginKind::Utility,
             "translation" => PluginKind::Translation,
-            _ => return Err(anyhow!("Unknown PluginSpec helper method: {}", method)),
+            _ => return Err(anyhow!("Unknown DiscoveredPlugin helper method: {}", method)),
         };
 
         debug!("Detected plugin kind: {:?}", kind);
@@ -173,7 +177,7 @@ impl PluginExtractor {
 
         let resources = self.extract_resources(&kwargs);
 
-        Ok(PluginSpec {
+        Ok(DiscoveredPlugin {
             name,
             kind,
             entry,
@@ -186,7 +190,7 @@ impl PluginExtractor {
         })
     }
 
-    fn extract_plugins_from_constructor_calls(&self) -> Result<Vec<PluginSpec>> {
+    fn extract_plugins_from_constructor_calls(&self) -> Result<Vec<DiscoveredPlugin>> {
         let sg = AstGrep::new(&self.content, Python);
         let root = sg.root();
         let mut plugins = Vec::new();
@@ -229,7 +233,7 @@ impl PluginExtractor {
         &self,
         constructor: &str,
         call_text: &str,
-    ) -> Result<PluginSpec> {
+    ) -> Result<DiscoveredPlugin> {
         let kwargs = self.extract_keyword_arguments_from_text(call_text)?;
         let name = self.find_kwarg_by_role(&kwargs, args::KwArgRole::Name)?;
         let entry = self.find_entry_reference(&kwargs)?;
@@ -263,7 +267,7 @@ impl PluginExtractor {
         let io = self.infer_io_contract(&kind);
         let resources = self.extract_resources(&kwargs);
 
-        Ok(PluginSpec {
+        Ok(DiscoveredPlugin {
             name,
             kind,
             entry,
@@ -652,7 +656,7 @@ impl PluginExtractor {
 
     pub fn resolve_references(
         &self,
-        _plugin: &mut PluginSpec,
+        _plugin: &mut DiscoveredPlugin,
         _package_root: &std::path::Path,
         _package_name: &str,
     ) -> Result<()> {
@@ -946,6 +950,8 @@ impl PluginExtractor {
     }
 
     fn parse_config_field_definition(definition: &str) -> Option<ConfigField> {
+        use crate::schema_extractor::{extract_description_from_field, parse_union_types_from_annotation};
+
         let (name_part, remainder) = definition.split_once(':')?;
         let name = name_part.trim();
         if name.is_empty() || name.starts_with("class") || name.starts_with("def") {
@@ -955,21 +961,41 @@ impl PluginExtractor {
         let rest = remainder.trim();
         let (annotation, default) = Self::split_annotation_and_default(rest);
         let annotation = annotation.filter(|s| !s.is_empty());
+
+        // Parse union types from the annotation
+        let types = annotation
+            .as_ref()
+            .map(|ann| parse_union_types_from_annotation(ann))
+            .unwrap_or_else(|| vec!["Any".to_string()]);
+
+        // Extract description from Field() if present in the definition
+        let description = extract_description_from_field(definition);
+
         let default = default.and_then(|value| {
             let cleaned = value.split('#').next().unwrap().trim();
             if cleaned.is_empty() {
                 None
             } else {
-                Some(cleaned.trim().to_string())
+                // Clean up default value - remove quotes if it's a string
+                let cleaned = cleaned.trim();
+                if (cleaned.starts_with('"') && cleaned.ends_with('"'))
+                    || (cleaned.starts_with('\'') && cleaned.ends_with('\''))
+                {
+                    Some(cleaned[1..cleaned.len() - 1].to_string())
+                } else {
+                    Some(cleaned.to_string())
+                }
             }
         });
-        let required = default.is_none();
+        let required = default.is_none()
+            && !types.iter().any(|t| t == "None" || t.starts_with("Optional"));
 
         Some(ConfigField {
             name: name.to_string(),
-            annotation,
+            types,
             default,
             required,
+            description,
         })
     }
 
