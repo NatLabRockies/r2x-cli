@@ -17,17 +17,16 @@ pub mod schema_extractor;
 
 use anyhow::{anyhow, Result};
 use ast_grep_language::Python;
-use discovery_types::{DecoratorRegistration, DiscoveredPlugin};
 use r2x_logger as logger;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-// Re-export commonly used types
+// Re-export commonly used types (also used internally)
 pub use discovery_types::{
-    ArgumentSpec, ConfigField, ConfigSpec, EntryPointInfo, IOContract, IOSlot,
-    ImplementationType, InvocationSpec, PluginKind, ResourceSpec, StoreMode, StoreSpec,
-    UpgradeSpec,
+    ArgumentSpec, ConfigField, ConfigSpec, DecoratorRegistration, DiscoveredPlugin,
+    EntryPointInfo, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind,
+    ResourceSpec, StoreMode, StoreSpec, UpgradeSpec,
 };
 pub use schema_extractor::SchemaExtractor;
 
@@ -554,8 +553,6 @@ impl AstDiscovery {
         package_name: &str,
         file_cache: &mut HashMap<PathBuf, String>,
     ) -> Result<DiscoveredPlugin> {
-        use discovery_types::{ImplementationType, InvocationSpec};
-
         logger::debug(&format!(
             "Discovering direct entry point: {} = {}:{}",
             entry.name, entry.module, entry.symbol
@@ -630,24 +627,15 @@ impl AstDiscovery {
         })
     }
 
-    /// Read file content, using cache to avoid re-reading the same file
-    /// Returns an owned String to avoid borrow issues
-    fn read_file_cached(
-        file_cache: &mut HashMap<PathBuf, String>,
-        path: &Path,
-    ) -> Option<String> {
-        // Check cache first
+    /// Read file content with caching to avoid re-reading the same file
+    fn read_file_cached(file_cache: &mut HashMap<PathBuf, String>, path: &Path) -> Option<String> {
         if let Some(content) = file_cache.get(path) {
             return Some(content.clone());
         }
 
-        // Read from disk and cache
-        if let Ok(content) = std::fs::read_to_string(path) {
-            file_cache.insert(path.to_path_buf(), content.clone());
-            return Some(content);
-        }
-
-        None
+        let content = std::fs::read_to_string(path).ok()?;
+        file_cache.insert(path.to_path_buf(), content.clone());
+        Some(content)
     }
 
     /// Extract entry metadata using direct file parsing
@@ -656,22 +644,16 @@ impl AstDiscovery {
         source_path: &Path,
         content: &str,
         symbol: &str,
-        implementation: &discovery_types::ImplementationType,
+        implementation: &ImplementationType,
         module: &str,
         file_cache: &mut HashMap<PathBuf, String>,
-    ) -> (
-        Vec<discovery_types::ArgumentSpec>,
-        Vec<discovery_types::ArgumentSpec>,
-        Option<discovery_types::ResourceSpec>,
-    ) {
-        use discovery_types::ResourceSpec;
-
+    ) -> (Vec<ArgumentSpec>, Vec<ArgumentSpec>, Option<ResourceSpec>) {
         let (constructor_args, call_args) = match implementation {
-            discovery_types::ImplementationType::Class => {
+            ImplementationType::Class => {
                 let args = Self::extract_class_init_params(content, symbol);
                 (args, Vec::new())
             }
-            discovery_types::ImplementationType::Function => {
+            ImplementationType::Function => {
                 let args = Self::extract_function_params(content, symbol);
                 (Vec::new(), args)
             }
@@ -693,9 +675,7 @@ impl AstDiscovery {
                 store: None,
                 config: Some(c),
             })
-        } else if matches!(implementation, discovery_types::ImplementationType::Function)
-            && !call_args.is_empty()
-        {
+        } else if matches!(implementation, ImplementationType::Function) && !call_args.is_empty() {
             // For functions without config, use function parameters as config fields
             let fields = call_args
                 .iter()
@@ -704,9 +684,9 @@ impl AstDiscovery {
 
             Some(ResourceSpec {
                 store: None,
-                config: Some(discovery_types::ConfigSpec {
+                config: Some(ConfigSpec {
                     module: module.to_string(),
-                    name: format!("{}Params", symbol), // Synthetic name
+                    name: format!("{}Params", symbol),
                     fields,
                 }),
             })
@@ -725,9 +705,7 @@ impl AstDiscovery {
         symbol: &str,
         module: &str,
         file_cache: &mut HashMap<PathBuf, String>,
-    ) -> Option<discovery_types::ConfigSpec> {
-        use discovery_types::ConfigSpec;
-
+    ) -> Option<ConfigSpec> {
         // First, find the config class name from the current file
         let config_name = Self::find_config_class_name(content, symbol)?;
 
@@ -809,25 +787,16 @@ impl AstDiscovery {
         file_cache: &mut HashMap<PathBuf, String>,
     ) -> Option<String> {
         let parent = source_path.parent()?;
+        let class_with_base = format!("class {}(", config_name);
+        let class_no_base = format!("class {}:", config_name);
 
-        // Common patterns for config class locations
-        let candidates = [
-            parent.join("__init__.py"),
-            parent.join("config.py"),
-            parent.join("configs.py"),
-            parent.join("types.py"),
-        ];
+        let candidates = ["__init__.py", "config.py", "configs.py", "types.py"];
 
-        let class_pattern = format!("class {}(", config_name);
-        let class_pattern_no_base = format!("class {}:", config_name);
-
-        for candidate in &candidates {
-            if candidate.exists() {
-                if let Some(content) = Self::read_file_cached(file_cache, candidate) {
-                    if content.contains(&class_pattern) || content.contains(&class_pattern_no_base)
-                    {
-                        return Some(content);
-                    }
+        for filename in candidates {
+            let candidate = parent.join(filename);
+            if let Some(content) = Self::read_file_cached(file_cache, &candidate) {
+                if content.contains(&class_with_base) || content.contains(&class_no_base) {
+                    return Some(content);
                 }
             }
         }
@@ -931,25 +900,21 @@ impl AstDiscovery {
     }
 
     /// Extract __init__ parameters from a class definition
-    fn extract_class_init_params(content: &str, class_name: &str) -> Vec<discovery_types::ArgumentSpec> {
+    fn extract_class_init_params(content: &str, class_name: &str) -> Vec<ArgumentSpec> {
         use ast_grep_core::AstGrep;
 
         let sg = AstGrep::new(content, Python);
         let root = sg.root();
 
-        // Find class definition
+        // Find class definition - early return if not found
         let pattern = format!("class {}($$$BASES): $$$BODY", class_name);
-        let class_matches: Vec<_> = root.find_all(pattern.as_str()).collect();
-
-        if class_matches.is_empty() {
+        if root.find_all(pattern.as_str()).next().is_none() {
             return Vec::new();
         }
 
         // Look for __init__ method within the class
         let init_pattern = "def __init__(self, $$$PARAMS): $$$BODY";
-        let init_matches: Vec<_> = root.find_all(init_pattern).collect();
-
-        for init_match in init_matches {
+        for init_match in root.find_all(init_pattern) {
             if let Some(params) = Self::extract_params_from_match(&init_match) {
                 return params;
             }
@@ -959,9 +924,7 @@ impl AstDiscovery {
     }
 
     /// Extract parameters from a function definition using text-based parsing
-    /// This is faster than AST pattern matching
-    fn extract_function_params(content: &str, function_name: &str) -> Vec<discovery_types::ArgumentSpec> {
-
+    fn extract_function_params(content: &str, function_name: &str) -> Vec<ArgumentSpec> {
         // Find "def function_name(" in content
         let search = format!("def {}(", function_name);
         let Some(start) = content.find(&search) else {
@@ -1005,10 +968,17 @@ impl AstDiscovery {
         params
     }
 
-    /// Parse a single function parameter string into ArgumentSpec
-    fn parse_function_param(param_str: &str) -> Option<discovery_types::ArgumentSpec> {
-        use discovery_types::ArgumentSpec;
+    /// Check if a parameter name should be skipped
+    fn is_skipped_param(name: &str) -> bool {
+        name.is_empty()
+            || name == "self"
+            || name == "system"
+            || name == "kwargs"
+            || name.starts_with('_')
+    }
 
+    /// Parse a single function parameter string into ArgumentSpec
+    fn parse_function_param(param_str: &str) -> Option<ArgumentSpec> {
         let param_str = param_str.trim();
 
         // Skip empty, self, *args, **kwargs
@@ -1018,21 +988,15 @@ impl AstDiscovery {
 
         let (name, annotation, default) = Self::parse_param_text(param_str);
 
-        // Skip special parameters
-        if name.is_empty()
-            || name == "self"
-            || name == "system"
-            || name == "kwargs"
-            || name.starts_with('_')
-        {
+        if Self::is_skipped_param(&name) {
             return None;
         }
 
         Some(ArgumentSpec {
             name,
             annotation,
-            default: default.clone(),
             required: default.is_none(),
+            default,
         })
     }
 
@@ -1042,46 +1006,34 @@ impl AstDiscovery {
             '_,
             ast_grep_core::source::StrDoc<Python>,
         >,
-    ) -> Option<Vec<discovery_types::ArgumentSpec>> {
-        use discovery_types::ArgumentSpec;
-
+    ) -> Option<Vec<ArgumentSpec>> {
         let env = func_match.get_env();
         let params_nodes = env.get_multiple_matches("$$$PARAMS");
 
-        if params_nodes.is_empty() {
-            return Some(Vec::new());
-        }
+        let params = params_nodes
+            .into_iter()
+            .filter_map(|param_node| {
+                let param_text = param_node.text();
 
-        let mut params = Vec::new();
-        for param_node in params_nodes {
-            let param_text = param_node.text().to_string();
-            let param_text = param_text.trim();
+                // Skip self, *args, **kwargs
+                if param_text == "self" || param_text.starts_with('*') {
+                    return None;
+                }
 
-            // Skip self, *args, **kwargs
-            if param_text == "self" || param_text.starts_with('*') {
-                continue;
-            }
+                let (name, annotation, default) = Self::parse_param_text(&param_text);
 
-            // Parse parameter: name: type = default
-            let (name, annotation, default) = Self::parse_param_text(param_text);
+                if Self::is_skipped_param(&name) {
+                    return None;
+                }
 
-            // Skip special parameters: self, system, and internal params starting with _
-            if name.is_empty()
-                || name == "self"
-                || name == "system"
-                || name == "kwargs"
-                || name.starts_with('_')
-            {
-                continue;
-            }
-
-            params.push(ArgumentSpec {
-                name,
-                annotation,
-                default: default.clone(),
-                required: default.is_none(),
-            });
-        }
+                Some(ArgumentSpec {
+                    name,
+                    annotation,
+                    required: default.is_none(),
+                    default,
+                })
+            })
+            .collect();
 
         Some(params)
     }
@@ -1116,9 +1068,8 @@ impl AstDiscovery {
     }
 
     /// Extract fields from a config class definition
-    fn extract_config_fields(content: &str, class_name: &str) -> Vec<discovery_types::ConfigField> {
+    fn extract_config_fields(content: &str, class_name: &str) -> Vec<ConfigField> {
         use ast_grep_core::AstGrep;
-        use discovery_types::ConfigField;
         use schema_extractor::{extract_description_from_field, parse_union_types_from_annotation};
 
         let sg = AstGrep::new(content, Python);
@@ -1251,35 +1202,24 @@ impl AstDiscovery {
     }
 
     /// Convert an ArgumentSpec to a ConfigField for function parameter extraction
-    fn argument_to_config_field(arg: &discovery_types::ArgumentSpec) -> discovery_types::ConfigField {
+    fn argument_to_config_field(arg: &ArgumentSpec) -> ConfigField {
         use schema_extractor::parse_union_types_from_annotation;
 
         let types = arg
             .annotation
             .as_deref()
-            .map(|ann| parse_union_types_from_annotation(ann))
+            .map(parse_union_types_from_annotation)
             .unwrap_or_else(|| vec!["Any".to_string()]);
 
-        // Clean default value - remove quotes if string
-        let default = arg.default.as_ref().map(|d| {
-            let d = d.trim();
-            if (d.starts_with('"') && d.ends_with('"'))
-                || (d.starts_with('\'') && d.ends_with('\''))
-            {
-                d[1..d.len() - 1].to_string()
-            } else {
-                d.to_string()
-            }
-        });
-
+        let default = arg.default.as_deref().map(Self::clean_default_value);
         let required = arg.required && !types.iter().any(|t| t == "None");
 
-        discovery_types::ConfigField {
+        ConfigField {
             name: arg.name.clone(),
             types,
             default,
             required,
-            description: None, // Functions don't have Field() descriptions
+            description: None,
         }
     }
 
@@ -1294,15 +1234,11 @@ impl AstDiscovery {
                 consumes: vec![IOSlot::System, IOSlot::ConfigFile],
                 produces: vec![IOSlot::Folder],
             },
-            PluginKind::Modifier => IOContract {
+            PluginKind::Modifier | PluginKind::Translation => IOContract {
                 consumes: vec![IOSlot::System],
                 produces: vec![IOSlot::System],
             },
-            PluginKind::Translation => IOContract {
-                consumes: vec![IOSlot::System],
-                produces: vec![IOSlot::System],
-            },
-            _ => IOContract {
+            PluginKind::Upgrader | PluginKind::Utility => IOContract {
                 consumes: Vec::new(),
                 produces: Vec::new(),
             },
@@ -1313,7 +1249,6 @@ impl AstDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use discovery_types::{IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind};
 
     #[test]
     fn test_parse_all_entry_points_r2x_plugin() {
