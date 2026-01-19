@@ -61,57 +61,70 @@ impl AstDiscovery {
         let total_start = Instant::now();
         logger::debug(&format!("AST discovery started for: {}", package_name_full));
 
-        // Step 1: Find entry_points.txt
+        // Step 1: Always use ast-grep library to discover all plugins
+        // This finds both Plugin[Config] classes AND @expose_plugin decorated functions
+        let ast_start = Instant::now();
+        let class_entries = Self::discover_plugins_with_ast_grep(package_path, package_name_full);
+        let function_entries =
+            Self::discover_expose_plugin_functions(package_path, package_name_full);
+
+        logger::debug(&format!(
+            "AST-grep discovery: {} classes, {} functions in {:.2}ms",
+            class_entries.len(),
+            function_entries.len(),
+            ast_start.elapsed().as_secs_f64() * 1000.0
+        ));
+
+        // Step 2: Also check entry_points.txt for explicitly registered plugins
         let entry_start = Instant::now();
-        let all_entries = match Self::find_entry_points_txt(package_path, package_name_full, venv_path)
-        {
-            Ok(entry_points_path) => {
-                logger::debug(&format!(
-                    "Found entry_points.txt at: {:?}",
-                    entry_points_path
-                ));
-
-                // Step 2: Read and parse all r2x-related entry points
-                let content = std::fs::read_to_string(&entry_points_path)
-                    .map_err(|e| anyhow!("Failed to read entry_points.txt: {}", e))?;
-
-                let entries = Self::parse_all_entry_points(&content);
-
-                if entries.is_empty() {
+        let entry_point_entries =
+            match Self::find_entry_points_txt(package_path, package_name_full, venv_path) {
+                Ok(entry_points_path) => {
                     logger::debug(&format!(
-                        "No r2x-related entry points in entry_points.txt, using ast-grep fallback"
+                        "Found entry_points.txt at: {:?}",
+                        entry_points_path
                     ));
-                    // Fallback to ast-grep discovery
-                    Self::discover_plugins_with_ast_grep(package_path, package_name_full)
-                } else {
-                    entries
+
+                    let content = std::fs::read_to_string(&entry_points_path)
+                        .map_err(|e| anyhow!("Failed to read entry_points.txt: {}", e))?;
+
+                    Self::parse_all_entry_points(&content)
                 }
-            }
-            Err(e) => {
-                logger::debug(&format!(
-                    "No entry_points.txt found for '{}': {}, using ast-grep fallback",
-                    package_name_full, e
-                ));
-                // Fallback to ast-grep discovery - search for Plugin classes directly
-                Self::discover_plugins_with_ast_grep(package_path, package_name_full)
-            }
-        };
+                Err(e) => {
+                    logger::debug(&format!(
+                        "No entry_points.txt found for '{}': {} (using ast-grep only)",
+                        package_name_full, e
+                    ));
+                    Vec::new()
+                }
+            };
+
+        logger::debug(&format!(
+            "Entry points parsing: {} entries in {:.2}ms",
+            entry_point_entries.len(),
+            entry_start.elapsed().as_secs_f64() * 1000.0
+        ));
+
+        // Step 3: Merge and deduplicate all discoveries
+        // Priority: entry_points.txt > ast-grep (entry_points.txt has explicit registrations)
+        let mut all_entries = Vec::new();
+        all_entries.extend(entry_point_entries); // Entry points first (higher priority)
+        all_entries.extend(class_entries);
+        all_entries.extend(function_entries);
+
+        let all_entries = Self::deduplicate_entries(all_entries);
 
         if all_entries.is_empty() {
-            logger::debug(&format!(
-                "No plugins found for '{}'",
-                package_name_full
-            ));
+            logger::debug(&format!("No plugins found for '{}'", package_name_full));
             return Ok((Vec::new(), Vec::new()));
         }
 
         logger::debug(&format!(
-            "Entry points: {} entries in {:.2}ms",
-            all_entries.len(),
-            entry_start.elapsed().as_secs_f64() * 1000.0
+            "Total unique entry points: {} entries",
+            all_entries.len()
         ));
 
-        // Step 3: Discover plugins from each entry point using targeted file parsing
+        // Step 4: Discover plugins from each entry point using targeted file parsing
         // Only parse files that are actually needed (not the whole package)
         let discover_start = Instant::now();
         let mut plugins = Vec::new();
@@ -146,7 +159,7 @@ impl AstDiscovery {
             file_cache.len()
         ));
 
-        // Step 4: Decorator registrations - only extract if needed (lazy)
+        // Step 5: Decorator registrations - only extract if needed (lazy)
         // For now, skip full package scanning - decorators can be extracted on-demand
         let decorator_registrations = Vec::new();
 
@@ -387,75 +400,65 @@ impl AstDiscovery {
     }
 
     // =========================================================================
-    // AST-GREP FALLBACK DISCOVERY - Find Plugin classes without entry_points.txt
+    // AST-GREP LIBRARY-BASED DISCOVERY - Fast discovery without subprocess
     // =========================================================================
 
-    /// Discover plugins using ast-grep to search for Plugin class patterns
+    /// Discover plugins using ast-grep library to search for Plugin class patterns
     ///
     /// This is used as a fallback when entry_points.txt doesn't exist or is empty.
     /// It searches for classes that inherit from Plugin[Config].
+    ///
+    /// Uses ast-grep-core library directly for fast discovery without subprocess overhead.
     fn discover_plugins_with_ast_grep(
         package_path: &Path,
         package_name: &str,
     ) -> Vec<EntryPointInfo> {
+        use ast_grep_core::AstGrep;
+        use walkdir::WalkDir;
+
         let start = Instant::now();
-
-        // Use ast-grep to find all classes inheriting from Plugin[...]
-        let pattern = "class $NAME(Plugin[$CONFIG]): $$$BODY";
-
-        let output = match std::process::Command::new("ast-grep")
-            .args([
-                "run",
-                "--pattern",
-                pattern,
-                "--lang",
-                "python",
-                "--json",
-                package_path.to_str().unwrap_or("."),
-            ])
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                logger::debug(&format!("Failed to run ast-grep: {}", e));
-                return Vec::new();
-            }
-        };
-
-        if !output.status.success() {
-            logger::debug("ast-grep returned non-zero exit code");
-            return Vec::new();
-        }
-
-        let json_output = match String::from_utf8(output.stdout) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-
-        let results: Vec<serde_json::Value> = match serde_json::from_str(&json_output) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-
         let mut entries = Vec::new();
         let normalized_package = package_name.replace('-', "_");
 
-        for result in results {
-            // Extract file path and matched text
-            let file_path = result.get("file").and_then(|f| f.as_str()).unwrap_or("");
-            let matched_text = result.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        // Walk Python files in the package
+        for entry in WalkDir::new(package_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "py")
+                    .unwrap_or(false)
+            })
+        {
+            let content = match std::fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
 
-            // Extract class name from matched text
-            if let Some(class_name) = Self::extract_class_name_from_match(matched_text) {
-                // Infer module from file path
-                let module = Self::infer_module_from_file_path(file_path, package_path, &normalized_package);
+            // Use ast-grep-core to find classes inheriting from Plugin[Config]
+            let sg = AstGrep::new(&content, Python);
+            let root = sg.root();
 
-                entries.push(EntryPointInfo {
-                    name: Self::class_name_to_plugin_name(&class_name),
-                    module,
-                    symbol: class_name,
-                    section: "r2x_plugin".to_string(),
-                });
+            // Pattern: class with Plugin[...] base
+            let pattern = "class $NAME(Plugin[$CONFIG]): $$$BODY";
+            for class_match in root.find_all(pattern) {
+                let matched_text = class_match.text();
+
+                if let Some(class_name) = Self::extract_class_name_from_match(&matched_text) {
+                    let module = Self::infer_module_from_file_path(
+                        entry.path().to_str().unwrap_or(""),
+                        package_path,
+                        &normalized_package,
+                    );
+
+                    entries.push(EntryPointInfo {
+                        name: Self::camel_to_kebab(&class_name),
+                        module,
+                        symbol: class_name,
+                        section: "r2x_plugin".to_string(),
+                    });
+                }
             }
         }
 
@@ -466,6 +469,110 @@ impl AstDiscovery {
         ));
 
         entries
+    }
+
+    /// Discover @expose_plugin decorated functions using ast-grep library
+    ///
+    /// Searches for functions decorated with @expose_plugin in the package.
+    /// These are registered in the r2x.transforms section.
+    fn discover_expose_plugin_functions(
+        package_path: &Path,
+        package_name: &str,
+    ) -> Vec<EntryPointInfo> {
+        use ast_grep_core::AstGrep;
+        use walkdir::WalkDir;
+
+        let start = Instant::now();
+        let mut entries = Vec::new();
+        let normalized_package = package_name.replace('-', "_");
+
+        // Walk Python files in the package
+        for entry in WalkDir::new(package_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "py")
+                    .unwrap_or(false)
+            })
+        {
+            let content = match std::fs::read_to_string(entry.path()) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // Use ast-grep-core to find @expose_plugin decorated functions
+            let sg = AstGrep::new(&content, Python);
+            let root = sg.root();
+
+            // Pattern: decorated_definition with @expose_plugin decorator
+            // We need to find function definitions that have the expose_plugin decorator
+            let pattern = "@expose_plugin\ndef $NAME($$$PARAMS): $$$BODY";
+            for func_match in root.find_all(pattern) {
+                if let Some(func_name) =
+                    Self::extract_function_name_from_decorated_match(&func_match)
+                {
+                    let module = Self::infer_module_from_file_path(
+                        entry.path().to_str().unwrap_or(""),
+                        package_path,
+                        &normalized_package,
+                    );
+
+                    entries.push(EntryPointInfo {
+                        name: func_name.replace('_', "-"), // snake_case to kebab-case
+                        module,
+                        symbol: func_name,
+                        section: "r2x.transforms".to_string(),
+                    });
+                }
+            }
+        }
+
+        logger::debug(&format!(
+            "ast-grep discovery: found {} @expose_plugin functions in {:.2}ms",
+            entries.len(),
+            start.elapsed().as_secs_f64() * 1000.0
+        ));
+
+        entries
+    }
+
+    /// Extract function name from a decorated function match
+    fn extract_function_name_from_decorated_match(
+        func_match: &ast_grep_core::matcher::NodeMatch<
+            '_,
+            ast_grep_core::source::StrDoc<Python>,
+        >,
+    ) -> Option<String> {
+        let env = func_match.get_env();
+
+        // Try to get the function name from the $NAME metavariable
+        if let Some(name_node) = env.get_match("$NAME") {
+            let name = name_node.text().trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+
+        // Fallback: extract from the matched text
+        let text = func_match.text();
+        Self::extract_function_name_from_text(&text)
+    }
+
+    /// Extract function name from decorated function text
+    fn extract_function_name_from_text(text: &str) -> Option<String> {
+        // Look for "def function_name(" pattern
+        let def_idx = text.find("def ")?;
+        let after_def = &text[def_idx + 4..];
+        let paren_idx = after_def.find('(')?;
+        let name = after_def[..paren_idx].trim();
+
+        if name.is_empty() {
+            return None;
+        }
+
+        Some(name.to_string())
     }
 
     /// Extract class name from ast-grep matched text like "class MyParser(Plugin[Config]): ..."
@@ -484,24 +591,77 @@ impl AstDiscovery {
         Some(name.to_string())
     }
 
-    /// Convert class name to plugin name (e.g., "ReEDSParser" -> "reeds")
-    fn class_name_to_plugin_name(class_name: &str) -> String {
-        // Remove common suffixes
-        let name = class_name
-            .strip_suffix("Parser")
-            .or_else(|| class_name.strip_suffix("Exporter"))
-            .or_else(|| class_name.strip_suffix("Plugin"))
-            .or_else(|| class_name.strip_suffix("Modifier"))
-            .unwrap_or(class_name);
-
-        // Convert to kebab-case
+    /// Convert CamelCase class name to kebab-case plugin name
+    ///
+    /// Preserves suffixes (unlike the old implementation that stripped them):
+    /// - ReEDSParser -> reeds-parser
+    /// - MyExporter -> my-exporter
+    /// - SimplePlugin -> simple-plugin
+    fn camel_to_kebab(class_name: &str) -> String {
         let mut result = String::new();
-        for (i, ch) in name.chars().enumerate() {
+
+        for (i, ch) in class_name.chars().enumerate() {
             if ch.is_uppercase() && i > 0 {
-                result.push('-');
+                let prev_upper = class_name
+                    .chars()
+                    .nth(i - 1)
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false);
+                let next_upper = class_name
+                    .chars()
+                    .nth(i + 1)
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false);
+                let next_lower = class_name
+                    .chars()
+                    .nth(i + 1)
+                    .map(|c| c.is_lowercase())
+                    .unwrap_or(false);
+
+                // Add hyphen when:
+                // 1. Starting new word from lowercase, unless entering an acronym
+                //    (e.g., "my" -> "P" in "myParser", but NOT "Re" -> "E" in "ReEDS")
+                // 2. End of acronym transitioning to new word
+                //    (e.g., "S" -> "P" in "ReEDSParser")
+                let start_new_word = !prev_upper && !next_upper;
+                let end_of_acronym = prev_upper && next_lower;
+
+                if start_new_word || end_of_acronym {
+                    result.push('-');
+                }
             }
             result.push(ch.to_ascii_lowercase());
         }
+
+        result
+    }
+
+    /// Convert snake_case function name to kebab-case plugin name
+    fn snake_to_kebab(func_name: &str) -> String {
+        func_name.replace('_', "-")
+    }
+
+    /// Deduplicate entry points by symbol name
+    ///
+    /// When merging entry_points.txt with ast-grep discoveries, we may have
+    /// duplicates (same class/function discovered via different paths).
+    /// This function deduplicates by symbol, preserving the first occurrence
+    /// (entry_points.txt entries have priority since they're added first).
+    fn deduplicate_entries(entries: Vec<EntryPointInfo>) -> Vec<EntryPointInfo> {
+        use std::collections::HashSet;
+
+        let mut seen_symbols: HashSet<String> = HashSet::new();
+        let mut result = Vec::new();
+
+        for entry in entries {
+            // Deduplicate by symbol name only
+            // This prevents the same class (e.g., ReEDSParser) from being
+            // registered twice with different inferred module paths
+            if seen_symbols.insert(entry.symbol.clone()) {
+                result.push(entry);
+            }
+        }
+
         result
     }
 
@@ -529,6 +689,12 @@ impl AstDiscovery {
 
                 if module_parts.is_empty() {
                     return package_name.to_string();
+                }
+
+                // Check if the first part already matches the package name
+                // (happens with editable installs where package_path is source root)
+                if module_parts[0] == package_name {
+                    return module_parts.join(".");
                 }
 
                 return format!("{}.{}", package_name, module_parts.join("."));
@@ -1470,5 +1636,107 @@ def add_pcm_defaults(
         assert_eq!(field.types, vec!["str".to_string(), "None".to_string()]);
         assert_eq!(field.default, Some("None".to_string()));
         assert!(!field.required);
+    }
+
+    #[test]
+    fn test_camel_to_kebab() {
+        // Simple CamelCase
+        assert_eq!(AstDiscovery::camel_to_kebab("MyParser"), "my-parser");
+        assert_eq!(AstDiscovery::camel_to_kebab("SimplePlugin"), "simple-plugin");
+        assert_eq!(AstDiscovery::camel_to_kebab("MyExporter"), "my-exporter");
+
+        // Acronyms (consecutive uppercase)
+        assert_eq!(AstDiscovery::camel_to_kebab("ReEDSParser"), "reeds-parser");
+        assert_eq!(AstDiscovery::camel_to_kebab("XMLParser"), "xml-parser");
+        assert_eq!(AstDiscovery::camel_to_kebab("HTTPClient"), "http-client");
+
+        // Single word
+        assert_eq!(AstDiscovery::camel_to_kebab("Parser"), "parser");
+        assert_eq!(AstDiscovery::camel_to_kebab("Reeds"), "reeds");
+
+        // All uppercase acronym
+        assert_eq!(AstDiscovery::camel_to_kebab("HTTP"), "http");
+        assert_eq!(AstDiscovery::camel_to_kebab("API"), "api");
+    }
+
+    #[test]
+    fn test_snake_to_kebab() {
+        assert_eq!(AstDiscovery::snake_to_kebab("add_pcm_defaults"), "add-pcm-defaults");
+        assert_eq!(AstDiscovery::snake_to_kebab("break_gens"), "break-gens");
+        assert_eq!(AstDiscovery::snake_to_kebab("simple"), "simple");
+        assert_eq!(AstDiscovery::snake_to_kebab("a_b_c"), "a-b-c");
+    }
+
+    #[test]
+    fn test_deduplicate_entries() {
+        let entries = vec![
+            EntryPointInfo {
+                name: "reeds".to_string(),
+                module: "r2x_reeds".to_string(),
+                symbol: "ReEDSParser".to_string(),
+                section: "r2x_plugin".to_string(),
+            },
+            EntryPointInfo {
+                name: "reeds-parser".to_string(),  // Different name and module, but same symbol
+                module: "r2x_reeds.parser".to_string(),
+                symbol: "ReEDSParser".to_string(),
+                section: "r2x_plugin".to_string(),
+            },
+            EntryPointInfo {
+                name: "add-pcm-defaults".to_string(),
+                module: "r2x_reeds.sysmod".to_string(),
+                symbol: "add_pcm_defaults".to_string(),
+                section: "r2x.transforms".to_string(),
+            },
+        ];
+
+        let deduped = AstDiscovery::deduplicate_entries(entries);
+        assert_eq!(deduped.len(), 2);
+        // First occurrence should be preserved (entry_points.txt has priority)
+        assert_eq!(deduped[0].name, "reeds");
+        assert_eq!(deduped[0].module, "r2x_reeds");  // Original module preserved
+        assert_eq!(deduped[1].name, "add-pcm-defaults");
+    }
+
+    #[test]
+    fn test_extract_function_name_from_text() {
+        // Simple function
+        let text = "@expose_plugin\ndef add_pcm_defaults(system: System): pass";
+        assert_eq!(
+            AstDiscovery::extract_function_name_from_text(text),
+            Some("add_pcm_defaults".to_string())
+        );
+
+        // Multi-line function
+        let text_multi = r#"@expose_plugin
+def break_gens(
+    system: System,
+    config: BreakGensConfig,
+) -> System:
+    pass"#;
+        assert_eq!(
+            AstDiscovery::extract_function_name_from_text(text_multi),
+            Some("break_gens".to_string())
+        );
+
+        // No def keyword
+        let text_no_def = "@expose_plugin\nclass MyClass: pass";
+        assert_eq!(AstDiscovery::extract_function_name_from_text(text_no_def), None);
+    }
+
+    #[test]
+    fn test_extract_class_name_from_match() {
+        assert_eq!(
+            AstDiscovery::extract_class_name_from_match("class MyParser(Plugin[Config]): pass"),
+            Some("MyParser".to_string())
+        );
+        assert_eq!(
+            AstDiscovery::extract_class_name_from_match("class ReEDSParser(Plugin[ReEDSConfig]): pass"),
+            Some("ReEDSParser".to_string())
+        );
+        assert_eq!(
+            AstDiscovery::extract_class_name_from_match("def my_func(): pass"),
+            None
+        );
     }
 }
