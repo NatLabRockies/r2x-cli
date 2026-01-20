@@ -247,8 +247,12 @@ impl Bridge {
 
     /// Configure Python loguru logging with optional plugin context
     fn configure_python_logging_with_plugin(_plugin_name: Option<&str>) -> Result<(), BridgeError> {
-        let verbosity = logger::get_verbosity();
+        let log_python = logger::get_log_python();
+        if !log_python {
+            return Ok(());
+        }
 
+        let verbosity = logger::get_verbosity();
         logger::debug(&format!(
             "Configuring Python logging with verbosity={}",
             verbosity
@@ -265,7 +269,6 @@ impl Bridge {
             })?;
             setup_logging.call1((verbosity,))?;
 
-            // Explicitly enable logging for installed r2x packages
             let loguru = PyModule::import(py, "loguru")?;
             let logger = loguru.getattr("logger")?;
             logger.call_method1("enable", ("r2x_core",))?;

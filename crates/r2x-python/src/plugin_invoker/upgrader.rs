@@ -1,3 +1,4 @@
+use super::regular::StdoutGuard;
 use super::{logger, BridgeError, PluginInvocationResult, RuntimeBindings};
 use crate::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
@@ -13,6 +14,8 @@ impl Bridge {
         plugin_metadata: Option<&PluginSpec>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
+            let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
+
             logger::debug(&format!("Invoking upgrader plugin: {}", target));
             let parts: Vec<&str> = target.split(':').collect();
             if parts.len() != 2 {

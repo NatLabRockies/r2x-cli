@@ -37,7 +37,7 @@ impl Bridge {
         // allowing plugin authors to name their config parameter anything they want.
         if let Some(config_spec) = &runtime.config {
             let config_class_name = &config_spec.name;
-            logger::debug(&format!(
+            logger::step(&format!(
                 "Looking for config parameter with annotation matching '{}'",
                 config_class_name
             ));
@@ -73,10 +73,12 @@ impl Bridge {
             }
 
             // Last resort: we have config metadata but no matching param, use "config" as default
+            // This is expected for function plugins where entry_parameters contains config fields
+            // rather than the actual function signature parameters
             if !needs_config_class {
                 needs_config_class = true;
                 config_param_name = "config".to_string();
-                logger::warn("No matching config parameter found in function signature, defaulting to 'config'");
+                logger::step("Using default config parameter name 'config'");
             }
         }
 
@@ -98,10 +100,7 @@ impl Bridge {
                 params
             };
 
-            logger::step(&format!(
-                "Instantiating config class with params: {:?}",
-                config_params
-            ));
+            logger::step("Instantiating config class with params");
             let config_obj =
                 self.instantiate_config_class(py, &config_params, runtime.config.as_ref())?;
             logger::step(&format!(
@@ -161,10 +160,7 @@ impl Bridge {
                 // If not found in metadata, check the config instance directly
                 if !in_metadata {
                     if let Some(ref config_obj) = config_instance {
-                        config_obj
-                            .bind(py)
-                            .hasattr(&*param.name)
-                            .unwrap_or(false)
+                        config_obj.bind(py).hasattr(&*param.name).unwrap_or(false)
                     } else {
                         false
                     }
@@ -453,7 +449,10 @@ impl Bridge {
         system_instance: Option<&pyo3::Bound<'py, PyAny>>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let context_module = PyModule::import(py, "r2x_core").map_err(|e| {
-            BridgeError::Python(format!("Failed to import r2x_core for PluginContext: {}", e))
+            BridgeError::Python(format!(
+                "Failed to import r2x_core for PluginContext: {}",
+                e
+            ))
         })?;
         let context_class = context_module.getattr("PluginContext").map_err(|e| {
             BridgeError::Python(format!("Failed to get PluginContext class: {}", e))

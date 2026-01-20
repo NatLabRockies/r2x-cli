@@ -19,6 +19,7 @@ pub struct GlobalOpts {
 
     #[arg(
         long,
+        visible_alias = "python-log",
         global = true,
         help = "Show Python logs on console (always logged to file)"
     )]

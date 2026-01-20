@@ -6,6 +6,40 @@ use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use pyo3::PyResult;
 use std::time::{Duration, Instant};
 
+/// Guard that suppresses Python stdout and restores it on drop.
+pub(super) struct StdoutGuard<'py> {
+    py: pyo3::Python<'py>,
+    original: Option<pyo3::Py<PyAny>>,
+}
+
+impl<'py> StdoutGuard<'py> {
+    pub(super) fn new(py: pyo3::Python<'py>, suppress: bool) -> Result<Self, BridgeError> {
+        let original = if suppress {
+            let sys = PyModule::import(py, "sys")?;
+            let io = PyModule::import(py, "io")?;
+            let original_stdout = sys.getattr("stdout")?;
+            let string_io = io.getattr("StringIO")?.call0()?;
+            sys.setattr("stdout", &string_io)?;
+            logger::debug("Python stdout suppressed");
+            Some(original_stdout.unbind())
+        } else {
+            None
+        };
+        Ok(Self { py, original })
+    }
+}
+
+impl Drop for StdoutGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(ref stdout) = self.original {
+            if let Ok(sys) = PyModule::import(self.py, "sys") {
+                let _ = sys.setattr("stdout", stdout.bind(self.py));
+                logger::debug("Python stdout restored");
+            }
+        }
+    }
+}
+
 impl Bridge {
     pub(super) fn invoke_plugin_regular(
         &self,
@@ -15,6 +49,8 @@ impl Bridge {
         runtime_bindings: Option<&RuntimeBindings>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
+            let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
+
             logger::debug(&format!("Parsing target: {}", target));
             let parts: Vec<&str> = target.split(':').collect();
             if parts.len() != 2 {
@@ -47,7 +83,6 @@ impl Bridge {
             logger::debug("Starting plugin invocation");
             let call_start = Instant::now();
             let result_py = if callable_path.contains('.') {
-                // Class-based plugins use from_context with PluginContext
                 Self::invoke_class_callable(
                     self,
                     &module,
@@ -57,7 +92,6 @@ impl Bridge {
                     runtime_bindings,
                 )?
             } else {
-                // Function-based plugins use traditional kwargs
                 logger::debug("Building kwargs for function invocation");
                 let kwargs =
                     self.build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
@@ -79,7 +113,6 @@ impl Bridge {
             logger::debug("Plugin execution completed");
             logger::debug("Serializing result to JSON");
 
-            // Unwrap Ok/Err result types (Rust-like Result pattern)
             let result_unwrapped = {
                 let type_name: String = result_py
                     .get_type()
@@ -88,7 +121,9 @@ impl Bridge {
                     .unwrap_or_default();
                 if type_name == "Ok" {
                     logger::debug("Unwrapping Ok result type");
-                    result_py.getattr("ok_value").or_else(|_| result_py.getattr("value"))?
+                    result_py
+                        .getattr("ok_value")
+                        .or_else(|_| result_py.getattr("value"))?
                 } else if type_name == "Err" {
                     let err_value = result_py
                         .getattr("err_value")
@@ -102,14 +137,13 @@ impl Bridge {
                 }
             };
 
-            // If result is a PluginContext, extract the system from it for serialization
-            let result_to_serialize = if result_unwrapped.hasattr("system")? && result_unwrapped.hasattr("config")? {
-                // This looks like a PluginContext - extract the system
-                logger::debug("Result is PluginContext, extracting system for serialization");
-                result_unwrapped.getattr("system")?
-            } else {
-                result_unwrapped
-            };
+            let result_to_serialize =
+                if result_unwrapped.hasattr("system")? && result_unwrapped.hasattr("config")? {
+                    logger::debug("Result is PluginContext, extracting system for serialization");
+                    result_unwrapped.getattr("system")?
+                } else {
+                    result_unwrapped
+                };
 
             let (json_str, ser_elapsed) = if result_to_serialize.hasattr("to_json")? {
                 let ser_start = Instant::now();
@@ -176,7 +210,6 @@ impl Bridge {
 
         let py = module.py();
 
-        // Use PluginContext-based instantiation via from_context classmethod
         let bindings = runtime_bindings.ok_or_else(|| {
             BridgeError::Python(format!(
                 "Runtime bindings required for class-based plugin '{}'",
@@ -189,7 +222,6 @@ impl Bridge {
             class_name
         ));
 
-        // 1. Build config instance from config dict (filter out store-related keys)
         let config_params = {
             let params = PyDict::new(py);
             for (key, value) in config_dict.iter() {
@@ -201,11 +233,9 @@ impl Bridge {
             params
         };
 
-        // Try to get config class from manifest metadata, or discover it from the plugin class
         let config_instance = if bindings.config.is_some() {
             bridge.instantiate_config_class(py, &config_params, bindings.config.as_ref())?
         } else {
-            // Discover config class from plugin class
             logger::debug(&format!(
                 "Config metadata missing for '{}', discovering from plugin class",
                 class_name
@@ -214,9 +244,6 @@ impl Bridge {
         };
         logger::step(&format!("Config class instantiated for '{}'", class_name));
 
-        // 2. Build store instance if a path is available
-        // For plugins using from_context, always try to create a store if we have a path value
-        // since parsers and other plugins commonly need it
         let store_value = config_dict
             .get_item("store")?
             .or_else(|| config_dict.get_item("store_path").ok().flatten())
@@ -234,7 +261,6 @@ impl Bridge {
             None
         };
 
-        // 3. Build system instance from stdin if available (for exporters)
         let system_instance = if stdin_obj.is_some() {
             use r2x_manifest::PluginKind;
             if bindings.plugin_kind == PluginKind::Exporter {
@@ -261,7 +287,6 @@ impl Bridge {
             None
         };
 
-        // 4. Create PluginContext with config (positional) and store/system (keyword-only)
         let ctx = bridge.instantiate_plugin_context(
             py,
             &config_instance,
@@ -270,7 +295,6 @@ impl Bridge {
         )?;
         logger::step("PluginContext created");
 
-        // 5. Instantiate plugin via from_context classmethod
         let from_context = class.getattr("from_context").map_err(|e| {
             BridgeError::Python(format_python_error(
                 py,
@@ -294,11 +318,11 @@ impl Bridge {
             }
             BridgeError::Python(formatted)
         })?;
-        logger::step(&format!("Plugin '{}' instantiated via from_context", class_name));
+        logger::step(&format!(
+            "Plugin '{}' instantiated via from_context",
+            class_name
+        ));
 
-        // 6. Call the method on the instance
-        // Plugins using from_context follow the r2x-core Plugin interface which uses `run()`.
-        // Fall back to the manifest-specified method if `run` doesn't exist.
         let actual_method_name = if instance.hasattr("run")? {
             "run"
         } else {
@@ -312,7 +336,10 @@ impl Bridge {
             BridgeError::Python(format_python_error(
                 instance.py(),
                 e,
-                &format!("Failed to get method '{}.{}'", class_name, actual_method_name),
+                &format!(
+                    "Failed to get method '{}.{}'",
+                    class_name, actual_method_name
+                ),
             ))
         })?;
 
@@ -374,7 +401,7 @@ impl Bridge {
             ))
         })?;
 
-        logger::step(&format!("Function kwargs before system: {:?}", kwargs));
+        logger::step("Function kwargs prepared (before system injection)");
         if let Some(stdin) = stdin_obj {
             logger::step("Function has stdin - deserializing to System object");
             let dumps = json_module.getattr("dumps")?;
@@ -388,7 +415,12 @@ impl Bridge {
             kwargs.set_item("system", system_obj)?;
         }
 
-        logger::step(&format!("Final function kwargs: {:?}", kwargs));
+        let kwarg_keys: Vec<String> = kwargs
+            .keys()
+            .into_iter()
+            .filter_map(|k| k.extract::<String>().ok())
+            .collect();
+        logger::step(&format!("Final function kwargs keys: {:?}", kwarg_keys));
         func.call((), Some(kwargs)).map_err(|e| {
             BridgeError::Python(format_python_error(
                 func.py(),
@@ -445,48 +477,37 @@ fn method_accepts_stdin(method: &pyo3::Bound<'_, PyAny>) -> PyResult<bool> {
         .any(|name| name == "system" || name == "stdin"))
 }
 
-/// Discover the config class from a plugin class and instantiate it.
-/// This is used when config metadata is not available in the manifest.
 fn discover_and_instantiate_config<'py>(
     py: pyo3::Python<'py>,
     plugin_class: &pyo3::Bound<'py, PyAny>,
     config_params: &pyo3::Bound<'py, PyDict>,
 ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
-    // Strategy 1: Look for __orig_bases__ to find Generic[ConfigT] type parameter
     if let Ok(orig_bases) = plugin_class.getattr("__orig_bases__") {
         if let Ok(bases_iter) = orig_bases.try_iter() {
-            for base_result in bases_iter {
-                if let Ok(base) = base_result {
-                    // Check if this base has __args__ (it's a generic)
-                    if let Ok(args) = base.getattr("__args__") {
-                        if let Ok(args_list) = args.try_iter() {
-                            for arg_result in args_list {
-                                if let Ok(config_type) = arg_result {
-                                    // Check if it looks like a config class (has __init__ and is callable)
-                                    if config_type.is_callable() {
-                                        let type_name: String = config_type
-                                            .getattr("__name__")
-                                            .and_then(|n| n.extract())
-                                            .unwrap_or_default();
-                                        if type_name.contains("Config") || type_name.contains("config")
-                                        {
-                                            logger::debug(&format!(
-                                                "Discovered config class '{}' from __orig_bases__",
-                                                type_name
-                                            ));
-                                            return config_type
-                                                .call((), Some(config_params))
-                                                .map_err(|e| {
-                                                    BridgeError::Python(format!(
-                                                        "Failed to instantiate discovered config class '{}': {}",
-                                                        type_name, e
-                                                    ))
-                                                });
-                                        }
-                                    }
+            for base in bases_iter.flatten() {
+                if let Ok(args) = base.getattr("__args__") {
+                    if let Ok(mut args_list) = args.try_iter() {
+                        // Only check the first type argument (the config type)
+                        if let Some(Ok(config_type)) = args_list.next() {
+                            if config_type.is_callable() {
+                                let type_name: String = config_type
+                                    .getattr("__name__")
+                                    .and_then(|n| n.extract())
+                                    .unwrap_or_default();
+                                if type_name.contains("Config") || type_name.contains("config") {
+                                    logger::debug(&format!(
+                                        "Discovered config class '{}' from __orig_bases__",
+                                        type_name
+                                    ));
+                                    return config_type
+                                        .call((), Some(config_params))
+                                        .map_err(|e| {
+                                            BridgeError::Python(format!(
+                                                "Failed to instantiate discovered config class '{}': {}",
+                                                type_name, e
+                                            ))
+                                        });
                                 }
-                                // Only check first type argument
-                                break;
                             }
                         }
                     }
@@ -495,20 +516,15 @@ fn discover_and_instantiate_config<'py>(
         }
     }
 
-    // Strategy 2: Look for a nested Config class
     if let Ok(config_class) = plugin_class.getattr("Config") {
         if config_class.is_callable() {
             logger::debug("Discovered nested Config class");
             return config_class.call((), Some(config_params)).map_err(|e| {
-                BridgeError::Python(format!(
-                    "Failed to instantiate nested Config class: {}",
-                    e
-                ))
+                BridgeError::Python(format!("Failed to instantiate nested Config class: {}", e))
             });
         }
     }
 
-    // Strategy 3: Look for config_class attribute
     if let Ok(config_class) = plugin_class.getattr("config_class") {
         if config_class.is_callable() {
             let type_name: String = config_class
@@ -528,17 +544,13 @@ fn discover_and_instantiate_config<'py>(
         }
     }
 
-    // Strategy 4: Use PluginConfig from r2x_core as fallback
     logger::debug("No config class discovered, using PluginConfig from r2x_core");
-    let r2x_core = PyModule::import(py, "r2x_core").map_err(|e| {
-        BridgeError::Python(format!("Failed to import r2x_core: {}", e))
-    })?;
-    let plugin_config_class = r2x_core.getattr("PluginConfig").map_err(|e| {
-        BridgeError::Python(format!("Failed to get PluginConfig class: {}", e))
-    })?;
+    let r2x_core = PyModule::import(py, "r2x_core")
+        .map_err(|e| BridgeError::Python(format!("Failed to import r2x_core: {}", e)))?;
+    let plugin_config_class = r2x_core
+        .getattr("PluginConfig")
+        .map_err(|e| BridgeError::Python(format!("Failed to get PluginConfig class: {}", e)))?;
     plugin_config_class
         .call((), Some(config_params))
-        .map_err(|e| {
-            BridgeError::Python(format!("Failed to instantiate PluginConfig: {}", e))
-        })
+        .map_err(|e| BridgeError::Python(format!("Failed to instantiate PluginConfig: {}", e)))
 }

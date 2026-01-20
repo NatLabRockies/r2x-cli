@@ -100,7 +100,6 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
 
     let bridge = Bridge::get()?;
     logger::debug(&format!("Invoking plugin with target: {}", target));
-    logger::debug(&format!("Config: {}", config_json));
 
     // Set current plugin context for logging
     logger::set_current_plugin(Some(plugin_name.to_string()));

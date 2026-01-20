@@ -199,7 +199,6 @@ fn run_pipeline(
         let target = super::build_call_target(&bindings)?;
         let bridge = Bridge::get()?;
         logger::debug(&format!("Invoking: {}", target));
-        logger::debug(&format!("Config: {}", final_config_json));
 
         // Set current plugin context for logging
         logger::set_current_plugin(Some(plugin_name.to_string()));
@@ -212,38 +211,42 @@ fn run_pipeline(
             ));
         }
 
-        let invocation_result =
-            match bridge.invoke_plugin_with_bindings(&target, &final_config_json, stdin_json, Some(&bindings)) {
-                Ok(inv_result) => {
-                    let elapsed = step_start.elapsed();
-                    logger::spinner_success(&format!(
-                        "{} [{}/{}] ({})",
-                        plugin_name,
-                        step_num,
-                        total_steps,
-                        super::format_duration(elapsed)
-                    ));
-                    if logger::get_verbosity() > 0 {
-                        if let Some(timings) = &inv_result.timings {
-                            super::print_plugin_timing_breakdown(timings);
-                        }
+        let invocation_result = match bridge.invoke_plugin_with_bindings(
+            &target,
+            &final_config_json,
+            stdin_json,
+            Some(&bindings),
+        ) {
+            Ok(inv_result) => {
+                let elapsed = step_start.elapsed();
+                logger::spinner_success(&format!(
+                    "{} [{}/{}] ({})",
+                    plugin_name,
+                    step_num,
+                    total_steps,
+                    super::format_duration(elapsed)
+                ));
+                if logger::get_verbosity() > 0 {
+                    if let Some(timings) = &inv_result.timings {
+                        super::print_plugin_timing_breakdown(timings);
                     }
-                    inv_result
                 }
-                Err(e) => {
-                    let elapsed = step_start.elapsed();
-                    logger::spinner_error(&format!(
-                        "{} [{}/{}] ({})",
-                        plugin_name,
-                        step_num,
-                        total_steps,
-                        super::format_duration(elapsed)
-                    ));
-                    // Clear plugin context before returning error
-                    logger::set_current_plugin(None);
-                    return Err(RunError::Bridge(e));
-                }
-            };
+                inv_result
+            }
+            Err(e) => {
+                let elapsed = step_start.elapsed();
+                logger::spinner_error(&format!(
+                    "{} [{}/{}] ({})",
+                    plugin_name,
+                    step_num,
+                    total_steps,
+                    super::format_duration(elapsed)
+                ));
+                // Clear plugin context before returning error
+                logger::set_current_plugin(None);
+                return Err(RunError::Bridge(e));
+            }
+        };
 
         // Clear plugin context after execution
         logger::set_current_plugin(None);

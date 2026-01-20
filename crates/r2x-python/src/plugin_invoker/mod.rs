@@ -62,12 +62,7 @@ impl super::Bridge {
         if let Some(bindings) = runtime_bindings {
             if bindings.plugin_kind == PluginKind::Upgrader {
                 logger::debug("Routing to upgrader plugin handler (runtime bindings)");
-                return self.invoke_upgrader_plugin(
-                    target,
-                    config_json,
-                    Some(bindings),
-                    None,
-                );
+                return self.invoke_upgrader_plugin(target, config_json, Some(bindings), None);
             }
         }
 
