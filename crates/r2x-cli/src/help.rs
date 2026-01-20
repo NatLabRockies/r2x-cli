@@ -1,4 +1,5 @@
 use crate::logger;
+use crate::manifest_lookup::resolve_plugin_ref;
 use crate::r2x_manifest::Manifest;
 use colored::Colorize;
 
@@ -57,16 +58,8 @@ pub fn show_run_help() -> Result<(), String> {
 pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
-    let (_pkg, plugin) = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name.as_ref() == plugin_name)
-                .map(|p| (pkg, p))
-        })
-        .ok_or_else(|| format!("Plugin '{}' not found in manifest", plugin_name))?;
+    let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|e| e.to_string())?;
+    let plugin = resolved.plugin;
 
     logger::step(&format!("Plugin: {}", plugin_name));
 

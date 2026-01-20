@@ -817,7 +817,10 @@ impl AstDiscovery {
         ));
 
         // Resolve the source file
-        let source_file = Self::resolve_source_file(package_path, &entry.module, package_name);
+        let mut source_file = Self::resolve_source_file(package_path, &entry.module, package_name);
+        let mut cached = source_file
+            .as_ref()
+            .and_then(|source_path| Self::read_file_cached(file_cache, source_path));
 
         // Determine implementation type based on symbol naming convention
         let implementation = if entry.is_class() {
@@ -832,12 +835,50 @@ impl AstDiscovery {
         // Build the fully qualified entry point
         let full_entry = format!("{}.{}", entry.module, entry.symbol);
 
-        // Extract constructor/call arguments and config using direct file parsing
-        let (constructor_args, call_args, resources) = if let Some(ref source_path) = source_file {
-            // Read file content, using cache to avoid re-reading
-            let cached = Self::read_file_cached(file_cache, source_path);
+        if matches!(implementation, ImplementationType::Class) {
+            let mut has_class = cached
+                .as_ref()
+                .map(|cached| Self::ast_has_class(&cached.ast, &entry.symbol))
+                .unwrap_or(false);
 
-            if let Some(cached) = cached {
+            if !has_class {
+                if let Some(cached_file) = cached.as_ref() {
+                    if let Some(resolved_module) = Self::resolve_reexported_symbol(
+                        &cached_file.content,
+                        &entry.module,
+                        &entry.symbol,
+                    ) {
+                        if let Some(path) =
+                            Self::resolve_source_file(package_path, &resolved_module, package_name)
+                        {
+                            source_file = Some(path.clone());
+                            cached = Self::read_file_cached(file_cache, &path);
+                            has_class = cached
+                                .as_ref()
+                                .map(|cached| Self::ast_has_class(&cached.ast, &entry.symbol))
+                                .unwrap_or(false);
+                        }
+                    }
+                }
+            }
+
+            if !has_class {
+                if package_cache.is_none() {
+                    *package_cache = Some(PackageAstCache::build(discovery_root));
+                }
+
+                if let Some(cache) = package_cache.as_ref() {
+                    if let Some((path, _class)) = cache.find_class_with_path(&entry.symbol) {
+                        source_file = Some(path.clone());
+                        cached = Self::read_file_cached(file_cache, path);
+                    }
+                }
+            }
+        }
+
+        // Extract constructor/call arguments and config using direct file parsing
+        let (constructor_args, call_args, resources) =
+            if let (Some(source_path), Some(cached)) = (source_file.as_ref(), cached.as_ref()) {
                 Self::extract_entry_metadata(
                     discovery_root,
                     source_path,
@@ -849,10 +890,7 @@ impl AstDiscovery {
                 )
             } else {
                 (Vec::new(), Vec::new(), None)
-            }
-        } else {
-            (Vec::new(), Vec::new(), None)
-        };
+            };
 
         // Determine the method to call based on plugin kind
         let method = match (&kind, &implementation) {
@@ -1126,6 +1164,71 @@ impl AstDiscovery {
                 _ => {}
             }
         }
+        None
+    }
+
+    fn ast_has_class(ast: &PythonAst, class_name: &str) -> bool {
+        let root = ast.root();
+        let pattern = format!("class {}($$$BASES): $$$BODY", class_name);
+        let found = root.find_all(pattern.as_str()).next().is_some();
+        found
+    }
+
+    fn resolve_reexported_symbol(content: &str, base_module: &str, symbol: &str) -> Option<String> {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("from ") {
+                continue;
+            }
+
+            let Some(rest) = trimmed.strip_prefix("from ") else {
+                continue;
+            };
+            let Some((from_part, import_part)) = rest.split_once(" import ") else {
+                continue;
+            };
+            let from_part = from_part.trim();
+
+            let import_part = import_part
+                .split('#')
+                .next()
+                .unwrap_or(import_part)
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')');
+
+            for item in import_part.split(',') {
+                let name = item.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                let name = name.split_whitespace().next().unwrap_or(name);
+                if name != symbol {
+                    continue;
+                }
+
+                if from_part.starts_with('.') {
+                    let dot_count = from_part.chars().take_while(|c| *c == '.').count();
+                    let levels_up = dot_count.saturating_sub(1);
+                    let rel = &from_part[dot_count..];
+                    let mut base_parts: Vec<&str> = base_module.split('.').collect();
+                    if levels_up > 0 && base_parts.len() >= levels_up {
+                        base_parts.truncate(base_parts.len() - levels_up);
+                    }
+                    let base_prefix = base_parts.join(".");
+                    if rel.is_empty() {
+                        return Some(base_prefix);
+                    }
+                    if base_prefix.is_empty() {
+                        return Some(rel.to_string());
+                    }
+                    return Some(format!("{}.{}", base_prefix, rel));
+                }
+
+                return Some(from_part.to_string());
+            }
+        }
+
         None
     }
 
@@ -1585,6 +1688,16 @@ some-gui = some_module:gui_main
             section: "r2x.transforms".to_string(),
         };
         assert_eq!(modifier_entry.infer_kind(), PluginKind::Modifier);
+    }
+
+    #[test]
+    fn test_resolve_reexported_symbol() {
+        let content = r#"
+from .parser import ReEDSParser
+from .plugin_config import ReEDSConfig
+"#;
+        let resolved = AstDiscovery::resolve_reexported_symbol(content, "r2x_reeds", "ReEDSParser");
+        assert_eq!(resolved, Some("r2x_reeds.parser".to_string()));
     }
 
     #[test]

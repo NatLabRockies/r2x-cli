@@ -2,9 +2,8 @@ use super::{
     logger, BridgeError, PluginInvocationResult, PluginInvocationTimings, RuntimeBindings,
 };
 use crate::Bridge;
-use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyTuple, PyTupleMethods};
+use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use pyo3::PyResult;
-use r2x_manifest::ArgumentSpec;
 use std::time::{Duration, Instant};
 
 impl Bridge {
@@ -45,21 +44,23 @@ impl Bridge {
                 None
             };
 
-            logger::debug("Building kwargs for plugin invocation");
-            let kwargs =
-                self.build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
-
             logger::debug("Starting plugin invocation");
             let call_start = Instant::now();
             let result_py = if callable_path.contains('.') {
+                // Class-based plugins use from_context with PluginContext
                 Self::invoke_class_callable(
+                    self,
                     &module,
                     callable_path,
+                    &config_dict,
                     stdin_obj.as_ref(),
-                    &kwargs,
                     runtime_bindings,
                 )?
             } else {
+                // Function-based plugins use traditional kwargs
+                logger::debug("Building kwargs for function invocation");
+                let kwargs =
+                    self.build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
                 Self::invoke_function_callable(
                     py,
                     &module,
@@ -78,16 +79,48 @@ impl Bridge {
             logger::debug("Plugin execution completed");
             logger::debug("Serializing result to JSON");
 
-            let (json_str, ser_elapsed) = if result_py.hasattr("to_json")? {
+            // Unwrap Ok/Err result types (Rust-like Result pattern)
+            let result_unwrapped = {
+                let type_name: String = result_py
+                    .get_type()
+                    .getattr("__name__")
+                    .and_then(|n| n.extract())
+                    .unwrap_or_default();
+                if type_name == "Ok" {
+                    logger::debug("Unwrapping Ok result type");
+                    result_py.getattr("ok_value").or_else(|_| result_py.getattr("value"))?
+                } else if type_name == "Err" {
+                    let err_value = result_py
+                        .getattr("err_value")
+                        .or_else(|_| result_py.getattr("value"))?;
+                    return Err(BridgeError::Python(format!(
+                        "Plugin returned Err: {}",
+                        err_value
+                    )));
+                } else {
+                    result_py
+                }
+            };
+
+            // If result is a PluginContext, extract the system from it for serialization
+            let result_to_serialize = if result_unwrapped.hasattr("system")? && result_unwrapped.hasattr("config")? {
+                // This looks like a PluginContext - extract the system
+                logger::debug("Result is PluginContext, extracting system for serialization");
+                result_unwrapped.getattr("system")?
+            } else {
+                result_unwrapped
+            };
+
+            let (json_str, ser_elapsed) = if result_to_serialize.hasattr("to_json")? {
                 let ser_start = Instant::now();
-                let to_json_result = result_py.call_method0("to_json")?;
+                let to_json_result = result_to_serialize.call_method0("to_json")?;
                 let json_str = if let Ok(json_bytes) = to_json_result.extract::<Vec<u8>>() {
                     String::from_utf8(json_bytes).map_err(|e| {
                         BridgeError::Python(format!("Invalid UTF-8 in JSON output: {}", e))
                     })?
                 } else {
                     let dumps = json_module.getattr("dumps")?;
-                    dumps.call1((result_py,))?.extract::<String>()?
+                    dumps.call1((&result_to_serialize,))?.extract::<String>()?
                 };
                 let ser_elapsed = ser_start.elapsed();
                 logger::debug(&format!(
@@ -99,7 +132,7 @@ impl Bridge {
             } else {
                 let ser_start = Instant::now();
                 let dumps = json_module.getattr("dumps")?;
-                let json_str = dumps.call1((result_py,))?.extract::<String>()?;
+                let json_str = dumps.call1((&result_to_serialize,))?.extract::<String>()?;
                 let ser_elapsed = ser_start.elapsed();
                 logger::debug(&format!(
                     "Serialization for '{}' took {}",
@@ -120,10 +153,11 @@ impl Bridge {
     }
 
     fn invoke_class_callable<'py>(
+        bridge: &Bridge,
         module: &pyo3::Bound<'py, PyModule>,
         callable_path: &str,
+        config_dict: &pyo3::Bound<'py, PyDict>,
         stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
-        kwargs: &pyo3::Bound<'py, PyDict>,
         runtime_bindings: Option<&RuntimeBindings>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let parts: Vec<&str> = callable_path.split('.').collect();
@@ -140,116 +174,145 @@ impl Bridge {
             ))
         })?;
 
+        let py = module.py();
+
+        // Use PluginContext-based instantiation via from_context classmethod
+        let bindings = runtime_bindings.ok_or_else(|| {
+            BridgeError::Python(format!(
+                "Runtime bindings required for class-based plugin '{}'",
+                class_name
+            ))
+        })?;
+
         logger::step(&format!(
-            "Class '{}' constructor kwargs: {:?}",
-            class_name, kwargs
+            "Instantiating plugin '{}' via from_context (PluginContext interface)",
+            class_name
         ));
 
-        // Build positional args tuple from constructor spec
-        // Only pass CONFIG and SYSTEM arguments as positional (they are positional-only in base classes)
-        // Everything else (STORE, etc.) should be keyword-only
-        let py = module.py();
-        let (args, remaining_kwargs) = if let Some(bindings) = runtime_bindings {
-            let mut positional_args = Vec::new();
-            let remaining = pyo3::types::PyDict::new(py);
-
-            // For exporters, always try config and system (even if *args hides them from AST)
-            // For parsers, only pass config positionally
-            let mut positional_param_names: Vec<String> = Vec::new();
-
-            use r2x_manifest::PluginKind;
-            if bindings.plugin_kind == PluginKind::Exporter {
-                // Exporters need config and system as positional args (BaseExporter signature)
-                positional_param_names.push("config".to_string());
-                positional_param_names.push("system".to_string());
-            } else {
-                // For other plugins, determine from entry_parameters
-                positional_param_names = bindings
-                    .entry_parameters
-                    .iter()
-                    .filter(|arg_spec| should_be_positional(arg_spec))
-                    .map(|arg_spec| arg_spec.name.clone())
-                    .collect();
-            }
-
-            logger::step(&format!(
-                "Plugin kind: {:?}, Positional parameters: {:?}",
-                bindings.plugin_kind, positional_param_names
-            ));
-
-            // Extract positional arguments in order
-            for param_name in &positional_param_names {
-                if let Ok(Some(value)) = kwargs.get_item(param_name.as_str()) {
-                    positional_args.push(value);
-                } else if param_name == "system" {
-                    // System comes from stdin for exporters
-                    let stdin = if let Some(stdin) = stdin_obj {
-                        stdin
-                    } else {
-                        break;
-                    };
-                    logger::step("Adding system from stdin as positional arg");
-
-                    // Use from_dict with a temporary directory for time series
-                    let system_module = PyModule::import(py, "infrasys")?;
-                    let system_class = system_module.getattr("System")?;
-                    let from_dict = system_class.getattr("from_dict")?;
-
-                    // Create a temp directory for time series (will use in-memory if that's what was serialized)
-                    let tempfile = PyModule::import(py, "tempfile")?;
-                    let mkdtemp = tempfile.getattr("mkdtemp")?;
-                    let temp_dir = mkdtemp.call0()?.extract::<String>()?;
-
-                    // Call System.from_dict(data, time_series_parent_dir, time_series_read_only=True)
-                    let kwargs_dict = pyo3::types::PyDict::new(py);
-                    kwargs_dict.set_item("time_series_read_only", true)?;
-                    let system_obj = from_dict.call((stdin, temp_dir), Some(&kwargs_dict))?;
-
-                    positional_args.push(system_obj);
-                } else {
-                    // Required positional arg missing, let Python raise the error
-                    break;
+        // 1. Build config instance from config dict (filter out store-related keys)
+        let config_params = {
+            let params = PyDict::new(py);
+            for (key, value) in config_dict.iter() {
+                let key_str = key.extract::<String>()?;
+                if key_str != "store" && key_str != "data_store" && key_str != "store_path" {
+                    params.set_item(key, value)?;
                 }
             }
-
-            // Collect remaining kwargs (everything not passed as positional)
-            for (key, value) in kwargs.iter() {
-                let key_str = key.extract::<String>().unwrap_or_default();
-                if !positional_param_names.contains(&key_str) {
-                    remaining.set_item(key, value)?;
-                }
-            }
-
-            let args_tuple = PyTuple::new(py, positional_args)?;
-            (args_tuple, remaining)
-        } else {
-            // No bindings available, pass everything as kwargs
-            (PyTuple::empty(py), kwargs.clone())
+            params
         };
 
-        logger::step(&format!(
-            "Calling class constructor with {} positional args and {} kwargs",
-            args.len(),
-            remaining_kwargs.len()
-        ));
-        let instance = class.call(args, Some(&remaining_kwargs)).map_err(|err| {
+        // Try to get config class from manifest metadata, or discover it from the plugin class
+        let config_instance = if bindings.config.is_some() {
+            bridge.instantiate_config_class(py, &config_params, bindings.config.as_ref())?
+        } else {
+            // Discover config class from plugin class
+            logger::debug(&format!(
+                "Config metadata missing for '{}', discovering from plugin class",
+                class_name
+            ));
+            discover_and_instantiate_config(py, &class, &config_params)?
+        };
+        logger::step(&format!("Config class instantiated for '{}'", class_name));
+
+        // 2. Build store instance if a path is available
+        // For plugins using from_context, always try to create a store if we have a path value
+        // since parsers and other plugins commonly need it
+        let store_value = config_dict
+            .get_item("store")?
+            .or_else(|| config_dict.get_item("store_path").ok().flatten())
+            .or_else(|| config_dict.get_item("path").ok().flatten());
+
+        let store_instance = if let Some(value) = store_value {
+            logger::debug("Creating DataStore from path for PluginContext");
+            Some(bridge.instantiate_data_store(
+                py,
+                &value,
+                Some(&config_instance),
+                bindings.config.as_ref(),
+            )?)
+        } else {
+            None
+        };
+
+        // 3. Build system instance from stdin if available (for exporters)
+        let system_instance = if stdin_obj.is_some() {
+            use r2x_manifest::PluginKind;
+            if bindings.plugin_kind == PluginKind::Exporter {
+                let stdin = stdin_obj.expect("checked Some above");
+                logger::step("Deserializing system from stdin for PluginContext");
+
+                let system_module = PyModule::import(py, "infrasys")?;
+                let system_class = system_module.getattr("System")?;
+                let from_dict = system_class.getattr("from_dict")?;
+
+                let tempfile = PyModule::import(py, "tempfile")?;
+                let mkdtemp = tempfile.getattr("mkdtemp")?;
+                let temp_dir = mkdtemp.call0()?.extract::<String>()?;
+
+                let kwargs_dict = PyDict::new(py);
+                kwargs_dict.set_item("time_series_read_only", true)?;
+                let system_obj = from_dict.call((stdin, temp_dir), Some(&kwargs_dict))?;
+
+                Some(system_obj)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 4. Create PluginContext with config (positional) and store/system (keyword-only)
+        let ctx = bridge.instantiate_plugin_context(
+            py,
+            &config_instance,
+            store_instance.as_ref(),
+            system_instance.as_ref(),
+        )?;
+        logger::step("PluginContext created");
+
+        // 5. Instantiate plugin via from_context classmethod
+        let from_context = class.getattr("from_context").map_err(|e| {
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                &format!(
+                    "Plugin class '{}' missing from_context classmethod",
+                    class_name
+                ),
+            ))
+        })?;
+
+        let instance = from_context.call1((ctx,)).map_err(|err| {
             let raw_msg = err.to_string();
             let mut formatted = format_python_error(
-                class.py(),
+                py,
                 err,
-                &format!("Failed to instantiate '{}'", class_name),
+                &format!("Failed to instantiate '{}' via from_context", class_name),
             );
             if raw_msg.contains("missing") && raw_msg.contains("required positional argument") {
                 formatted.push_str("\n\nHint: This may happen if the plugin metadata cache is stale. Try running:\n  r2x sync");
             }
             BridgeError::Python(formatted)
         })?;
+        logger::step(&format!("Plugin '{}' instantiated via from_context", class_name));
 
-        let method = instance.getattr(method_name).map_err(|e| {
+        // 6. Call the method on the instance
+        // Plugins using from_context follow the r2x-core Plugin interface which uses `run()`.
+        // Fall back to the manifest-specified method if `run` doesn't exist.
+        let actual_method_name = if instance.hasattr("run")? {
+            "run"
+        } else {
+            method_name
+        };
+        logger::debug(&format!(
+            "Using method '{}' for plugin '{}'",
+            actual_method_name, class_name
+        ));
+        let method = instance.getattr(actual_method_name).map_err(|e| {
             BridgeError::Python(format_python_error(
                 instance.py(),
                 e,
-                &format!("Failed to get method '{}.{}'", class_name, method_name),
+                &format!("Failed to get method '{}.{}'", class_name, actual_method_name),
             ))
         })?;
 
@@ -382,20 +445,100 @@ fn method_accepts_stdin(method: &pyo3::Bound<'_, PyAny>) -> PyResult<bool> {
         .any(|name| name == "system" || name == "stdin"))
 }
 
-/// Determine if a parameter should be passed as a positional argument.
-/// Only CONFIG and SYSTEM arguments are positional-only in base classes.
-/// Everything else (STORE, etc.) should be passed as keyword arguments.
-fn should_be_positional(arg_spec: &ArgumentSpec) -> bool {
-    // Check if annotation contains the source type
-    if let Some(annotation) = &arg_spec.annotation {
-        let annotation_lower = annotation.to_lowercase();
-        // CONFIG and SYSTEM are positional-only in BaseParser/BaseExporter
-        if annotation_lower.contains("config") || annotation_lower.contains("system") {
-            return true;
+/// Discover the config class from a plugin class and instantiate it.
+/// This is used when config metadata is not available in the manifest.
+fn discover_and_instantiate_config<'py>(
+    py: pyo3::Python<'py>,
+    plugin_class: &pyo3::Bound<'py, PyAny>,
+    config_params: &pyo3::Bound<'py, PyDict>,
+) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
+    // Strategy 1: Look for __orig_bases__ to find Generic[ConfigT] type parameter
+    if let Ok(orig_bases) = plugin_class.getattr("__orig_bases__") {
+        if let Ok(bases_iter) = orig_bases.try_iter() {
+            for base_result in bases_iter {
+                if let Ok(base) = base_result {
+                    // Check if this base has __args__ (it's a generic)
+                    if let Ok(args) = base.getattr("__args__") {
+                        if let Ok(args_list) = args.try_iter() {
+                            for arg_result in args_list {
+                                if let Ok(config_type) = arg_result {
+                                    // Check if it looks like a config class (has __init__ and is callable)
+                                    if config_type.is_callable() {
+                                        let type_name: String = config_type
+                                            .getattr("__name__")
+                                            .and_then(|n| n.extract())
+                                            .unwrap_or_default();
+                                        if type_name.contains("Config") || type_name.contains("config")
+                                        {
+                                            logger::debug(&format!(
+                                                "Discovered config class '{}' from __orig_bases__",
+                                                type_name
+                                            ));
+                                            return config_type
+                                                .call((), Some(config_params))
+                                                .map_err(|e| {
+                                                    BridgeError::Python(format!(
+                                                        "Failed to instantiate discovered config class '{}': {}",
+                                                        type_name, e
+                                                    ))
+                                                });
+                                        }
+                                    }
+                                }
+                                // Only check first type argument
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Fallback: check parameter name
-    // 'config' is always positional, 'system' is positional for exporters
-    arg_spec.name == "config" || arg_spec.name == "system"
+    // Strategy 2: Look for a nested Config class
+    if let Ok(config_class) = plugin_class.getattr("Config") {
+        if config_class.is_callable() {
+            logger::debug("Discovered nested Config class");
+            return config_class.call((), Some(config_params)).map_err(|e| {
+                BridgeError::Python(format!(
+                    "Failed to instantiate nested Config class: {}",
+                    e
+                ))
+            });
+        }
+    }
+
+    // Strategy 3: Look for config_class attribute
+    if let Ok(config_class) = plugin_class.getattr("config_class") {
+        if config_class.is_callable() {
+            let type_name: String = config_class
+                .getattr("__name__")
+                .and_then(|n| n.extract())
+                .unwrap_or_default();
+            logger::debug(&format!(
+                "Discovered config class '{}' from config_class attribute",
+                type_name
+            ));
+            return config_class.call((), Some(config_params)).map_err(|e| {
+                BridgeError::Python(format!(
+                    "Failed to instantiate config class from config_class attribute: {}",
+                    e
+                ))
+            });
+        }
+    }
+
+    // Strategy 4: Use PluginConfig from r2x_core as fallback
+    logger::debug("No config class discovered, using PluginConfig from r2x_core");
+    let r2x_core = PyModule::import(py, "r2x_core").map_err(|e| {
+        BridgeError::Python(format!("Failed to import r2x_core: {}", e))
+    })?;
+    let plugin_config_class = r2x_core.getattr("PluginConfig").map_err(|e| {
+        BridgeError::Python(format!("Failed to get PluginConfig class: {}", e))
+    })?;
+    plugin_config_class
+        .call((), Some(config_params))
+        .map_err(|e| {
+            BridgeError::Python(format!("Failed to instantiate PluginConfig: {}", e))
+        })
 }

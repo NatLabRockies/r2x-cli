@@ -51,6 +51,28 @@ impl super::Bridge {
 
         self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings.as_ref())
     }
+
+    pub fn invoke_plugin_with_bindings(
+        &self,
+        target: &str,
+        config_json: &str,
+        stdin_json: Option<&str>,
+        runtime_bindings: Option<&RuntimeBindings>,
+    ) -> Result<PluginInvocationResult, BridgeError> {
+        if let Some(bindings) = runtime_bindings {
+            if bindings.plugin_kind == PluginKind::Upgrader {
+                logger::debug("Routing to upgrader plugin handler (runtime bindings)");
+                return self.invoke_upgrader_plugin(
+                    target,
+                    config_json,
+                    Some(bindings),
+                    None,
+                );
+            }
+        }
+
+        self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings)
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 
 use crate::config_manager::Config;
 use crate::logger;
+use crate::manifest_lookup::resolve_plugin_ref;
 use crate::r2x_manifest::Manifest;
 use r2x_python::resolve_site_package_path;
 use std::collections::HashSet;
@@ -60,22 +61,9 @@ pub fn verify_plugin_packages(
 ) -> Result<VerificationResult, VerificationError> {
     logger::debug(&format!("Verifying packages for plugin: {}", plugin_key));
 
-    // Find the plugin and its package from manifest
-    let package_name = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name.as_ref() == plugin_key)
-                .map(|_| pkg.name.to_string())
-        })
-        .ok_or_else(|| {
-            VerificationError::VerificationFailed(format!(
-                "Plugin '{}' not found in manifest",
-                plugin_key
-            ))
-        })?;
+    let resolved = resolve_plugin_ref(manifest, plugin_key)
+        .map_err(|e| VerificationError::VerificationFailed(e.to_string()))?;
+    let package_name = resolved.package.name.to_string();
 
     // Get venv path
     let config = Config::load().map_err(|e| {

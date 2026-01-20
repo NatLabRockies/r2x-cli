@@ -1,6 +1,7 @@
 use super::RunError;
 use crate::errors::PipelineError;
 use crate::logger;
+use crate::manifest_lookup::{resolve_plugin_ref, PluginRefError, ResolvedPlugin};
 use crate::package_verification;
 use crate::pipeline_config::PipelineConfig;
 use crate::python_bridge::Bridge;
@@ -85,16 +86,11 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
     println!("\nPipeline flow (--dry-run):");
 
     for (index, plugin_name) in pipeline.iter().enumerate() {
-        let (_pkg, plugin) = manifest
-            .packages
-            .iter()
-            .find_map(|pkg| {
-                pkg.plugins
-                    .iter()
-                    .find(|p| p.name.as_ref() == plugin_name.as_str())
-                    .map(|p| (pkg, p))
-            })
-            .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
+        let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
+            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.to_string()),
+            _ => RunError::Config(err.to_string()),
+        })?;
+        let plugin = resolved.plugin;
 
         // Check if it's a class-based plugin
         let is_class = plugin.class_name.is_some();
@@ -166,24 +162,16 @@ fn run_pipeline(
         logger::spinner_start(&format!("  {} [{}/{}]", plugin_name, step_num, total_steps));
         let step_start = Instant::now();
 
-        let (pkg, plugin) = manifest
-            .packages
-            .iter()
-            .find_map(|pkg| {
-                pkg.plugins
-                    .iter()
-                    .find(|p| p.name.as_ref() == plugin_name.as_str())
-                    .map(|p| (pkg, p))
-            })
-            .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
+        let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
+            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.to_string()),
+            _ => RunError::Config(err.to_string()),
+        })?;
+        let pkg = resolved.package;
+        let plugin = resolved.plugin;
 
         let bindings = r2x_manifest::build_runtime_bindings_from_plugin(plugin);
 
-        let yaml_config = if config.config.contains_key(plugin_name) {
-            config.get_plugin_config_json(plugin_name)?
-        } else {
-            "{}".to_string()
-        };
+        let yaml_config = resolve_plugin_config_json(config, plugin_name, &resolved)?;
 
         if let Ok(serde_json::Value::Object(map)) =
             serde_json::from_str::<serde_json::Value>(&yaml_config)
@@ -225,7 +213,7 @@ fn run_pipeline(
         }
 
         let invocation_result =
-            match bridge.invoke_plugin(&target, &final_config_json, stdin_json, None) {
+            match bridge.invoke_plugin_with_bindings(&target, &final_config_json, stdin_json, Some(&bindings)) {
                 Ok(inv_result) => {
                     let elapsed = step_start.elapsed();
                     logger::spinner_success(&format!(
@@ -298,6 +286,89 @@ fn run_pipeline(
     }
 
     Ok(())
+}
+
+fn resolve_plugin_config_json(
+    config: &PipelineConfig,
+    plugin_ref: &str,
+    resolved: &ResolvedPlugin<'_>,
+) -> Result<String, RunError> {
+    let plugin_name = resolved.plugin.name.as_ref();
+    let package_name = resolved.package.name.as_ref();
+    let kind = r2x_manifest::build_runtime_bindings_from_plugin(resolved.plugin).plugin_kind;
+    let kind_alias = plugin_kind_alias(kind);
+
+    for key in config_key_candidates(plugin_ref, package_name, plugin_name, kind_alias) {
+        if config.config.contains_key(&key) {
+            return config
+                .get_plugin_config_json(&key)
+                .map_err(RunError::Pipeline);
+        }
+    }
+
+    Ok("{}".to_string())
+}
+
+fn config_key_candidates(
+    plugin_ref: &str,
+    package_name: &str,
+    plugin_name: &str,
+    kind_alias: Option<&str>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+    let mut push = |key: String| {
+        if seen.insert(key.clone()) {
+            candidates.push(key);
+        }
+    };
+
+    push(plugin_ref.to_string());
+
+    if let Some((ref_package, ref_name)) = plugin_ref.split_once('.') {
+        let ref_name_underscore = ref_name.replace('-', "_");
+        if ref_name_underscore != ref_name {
+            push(format!("{}.{}", ref_package, ref_name_underscore));
+        }
+
+        if ref_package != package_name {
+            push(format!("{}.{}", package_name, ref_name));
+            if ref_name_underscore != ref_name {
+                push(format!("{}.{}", package_name, ref_name_underscore));
+            }
+        }
+    }
+
+    push(plugin_name.to_string());
+    let plugin_name_underscore = plugin_name.replace('-', "_");
+    if plugin_name_underscore != plugin_name {
+        push(plugin_name_underscore.clone());
+    }
+
+    push(format!("{}.{}", package_name, plugin_name));
+    if plugin_name_underscore != plugin_name {
+        push(format!("{}.{}", package_name, plugin_name_underscore));
+    }
+
+    if let Some(alias) = kind_alias {
+        if let Some((ref_package, _)) = plugin_ref.split_once('.') {
+            push(format!("{}.{}", ref_package, alias));
+        }
+        push(format!("{}.{}", package_name, alias));
+    }
+
+    candidates
+}
+
+fn plugin_kind_alias(kind: r2x_manifest::PluginKind) -> Option<&'static str> {
+    match kind {
+        r2x_manifest::PluginKind::Parser => Some("parser"),
+        r2x_manifest::PluginKind::Exporter => Some("exporter"),
+        r2x_manifest::PluginKind::Upgrader => Some("upgrader"),
+        r2x_manifest::PluginKind::Modifier => Some("modifier"),
+        r2x_manifest::PluginKind::Translation => Some("translation"),
+        r2x_manifest::PluginKind::Utility => None,
+    }
 }
 
 fn prepare_pipeline_overrides(

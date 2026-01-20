@@ -1,6 +1,7 @@
 use super::{PluginCommand, RunError};
 use crate::help::show_plugin_help;
 use crate::logger;
+use crate::manifest_lookup::resolve_plugin_ref;
 use crate::package_verification;
 use crate::python_bridge::Bridge;
 use crate::r2x_manifest::Manifest;
@@ -65,16 +66,18 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     logger::debug(&format!("Received args: {:?}", args));
 
     let manifest = Manifest::load()?;
-    let (_pkg, plugin) = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name.as_ref() == plugin_name)
-                .map(|p| (pkg, p))
-        })
-        .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
+    let resolved = match resolve_plugin_ref(&manifest, plugin_name) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            return Err(match err {
+                crate::manifest_lookup::PluginRefError::NotFound(_) => {
+                    RunError::PluginNotFound(plugin_name.to_string())
+                }
+                _ => RunError::Config(err.to_string()),
+            })
+        }
+    };
+    let plugin = resolved.plugin;
 
     package_verification::verify_and_ensure_plugin(&manifest, plugin_name)
         .map_err(|e| RunError::Verification(e.to_string()))?;

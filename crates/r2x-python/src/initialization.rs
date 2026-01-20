@@ -246,35 +246,12 @@ impl Bridge {
     }
 
     /// Configure Python loguru logging with optional plugin context
-    fn configure_python_logging_with_plugin(plugin_name: Option<&str>) -> Result<(), BridgeError> {
-        let log_file = logger::get_log_path_string();
+    fn configure_python_logging_with_plugin(_plugin_name: Option<&str>) -> Result<(), BridgeError> {
         let verbosity = logger::get_verbosity();
-        let log_level = match verbosity {
-            0 => "WARNING",
-            1 => "INFO",
-            2 => "DEBUG",
-            _ => "TRACE",
-        };
-
-        // Format to match Rust logger with plugin context
-        let fmt = if let Some(name) = plugin_name {
-            format!(
-                "[{{time:YYYY-MM-DD HH:mm:ss}}] [PYTHON] [{}] {{level: <8}} {{message}}",
-                name
-            )
-        } else {
-            "[{time:YYYY-MM-DD HH:mm:ss}] [PYTHON] {level: <8} {message}".to_string()
-        };
-
-        // Check if Python logs should be shown on console
-        let enable_console = logger::get_log_python();
-
-        // Check if stdout should be suppressed from logs
-        let no_stdout = logger::get_no_stdout();
 
         logger::debug(&format!(
-            "Configuring Python logging with level={}, file={}, enable_console={}, no_stdout={}, plugin={}",
-            log_level, log_file, enable_console, no_stdout, plugin_name.unwrap_or("none")
+            "Configuring Python logging with verbosity={}",
+            verbosity
         ));
 
         pyo3::Python::attach(|py| {
@@ -286,15 +263,9 @@ impl Bridge {
                 logger::warn(&format!("Failed to get setup_logging function: {}", e));
                 BridgeError::Python(format!("setup_logging not found: {}", e))
             })?;
-            let kwargs = pyo3::types::PyDict::new(py);
-            kwargs.set_item("level", log_level)?;
-            kwargs.set_item("log_file", &log_file)?;
-            kwargs.set_item("fmt", &fmt)?;
-            kwargs.set_item("enable_console_log", enable_console)?;
-            kwargs.set_item("suppress_stdout", no_stdout)?;
-            setup_logging.call((), Some(&kwargs))?;
+            setup_logging.call1((verbosity,))?;
 
-            // Explicitly enable logging for r2x modules
+            // Explicitly enable logging for installed r2x packages
             let loguru = PyModule::import(py, "loguru")?;
             let logger = loguru.getattr("logger")?;
             logger.call_method1("enable", ("r2x_core",))?;
