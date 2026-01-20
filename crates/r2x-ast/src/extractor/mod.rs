@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Result};
-use ast_grep_core::AstGrep;
-use ast_grep_language::Python;
 use crate::discovery_types::{
     ArgumentSpec, ConfigField, ConfigSpec, DiscoveredPlugin, IOContract, IOSlot,
     ImplementationType, InvocationSpec, PluginKind, ResourceSpec, StoreMode, StoreSpec,
 };
+use anyhow::{anyhow, Result};
+use ast_grep_core::AstGrep;
+use ast_grep_language::Python;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -117,7 +117,9 @@ impl PluginExtractor {
         }
 
         if plugin_spec_calls.is_empty() {
-            return Err(anyhow!("No PluginSpec or DiscoveredPlugin helper call found in manifest.add()"));
+            return Err(anyhow!(
+                "No PluginSpec or DiscoveredPlugin helper call found in manifest.add()"
+            ));
         }
 
         let spec_match = &plugin_spec_calls[0];
@@ -135,7 +137,12 @@ impl PluginExtractor {
             "upgrader" => PluginKind::Upgrader,
             "utility" => PluginKind::Utility,
             "translation" => PluginKind::Translation,
-            _ => return Err(anyhow!("Unknown DiscoveredPlugin helper method: {}", method)),
+            _ => {
+                return Err(anyhow!(
+                    "Unknown DiscoveredPlugin helper method: {}",
+                    method
+                ))
+            }
         };
 
         debug!("Detected plugin kind: {:?}", kind);
@@ -950,7 +957,9 @@ impl PluginExtractor {
     }
 
     fn parse_config_field_definition(definition: &str) -> Option<ConfigField> {
-        use crate::schema_extractor::{extract_description_from_field, parse_union_types_from_annotation};
+        use crate::schema_extractor::{
+            extract_description_from_field, parse_union_types_from_annotation,
+        };
 
         let (name_part, remainder) = definition.split_once(':')?;
         let name = name_part.trim();
@@ -988,7 +997,9 @@ impl PluginExtractor {
             }
         });
         let required = default.is_none()
-            && !types.iter().any(|t| t == "None" || t.starts_with("Optional"));
+            && !types
+                .iter()
+                .any(|t| t == "None" || t.starts_with("Optional"));
 
         Some(ConfigField {
             name: name.to_string(),

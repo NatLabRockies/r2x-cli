@@ -15,7 +15,7 @@ use r2x_logger as logger;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 /// Extracted class definition from a Python file
 #[derive(Debug, Clone)]
@@ -74,6 +74,31 @@ pub struct PackageAstCache {
 }
 
 impl PackageAstCache {
+    fn is_ignored_dir(entry: &DirEntry) -> bool {
+        if !entry.file_type().is_dir() {
+            return false;
+        }
+
+        matches!(
+            entry.file_name().to_string_lossy().as_ref(),
+            ".git"
+                | ".hg"
+                | ".svn"
+                | ".venv"
+                | "venv"
+                | "env"
+                | "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | ".tox"
+                | ".mypy_cache"
+                | ".pytest_cache"
+                | "__pycache__"
+                | "htmlcov"
+        )
+    }
+
     /// Build cache by walking package once and parsing each .py file once
     pub fn build(package_root: &Path) -> Self {
         let start = Instant::now();
@@ -82,11 +107,10 @@ impl PackageAstCache {
         let mut file_count = 0;
 
         for entry in WalkDir::new(package_root)
-            .max_depth(5)
             .into_iter()
+            .filter_entry(|entry| !Self::is_ignored_dir(entry))
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "py"))
-            .filter(|e| !e.path().to_string_lossy().contains("__pycache__"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "py"))
         {
             let path = entry.path().to_path_buf();
             if let Ok(content) = std::fs::read_to_string(&path) {
@@ -112,7 +136,7 @@ impl PackageAstCache {
     }
 
     /// Parse a single file, extracting all needed data in one pass
-    fn parse_file(path: &PathBuf, content: String) -> ParsedPyFile {
+    fn parse_file(path: &Path, content: String) -> ParsedPyFile {
         let start = Instant::now();
 
         let sg = AstGrep::new(&content, Python);
@@ -130,7 +154,7 @@ impl PackageAstCache {
         ));
 
         ParsedPyFile {
-            path: path.clone(),
+            path: path.to_path_buf(),
             content,
             classes,
             decorated_functions,
@@ -371,7 +395,10 @@ impl PackageAstCache {
 
                 if !function_name.is_empty() {
                     // Avoid duplicates
-                    if !results.iter().any(|r: &DecoratedFunc| r.function_name == function_name) {
+                    if !results
+                        .iter()
+                        .any(|r: &DecoratedFunc| r.function_name == function_name)
+                    {
                         results.push(DecoratedFunc {
                             function_name,
                             parameters_text,

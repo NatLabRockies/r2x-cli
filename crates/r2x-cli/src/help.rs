@@ -94,10 +94,17 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     if !plugin.parameters.is_empty() {
         println!("\nParameters:");
         for param in &plugin.parameters {
-            let module_str = param.module.as_ref()
+            let module_str = param
+                .module
+                .as_ref()
                 .map(|m| format!(" ({})", m))
                 .unwrap_or_default();
-            println!("  --{:<20} {}{}", param.name, param.format_types(), module_str);
+            println!(
+                "  --{:<20} {}{}",
+                param.name,
+                param.format_types(),
+                module_str
+            );
             if let Some(ref desc) = param.description {
                 println!("      {}", desc);
             }
@@ -109,7 +116,10 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
         println!("\nConfiguration Schema:");
         for (field_name, field) in plugin.config_schema.iter() {
             let req_marker = if field.required { " (required)" } else { "" };
-            println!("  --{:<20} {:?}{}", field_name, field.field_type, req_marker);
+            println!(
+                "  --{:<20} {:?}{}",
+                field_name, field.field_type, req_marker
+            );
         }
     }
 

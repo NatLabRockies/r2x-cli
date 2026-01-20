@@ -120,11 +120,7 @@ impl SyncEngine {
         // 5. Count plugins
         {
             let manifest = self.manifest.read();
-            result.total_plugins = manifest
-                .packages
-                .iter()
-                .map(|pkg| pkg.plugins.len())
-                .sum();
+            result.total_plugins = manifest.packages.iter().map(|pkg| pkg.plugins.len()).sum();
         }
 
         result
@@ -133,12 +129,10 @@ impl SyncEngine {
     /// Fast diff using pre-computed hashes
     fn compute_changes(&self, old: &Manifest, new: &[Package]) -> Vec<Change> {
         new.par_iter()
-            .filter_map(|new_pkg| {
-                match old.get_package(&new_pkg.name) {
-                    Some(old_pkg) if old_pkg.content_hash == new_pkg.content_hash => None,
-                    Some(_) => Some(Change::Update(new_pkg.clone())),
-                    None => Some(Change::Insert(new_pkg.clone())),
-                }
+            .filter_map(|new_pkg| match old.get_package(&new_pkg.name) {
+                Some(old_pkg) if old_pkg.content_hash == new_pkg.content_hash => None,
+                Some(_) => Some(Change::Update(new_pkg.clone())),
+                None => Some(Change::Insert(new_pkg.clone())),
             })
             .collect()
     }
@@ -237,9 +231,7 @@ impl StringInterner {
 
         // Slow path: write lock
         let mut map = self.map.write();
-        map.entry(hash)
-            .or_insert_with(|| Arc::from(s))
-            .clone()
+        map.entry(hash).or_insert_with(|| Arc::from(s)).clone()
     }
 
     /// Intern a string that's already an Arc

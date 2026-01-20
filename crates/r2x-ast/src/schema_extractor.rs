@@ -81,7 +81,13 @@ impl SchemaExtractor {
             let name = full_text[..colon_pos].trim().to_string();
 
             // Skip private/magic attributes and non-identifier names
-            if name.starts_with('_') || !name.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) {
+            if name.starts_with('_')
+                || !name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic())
+                    .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -100,7 +106,8 @@ impl SchemaExtractor {
             let has_default = full_text.contains(" = ") || full_text.contains("default=");
 
             // Determine if required
-            let required = !has_default && !type_text.contains("None") && !type_text.starts_with("Optional");
+            let required =
+                !has_default && !type_text.contains("None") && !type_text.starts_with("Optional");
 
             // Try to extract default value
             let default = if has_default {
@@ -180,7 +187,12 @@ impl SchemaExtractor {
     fn parse_type_annotation(
         &self,
         annotation: &str,
-    ) -> (FieldType, Option<Arc<str>>, Option<Arc<NestedInfo>>, Option<Arc<[Arc<str>]>>) {
+    ) -> (
+        FieldType,
+        Option<Arc<str>>,
+        Option<Arc<NestedInfo>>,
+        Option<Arc<[Arc<str>]>>,
+    ) {
         let annotation = annotation.trim();
 
         // Handle Annotated[X, Field(...)] - extract the actual type
@@ -214,7 +226,11 @@ impl SchemaExtractor {
         if (annotation.starts_with("List[") || annotation.starts_with("list["))
             && annotation.ends_with(']')
         {
-            let start = if annotation.starts_with("List[") { 5 } else { 5 };
+            let start = if annotation.starts_with("List[") {
+                5
+            } else {
+                5
+            };
             let inner = &annotation[start..annotation.len() - 1];
             return (FieldType::Array, Some(Arc::from(inner)), None, None);
         }
@@ -238,14 +254,12 @@ impl SchemaExtractor {
                 // Assume it's a nested object type
                 let nested_info = NestedInfo {
                     class: Some(Arc::from(annotation)),
-                    module: self.import_map.get(annotation).map(|m| Arc::from(m.as_str())),
+                    module: self
+                        .import_map
+                        .get(annotation)
+                        .map(|m| Arc::from(m.as_str())),
                 };
-                return (
-                    FieldType::Object,
-                    None,
-                    Some(Arc::new(nested_info)),
-                    None,
-                );
+                return (FieldType::Object, None, Some(Arc::new(nested_info)), None);
             }
         };
 
@@ -430,7 +444,8 @@ pub fn parse_union_types_from_annotation(annotation: &str) -> Vec<String> {
 
     // Now parse union types
     if actual_type.contains(" | ") {
-        actual_type.split(" | ")
+        actual_type
+            .split(" | ")
             .map(|t| t.trim().to_string())
             .collect()
     } else {
@@ -551,7 +566,10 @@ class MyConfig(BaseModel):
         assert_eq!(database.field_type, FieldType::Object);
         assert!(database.nested.is_some());
         let nested = database.nested.as_ref().unwrap();
-        assert_eq!(nested.class.as_ref().map(|s| s.as_ref()), Some("DatabaseConfig"));
+        assert_eq!(
+            nested.class.as_ref().map(|s| s.as_ref()),
+            Some("DatabaseConfig")
+        );
     }
 
     #[test]
@@ -576,11 +594,20 @@ class PCMDefaultsConfig(PluginConfig):
         let extractor = SchemaExtractor::new();
         let fields = extractor.extract(source, "PCMDefaultsConfig").unwrap();
 
-        eprintln!("Extracted fields: {:?}", fields.fields.keys().collect::<Vec<_>>());
+        eprintln!(
+            "Extracted fields: {:?}",
+            fields.fields.keys().collect::<Vec<_>>()
+        );
 
         assert!(!fields.is_empty(), "Should extract at least one field");
-        assert!(fields.get("pcm_defaults_fpath").is_some(), "Should have pcm_defaults_fpath field");
-        assert!(fields.get("pcm_defaults_override").is_some(), "Should have pcm_defaults_override field");
+        assert!(
+            fields.get("pcm_defaults_fpath").is_some(),
+            "Should have pcm_defaults_fpath field"
+        );
+        assert!(
+            fields.get("pcm_defaults_override").is_some(),
+            "Should have pcm_defaults_override field"
+        );
 
         let override_field = fields.get("pcm_defaults_override").unwrap();
         assert_eq!(override_field.field_type, FieldType::Bool);

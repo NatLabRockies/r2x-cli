@@ -54,7 +54,10 @@ pub fn list_plugins(
 
         for (package_name, plugin_names) in &packages {
             // Get package metadata
-            let pkg = manifest.packages.iter().find(|p| p.name.as_ref() == package_name);
+            let pkg = manifest
+                .packages
+                .iter()
+                .find(|p| p.name.as_ref() == package_name);
             let is_editable = pkg.map(|p| p.editable_install).unwrap_or(false);
 
             // Get version info
@@ -73,10 +76,7 @@ pub fn list_plugins(
             }
             if is_editable {
                 if let Some(source_uri) = pkg.and_then(|p| p.source_uri.as_ref()) {
-                    package_header.push_str(&format!(
-                        " {}",
-                        format!("({})", source_uri).dimmed()
-                    ));
+                    package_header.push_str(&format!(" {}", format!("({})", source_uri).dimmed()));
                 } else {
                     package_header.push_str(&format!(" {}", "[editable]".yellow()));
                 }
@@ -182,7 +182,11 @@ fn show_plugin_details(
 }
 
 fn show_plugin_compact(plugin: &Plugin) {
-    println!("{} [{:?}]", plugin.name.as_ref().bold().cyan(), plugin.plugin_type);
+    println!(
+        "{} [{:?}]",
+        plugin.name.as_ref().bold().cyan(),
+        plugin.plugin_type
+    );
 
     // Show module info
     println!("  {}: {}", "Module".dimmed(), plugin.module);
@@ -210,7 +214,13 @@ fn show_plugin_compact(plugin: &Plugin) {
                 .as_ref()
                 .map(|d| format!(" = {}", d))
                 .unwrap_or_default();
-            println!("    {}{}: {}{}", req_marker, param.name, param.format_types(), default_str);
+            println!(
+                "    {}{}: {}{}",
+                req_marker,
+                param.name,
+                param.format_types(),
+                default_str
+            );
 
             if let Some(ref desc) = param.description {
                 println!("      {}", desc.dimmed());
@@ -255,7 +265,9 @@ fn show_plugin_verbose(plugin: &Plugin) {
         println!("  {}:", "Arguments".dimmed());
         for param in &plugin.parameters {
             let req_marker = if param.required { "*" } else { " " };
-            let module_str = param.module.as_ref()
+            let module_str = param
+                .module
+                .as_ref()
                 .map(|m| format!(" ({})", m))
                 .unwrap_or_default();
             let default_str = param
@@ -263,7 +275,14 @@ fn show_plugin_verbose(plugin: &Plugin) {
                 .as_ref()
                 .map(|d| format!(" = {}", d))
                 .unwrap_or_default();
-            println!("    {}{}: {}{}{}", req_marker, param.name, param.format_types(), module_str, default_str);
+            println!(
+                "    {}{}: {}{}{}",
+                req_marker,
+                param.name,
+                param.format_types(),
+                module_str,
+                default_str
+            );
 
             if let Some(ref desc) = param.description {
                 println!("      {}", desc.dimmed());

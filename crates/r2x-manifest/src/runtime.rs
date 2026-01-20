@@ -3,7 +3,9 @@
 //! This module provides utilities for building runtime bindings that are used
 //! when invoking plugins through the Python bridge.
 
-use crate::execution_types::{ArgumentSpec, ConfigSpec, ExecConfigField, ImplementationType, PluginKind, PluginSpec};
+use crate::execution_types::{
+    ArgumentSpec, ConfigSpec, ExecConfigField, ImplementationType, PluginKind, PluginSpec,
+};
 use crate::types::{Plugin, PluginType};
 
 /// Runtime bindings for plugin invocation

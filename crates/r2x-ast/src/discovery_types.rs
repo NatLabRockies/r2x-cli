@@ -286,55 +286,61 @@ impl DiscoveredPlugin {
             .resources
             .as_ref()
             .and_then(|r| r.config.as_ref())
-            .map(|c| (Some(Arc::from(c.name.as_str())), Some(Arc::from(c.module.as_str()))))
+            .map(|c| {
+                (
+                    Some(Arc::from(c.name.as_str())),
+                    Some(Arc::from(c.module.as_str())),
+                )
+            })
             .unwrap_or((None, None));
 
         // Extract parameters from config class fields (preferred) or invocation arguments (fallback)
-        let parameters: SmallVec<[r2x_manifest::Parameter; 4]> = if let Some(ref resources) = self.resources {
-            if let Some(ref config) = resources.config {
-                config
-                    .fields
+        let parameters: SmallVec<[r2x_manifest::Parameter; 4]> =
+            if let Some(ref resources) = self.resources {
+                if let Some(ref config) = resources.config {
+                    config
+                        .fields
+                        .iter()
+                        .map(|field| r2x_manifest::Parameter {
+                            name: Arc::from(field.name.as_str()),
+                            types: field.types.iter().map(|t| Arc::from(t.as_str())).collect(),
+                            module: None,
+                            required: field.required,
+                            default: field.default.as_ref().map(|d| Arc::from(d.as_str())),
+                            description: field.description.as_ref().map(|d| Arc::from(d.as_str())),
+                        })
+                        .collect()
+                } else {
+                    SmallVec::new()
+                }
+            } else {
+                // Fallback to invocation arguments if no config
+                self.invocation
+                    .constructor
                     .iter()
-                    .map(|field| r2x_manifest::Parameter {
-                        name: Arc::from(field.name.as_str()),
-                        types: field.types.iter()
-                            .map(|t| Arc::from(t.as_str()))
-                            .collect(),
-                        module: None,
-                        required: field.required,
-                        default: field.default.as_ref().map(|d| Arc::from(d.as_str())),
-                        description: field.description.as_ref().map(|d| Arc::from(d.as_str())),
+                    .chain(self.invocation.call.iter())
+                    .map(|arg| {
+                        let types: SmallVec<[Arc<str>; 2]> = arg
+                            .annotation
+                            .as_deref()
+                            .map(|ann| {
+                                parse_union_types_from_annotation(ann)
+                                    .into_iter()
+                                    .map(|t| Arc::from(t.as_str()))
+                                    .collect()
+                            })
+                            .unwrap_or_else(|| SmallVec::from_elem(Arc::from("Any"), 1));
+                        r2x_manifest::Parameter {
+                            name: Arc::from(arg.name.as_str()),
+                            types,
+                            module: None,
+                            required: arg.required,
+                            default: arg.default.as_ref().map(|d| Arc::from(d.as_str())),
+                            description: None,
+                        }
                     })
                     .collect()
-            } else {
-                SmallVec::new()
-            }
-        } else {
-            // Fallback to invocation arguments if no config
-            self.invocation
-                .constructor
-                .iter()
-                .chain(self.invocation.call.iter())
-                .map(|arg| {
-                    let types: SmallVec<[Arc<str>; 2]> = arg.annotation.as_deref()
-                        .map(|ann| {
-                            parse_union_types_from_annotation(ann)
-                                .into_iter()
-                                .map(|t| Arc::from(t.as_str()))
-                                .collect()
-                        })
-                        .unwrap_or_else(|| SmallVec::from_elem(Arc::from("Any"), 1));
-                    r2x_manifest::Parameter {
-                        name: Arc::from(arg.name.as_str()),
-                        types,
-                        module: None,
-                        required: arg.required,
-                        default: arg.default.as_ref().map(|d| Arc::from(d.as_str())),
-                        description: None,
-                    }
-                })
-                .collect()
-        };
+            };
 
         Plugin {
             name: Arc::from(self.name.as_str()),

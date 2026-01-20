@@ -126,7 +126,10 @@ pub fn discover_and_register_entry_points_with_deps(
     // Set dependencies on the main package
     {
         let pkg = manifest.get_or_create_package(package_name_full);
-        pkg.dependencies = r2x_dependencies.iter().map(|s| Arc::from(s.as_str())).collect();
+        pkg.dependencies = r2x_dependencies
+            .iter()
+            .map(|s| Arc::from(s.as_str()))
+            .collect();
     }
 
     // Process each r2x dependency

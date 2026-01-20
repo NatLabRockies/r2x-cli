@@ -23,20 +23,8 @@ pub mod types;
 
 // Re-export core types
 pub use types::{
-    ConfigClass,
-    ConfigField,
-    Constraint,
-    DefaultValue,
-    FieldType,
-    InstallType,
-    Manifest,
-    NestedInfo,
-    Package,
-    Parameter,
-    Plugin,
-    PluginType,
-    SchemaField,
-    SchemaFields,
+    ConfigClass, ConfigField, Constraint, DefaultValue, FieldType, InstallType, Manifest,
+    NestedInfo, Package, Parameter, Plugin, PluginType, SchemaField, SchemaFields,
 };
 
 // Re-export sync utilities

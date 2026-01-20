@@ -29,7 +29,7 @@ fn get_compiled_python_version() -> Result<String, BridgeError> {
     // Otherwise, we need to query Python at runtime
     if let Ok(pyo3_python) = env::var("PYO3_PYTHON") {
         // Try to extract version from path like "python3.12"
-        if let Some(version) = pyo3_python.split('/').last() {
+        if let Some(version) = pyo3_python.split('/').next_back() {
             if let Some(ver) = version.strip_prefix("python") {
                 if ver.matches('.').count() >= 1 {
                     let parts: Vec<&str> = ver.split('.').take(2).collect();

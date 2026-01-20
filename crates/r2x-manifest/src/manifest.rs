@@ -90,9 +90,7 @@ impl Manifest {
     /// O(1) package lookup by name
     #[inline]
     pub fn get_package(&self, name: &str) -> Option<&Package> {
-        self.package_index
-            .get(name)
-            .map(|&idx| &self.packages[idx])
+        self.package_index.get(name).map(|&idx| &self.packages[idx])
     }
 
     /// O(1) mutable package lookup by name
@@ -214,12 +212,11 @@ impl Manifest {
         let mut removed = Vec::new();
 
         // Find the package and its dependencies
-        let dependencies: Vec<Arc<str>> =
-            if let Some(pkg) = self.get_package(package_name) {
-                pkg.dependencies.iter().cloned().collect()
-            } else {
-                return removed;
-            };
+        let dependencies: Vec<Arc<str>> = if let Some(pkg) = self.get_package(package_name) {
+            pkg.dependencies.iter().cloned().collect()
+        } else {
+            return removed;
+        };
 
         // Remove the main package
         if self.remove_package(package_name) {
@@ -290,9 +287,7 @@ impl Package {
     /// Get a plugin by name with O(1) lookup
     #[inline]
     pub fn get_plugin(&self, name: &str) -> Option<&Plugin> {
-        self.plugin_index
-            .get(name)
-            .map(|&idx| &self.plugins[idx])
+        self.plugin_index.get(name).map(|&idx| &self.plugins[idx])
     }
 
     /// Get a mutable plugin by name
