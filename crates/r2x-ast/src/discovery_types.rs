@@ -269,7 +269,6 @@ impl DiscoveredPlugin {
             ImplementationType::Function => PluginType::Function,
         };
 
-        // Extract module and class/function name from entry
         let (module, class_name, function_name) = if let Some(idx) = self.entry.rfind('.') {
             let module = Arc::from(&self.entry[..idx]);
             let symbol = &self.entry[idx + 1..];
@@ -281,11 +280,14 @@ impl DiscoveredPlugin {
             (Arc::from(""), None, None)
         };
 
-        // Extract config info from resources
-        let (config_class, config_module) = self
-            .resources
-            .as_ref()
-            .and_then(|r| r.config.as_ref())
+        // Runtime-injected params that shouldn't appear in user-facing config
+        const RUNTIME_PARAMS: &[&str] = &[
+            "self", "system", "config", "store", "stdin", "ctx", "context",
+        ];
+
+        let config_spec = self.resources.as_ref().and_then(|r| r.config.as_ref());
+
+        let (config_class, config_module) = config_spec
             .map(|c| {
                 (
                     Some(Arc::from(c.name.as_str())),
@@ -294,70 +296,48 @@ impl DiscoveredPlugin {
             })
             .unwrap_or((None, None));
 
-        // Standard parameters that are injected by the runtime, not user-configurable
-        const RUNTIME_PARAMS: &[&str] = &[
-            "self", "system", "config", "store", "stdin", "ctx", "context",
-        ];
+        let config_fields = config_spec.map(|c| c.fields.as_slice()).unwrap_or(&[]);
 
-        // Collect config class fields
-        let mut parameters: SmallVec<[r2x_manifest::Parameter; 4]> =
-            if let Some(ref resources) = self.resources {
-                if let Some(ref config) = resources.config {
-                    config
-                        .fields
-                        .iter()
-                        .map(|field| r2x_manifest::Parameter {
-                            name: Arc::from(field.name.as_str()),
-                            types: field.types.iter().map(|t| Arc::from(t.as_str())).collect(),
-                            module: None,
-                            required: field.required,
-                            default: field.default.as_ref().map(|d| Arc::from(d.as_str())),
-                            description: field.description.as_ref().map(|d| Arc::from(d.as_str())),
-                        })
-                        .collect()
-                } else {
-                    SmallVec::new()
-                }
-            } else {
-                SmallVec::new()
-            };
-
-        // Collect parameter names we already have from config
-        let existing_names: std::collections::HashSet<&str> =
-            parameters.iter().map(|p| p.name.as_ref()).collect();
-
-        // Add extra function kwargs that aren't runtime params or already in config
-        let extra_kwargs: SmallVec<[r2x_manifest::Parameter; 4]> = self
-            .invocation
-            .call
+        let mut parameters: SmallVec<[r2x_manifest::Parameter; 4]> = config_fields
             .iter()
-            .filter(|arg| {
-                let name = arg.name.as_str();
-                !RUNTIME_PARAMS.contains(&name) && !existing_names.contains(name)
-            })
-            .map(|arg| {
-                let types: SmallVec<[Arc<str>; 2]> = arg
-                    .annotation
-                    .as_deref()
-                    .map(|ann| {
-                        parse_union_types_from_annotation(ann)
-                            .into_iter()
-                            .map(|t| Arc::from(t.as_str()))
-                            .collect()
-                    })
-                    .unwrap_or_else(|| SmallVec::from_elem(Arc::from("Any"), 1));
-                r2x_manifest::Parameter {
-                    name: Arc::from(arg.name.as_str()),
-                    types,
-                    module: None,
-                    required: arg.required,
-                    default: arg.default.as_ref().map(|d| Arc::from(d.as_str())),
-                    description: None,
-                }
+            .map(|field| r2x_manifest::Parameter {
+                name: Arc::from(field.name.as_str()),
+                types: field.types.iter().map(|t| Arc::from(t.as_str())).collect(),
+                module: None,
+                required: field.required,
+                default: field.default.as_ref().map(|d| Arc::from(d.as_str())),
+                description: field.description.as_ref().map(|d| Arc::from(d.as_str())),
             })
             .collect();
 
-        parameters.extend(extra_kwargs);
+        let existing_names: std::collections::HashSet<String> =
+            parameters.iter().map(|p| p.name.to_string()).collect();
+
+        for arg in self.invocation.call.iter() {
+            let name = arg.name.as_str();
+            if RUNTIME_PARAMS.contains(&name) || existing_names.contains(name) {
+                continue;
+            }
+            let types: SmallVec<[Arc<str>; 2]> = arg
+                .annotation
+                .as_deref()
+                .map(|ann| {
+                    parse_union_types_from_annotation(ann)
+                        .into_iter()
+                        .map(|t| Arc::from(t.as_str()))
+                        .collect()
+                })
+                .unwrap_or_else(|| SmallVec::from_elem(Arc::from("Any"), 1));
+
+            parameters.push(r2x_manifest::Parameter {
+                name: Arc::from(arg.name.as_str()),
+                types,
+                module: None,
+                required: arg.required,
+                default: arg.default.as_ref().map(|d| Arc::from(d.as_str())),
+                description: None,
+            });
+        }
 
         Plugin {
             name: Arc::from(self.name.as_str()),
