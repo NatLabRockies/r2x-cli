@@ -1099,7 +1099,7 @@ impl AstDiscovery {
         let rest = &params_text[config_start + 7..];
 
         // Find end of type annotation (comma or end of string)
-        let type_end = rest.find(|c| c == ',' || c == ')').unwrap_or(rest.len());
+        let type_end = rest.find(|c| [',', ')'].contains(&c)).unwrap_or(rest.len());
         let config_type = rest[..type_end].trim();
 
         // Verify it ends with "Config"

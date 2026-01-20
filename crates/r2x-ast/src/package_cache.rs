@@ -332,7 +332,7 @@ impl PackageAstCache {
         if let Some(after_class) = text.strip_prefix("class ") {
             // Find the end of the class name (either '(' or ':')
             let end = after_class
-                .find(|c| c == '(' || c == ':')
+                .find(|c| ['(', ':'].contains(&c))
                 .unwrap_or(after_class.len());
             return after_class[..end].trim().to_string();
         }

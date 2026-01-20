@@ -16,6 +16,13 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+type ParsedTypeInfo = (
+    FieldType,
+    Option<Arc<str>>,
+    Option<Arc<NestedInfo>>,
+    Option<Arc<[Arc<str>]>>,
+);
+
 /// Schema extractor for Python config classes
 pub struct SchemaExtractor {
     /// Import map for resolving type references
@@ -184,15 +191,7 @@ impl SchemaExtractor {
     }
 
     /// Parse a type annotation into field type and metadata
-    fn parse_type_annotation(
-        &self,
-        annotation: &str,
-    ) -> (
-        FieldType,
-        Option<Arc<str>>,
-        Option<Arc<NestedInfo>>,
-        Option<Arc<[Arc<str>]>>,
-    ) {
+    fn parse_type_annotation(&self, annotation: &str) -> ParsedTypeInfo {
         let annotation = annotation.trim();
 
         // Handle Annotated[X, Field(...)] - extract the actual type
@@ -226,11 +225,7 @@ impl SchemaExtractor {
         if (annotation.starts_with("List[") || annotation.starts_with("list["))
             && annotation.ends_with(']')
         {
-            let start = if annotation.starts_with("List[") {
-                5
-            } else {
-                5
-            };
+            let start = 5;
             let inner = &annotation[start..annotation.len() - 1];
             return (FieldType::Array, Some(Arc::from(inner)), None, None);
         }
@@ -411,7 +406,7 @@ pub fn extract_description_from_field(text: &str) -> Option<String> {
     if let Some(start) = text.find("description=") {
         let rest = &text[start + 12..];
         // Find opening quote
-        let quote_start = rest.find(|c| c == '"' || c == '\'')?;
+        let quote_start = rest.find(|c| ['"', '\''].contains(&c))?;
         let quote_char = rest.chars().nth(quote_start)?;
         let after_quote = &rest[quote_start + 1..];
         // Find closing quote

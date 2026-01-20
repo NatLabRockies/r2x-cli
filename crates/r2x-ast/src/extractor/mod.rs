@@ -774,8 +774,7 @@ impl PluginExtractor {
 
             if !in_class {
                 if let Some(rest) = trimmed.strip_prefix("class ") {
-                    if rest.starts_with(class_name) {
-                        let suffix = &rest[class_name.len()..];
+                    if let Some(suffix) = rest.strip_prefix(class_name) {
                         if suffix.starts_with('(') || suffix.starts_with(':') {
                             in_class = true;
                             class_indent = indent;

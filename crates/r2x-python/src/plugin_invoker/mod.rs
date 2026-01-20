@@ -35,10 +35,7 @@ impl super::Bridge {
         stdin_json: Option<&str>,
         plugin_metadata: Option<&PluginSpec>,
     ) -> Result<PluginInvocationResult, BridgeError> {
-        let runtime_bindings = match plugin_metadata {
-            Some(meta) => Some(build_runtime_bindings(meta)),
-            None => None,
-        };
+        let runtime_bindings = plugin_metadata.map(build_runtime_bindings);
 
         if let Some(plugin) = plugin_metadata {
             if plugin.kind == PluginKind::Upgrader {
@@ -58,8 +55,14 @@ impl super::Bridge {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_plugin_invocation_placeholder() {
-        assert!(true);
+    fn plugin_invocation_result_basics() {
+        let result = PluginInvocationResult {
+            output: String::new(),
+            timings: None,
+        };
+        assert!(result.output.is_empty());
     }
 }

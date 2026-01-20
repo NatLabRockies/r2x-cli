@@ -181,9 +181,13 @@ impl Bridge {
             for param_name in &positional_param_names {
                 if let Ok(Some(value)) = kwargs.get_item(param_name.as_str()) {
                     positional_args.push(value);
-                } else if param_name == "system" && stdin_obj.is_some() {
+                } else if param_name == "system" {
                     // System comes from stdin for exporters
-                    let stdin = stdin_obj.expect("checked above");
+                    let stdin = if let Some(stdin) = stdin_obj {
+                        stdin
+                    } else {
+                        break;
+                    };
                     logger::step("Adding system from stdin as positional arg");
 
                     // Use from_dict with a temporary directory for time series

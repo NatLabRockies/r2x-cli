@@ -443,8 +443,10 @@ mod tests {
 
     #[test]
     fn test_plugin_operations() {
-        let mut pkg = Package::default();
-        pkg.name = Arc::from("test-package");
+        let mut pkg = Package {
+            name: Arc::from("test-package"),
+            ..Default::default()
+        };
 
         let plugin = Plugin {
             name: Arc::from("test-plugin"),
