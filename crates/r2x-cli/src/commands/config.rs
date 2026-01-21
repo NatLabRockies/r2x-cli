@@ -5,6 +5,7 @@ use crate::python_bridge::configure_python_venv;
 use crate::GlobalOpts;
 use clap::Subcommand;
 use colored::*;
+use r2x_manifest::Manifest;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,9 @@ pub enum ConfigAction {
     /// Cache management
     #[command(subcommand)]
     Cache(CacheAction),
+    /// Manifest management
+    #[command(subcommand)]
+    Manifest(ManifestAction),
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -75,6 +79,14 @@ pub enum CacheAction {
         /// Optional new cache path to set
         new_path: Option<String>,
     },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ManifestAction {
+    /// Remove the manifest file
+    Clean,
+    /// Show the manifest file path
+    Path,
 }
 
 pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
@@ -135,6 +147,20 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                     "cache-path".cyan(),
                     cache_path,
                     cache_suffix.dimmed()
+                );
+
+                // Show manifest file location
+                let manifest_path = Manifest::path();
+                let manifest_suffix = if manifest_path.exists() {
+                    ""
+                } else {
+                    " (not created)"
+                };
+                println!(
+                    "  {}: {}{}",
+                    "manifest-path".cyan(),
+                    manifest_path.display(),
+                    manifest_suffix.dimmed()
                 );
 
                 // Show log file location
@@ -314,6 +340,9 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
         ConfigAction::Cache(cache_action) => {
             handle_cache(cache_action, opts);
         }
+        ConfigAction::Manifest(manifest_action) => {
+            handle_manifest(manifest_action, opts);
+        }
     }
 }
 
@@ -352,6 +381,48 @@ fn handle_cache(action: CacheAction, opts: GlobalOpts) {
         }
         CacheAction::Path { new_path } => {
             handle_cache_path(new_path, opts);
+        }
+    }
+}
+
+/// Handle manifest management
+fn handle_manifest(action: ManifestAction, opts: GlobalOpts) {
+    match action {
+        ManifestAction::Clean => {
+            clean_manifest(opts);
+        }
+        ManifestAction::Path => {
+            let manifest_path = Manifest::path();
+            println!("{}", manifest_path.display());
+        }
+    }
+}
+
+/// Remove the manifest file
+fn clean_manifest(opts: GlobalOpts) {
+    let manifest_path = Manifest::path();
+
+    if !manifest_path.exists() {
+        println!("Manifest file does not exist, nothing to clean.");
+        return;
+    }
+
+    if opts.verbosity_level() > 0 {
+        logger::step(&format!(
+            "Removing manifest file: {}",
+            manifest_path.display()
+        ));
+    }
+
+    match fs::remove_file(&manifest_path) {
+        Ok(_) => {
+            logger::success(&format!(
+                "Manifest file removed: {}",
+                manifest_path.display()
+            ));
+        }
+        Err(e) => {
+            logger::error(&format!("Failed to remove manifest file: {}", e));
         }
     }
 }
@@ -734,51 +805,77 @@ mod tests {
         }
     }
 
+    /// Helper to run tests with an isolated config file
+    fn with_temp_config<F>(f: F)
+    where
+        F: FnOnce(),
+    {
+        let temp_dir = std::env::temp_dir().join(format!("r2x-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let temp_config = temp_dir.join("r2x.toml");
+        std::env::set_var("R2X_CONFIG", &temp_config);
+        f();
+        std::env::remove_var("R2X_CONFIG");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
     #[test]
     fn test_config_show() {
-        handle_config(Some(ConfigAction::Show), normal_opts());
+        with_temp_config(|| {
+            handle_config(Some(ConfigAction::Show), normal_opts());
+        });
     }
 
     #[test]
     fn test_config_set() {
-        handle_config(
-            Some(ConfigAction::Set {
-                key: "cache-path".to_string(),
-                value: "test-value".to_string(),
-            }),
-            normal_opts(),
-        );
+        with_temp_config(|| {
+            handle_config(
+                Some(ConfigAction::Set {
+                    key: "cache-path".to_string(),
+                    value: "test-value".to_string(),
+                }),
+                normal_opts(),
+            );
+        });
     }
 
     #[test]
     fn test_config_set_quiet() {
-        handle_config(
-            Some(ConfigAction::Set {
-                key: "cache-path".to_string(),
-                value: "test-value".to_string(),
-            }),
-            quiet_opts(),
-        );
+        with_temp_config(|| {
+            handle_config(
+                Some(ConfigAction::Set {
+                    key: "cache-path".to_string(),
+                    value: "test-value".to_string(),
+                }),
+                quiet_opts(),
+            );
+        });
     }
 
     #[test]
     fn test_config_set_verbose() {
-        handle_config(
-            Some(ConfigAction::Set {
-                key: "cache-path".to_string(),
-                value: "test-value".to_string(),
-            }),
-            verbose_opts(),
-        );
+        with_temp_config(|| {
+            handle_config(
+                Some(ConfigAction::Set {
+                    key: "cache-path".to_string(),
+                    value: "test-value".to_string(),
+                }),
+                verbose_opts(),
+            );
+        });
     }
 
     #[test]
     fn test_config_reset() {
-        handle_config(Some(ConfigAction::Reset { yes: true }), normal_opts());
+        with_temp_config(|| {
+            handle_config(Some(ConfigAction::Reset { yes: true }), normal_opts());
+        });
     }
 
     #[test]
     fn test_config_no_action_tip() {
-        handle_config(None, normal_opts());
+        with_temp_config(|| {
+            handle_config(None, normal_opts());
+        });
     }
 }
