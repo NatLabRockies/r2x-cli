@@ -125,8 +125,10 @@ impl Bridge {
                         .getattr("ok_value")
                         .or_else(|_| result_py.getattr("value"))?
                 } else if type_name == "Err" {
+                    // rust_ok library uses 'error' property, others might use 'err_value' or 'value'
                     let err_value = result_py
-                        .getattr("err_value")
+                        .getattr("error")
+                        .or_else(|_| result_py.getattr("err_value"))
                         .or_else(|_| result_py.getattr("value"))?;
                     return Err(BridgeError::Python(format!(
                         "Plugin returned Err: {}",

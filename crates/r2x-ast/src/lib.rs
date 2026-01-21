@@ -762,6 +762,8 @@ impl AstDiscovery {
         package_name: &str,
     ) -> String {
         let path = std::path::Path::new(file_path);
+        // Normalize package name: dashes to underscores for Python module names
+        let normalized_package = package_name.replace('-', "_");
 
         // Try to get relative path from package_path
         if let Ok(rel) = path.strip_prefix(package_path) {
@@ -778,21 +780,21 @@ impl AstDiscovery {
                     .collect();
 
                 if module_parts.is_empty() {
-                    return package_name.to_string();
+                    return normalized_package;
                 }
 
                 // Check if the first part already matches the package name
                 // (happens with editable installs where package_path is source root)
-                if module_parts[0] == package_name {
+                if module_parts[0] == normalized_package {
                     return module_parts.join(".");
                 }
 
-                return format!("{}.{}", package_name, module_parts.join("."));
+                return format!("{}.{}", normalized_package, module_parts.join("."));
             }
         }
 
-        // Fallback: just use package name
-        package_name.to_string()
+        // Fallback: just use normalized package name
+        normalized_package
     }
 
     // =========================================================================
@@ -874,6 +876,30 @@ impl AstDiscovery {
                     }
                 }
             }
+        } else {
+            // For functions, also check if it's re-exported and follow the import
+            let has_function = cached
+                .as_ref()
+                .map(|cached| Self::ast_has_function(&cached.ast, &entry.symbol))
+                .unwrap_or(false);
+
+            if !has_function {
+                // Function not defined here, try to resolve from imports
+                if let Some(cached_file) = cached.as_ref() {
+                    if let Some(resolved_module) = Self::resolve_reexported_symbol(
+                        &cached_file.content,
+                        &entry.module,
+                        &entry.symbol,
+                    ) {
+                        if let Some(path) =
+                            Self::resolve_source_file(package_path, &resolved_module, package_name)
+                        {
+                            source_file = Some(path.clone());
+                            cached = Self::read_file_cached(file_cache, &path);
+                        }
+                    }
+                }
+            }
         }
 
         // Extract constructor/call arguments and config using direct file parsing
@@ -887,6 +913,7 @@ impl AstDiscovery {
                     &implementation,
                     file_cache,
                     package_cache,
+                    package_name,
                 )
             } else {
                 (Vec::new(), Vec::new(), None)
@@ -948,6 +975,7 @@ impl AstDiscovery {
         implementation: &ImplementationType,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
         package_cache: &mut Option<PackageAstCache>,
+        package_name: &str,
     ) -> (Vec<ArgumentSpec>, Vec<ArgumentSpec>, Option<ResourceSpec>) {
         let (constructor_args, call_args) = match implementation {
             ImplementationType::Class => {
@@ -969,6 +997,7 @@ impl AstDiscovery {
             implementation,
             file_cache,
             package_cache,
+            package_name,
         );
 
         // For functions without a config class, convert call_args to ConfigField format
@@ -1008,6 +1037,7 @@ impl AstDiscovery {
         implementation: &ImplementationType,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
         package_cache: &mut Option<PackageAstCache>,
+        package_name: &str,
     ) -> Option<ConfigSpec> {
         // First, find the config class name from the current file
         let config_name = Self::find_config_class_name(
@@ -1017,8 +1047,15 @@ impl AstDiscovery {
             implementation,
         )?;
 
+        // Track where we found the config class to determine the correct module
+        let mut config_file_path: Option<PathBuf> = None;
+
         // Try to extract fields from the same file first
         let mut fields = Self::extract_config_fields_from_ast(&cached.ast, &config_name);
+        if !fields.is_empty() {
+            // Config class is in the same file as the function
+            config_file_path = Some(source_path.to_path_buf());
+        }
 
         // If no fields found in the same file, search the package using ast-grep
         if fields.is_empty() {
@@ -1027,39 +1064,65 @@ impl AstDiscovery {
             }
 
             if let Some(cache) = package_cache.as_ref() {
-                if let Some((_, config_content)) = cache.find_config_class_content(&config_name) {
+                if let Some((path, config_content)) = cache.find_config_class_content(&config_name)
+                {
                     fields = Self::extract_config_fields(config_content, &config_name);
+                    if !fields.is_empty() {
+                        config_file_path = Some(path.clone());
+                    }
                 }
             }
         }
 
         // If still no fields, try looking in common locations relative to source file
         if fields.is_empty() {
-            if let Some(config_content) =
-                Self::find_config_in_common_locations(source_path, &config_name, file_cache)
-            {
+            if let Some((path, config_content)) = Self::find_config_in_common_locations_with_path(
+                source_path,
+                &config_name,
+                file_cache,
+            ) {
                 fields = Self::extract_config_fields(&config_content, &config_name);
+                if !fields.is_empty() {
+                    config_file_path = Some(path);
+                }
             }
         }
 
+        // Determine the config module path
+        let config_module = if let Some(ref path) = config_file_path {
+            // Use the file path where we found the config class to infer its module
+            let path_str = path.to_string_lossy();
+            Self::infer_module_from_file_path(&path_str, discovery_root, package_name)
+        } else {
+            // Fallback: try to resolve from imports in the source file
+            Self::resolve_config_module_from_imports(&cached.content, &config_name, &entry.module)
+                .unwrap_or_else(|| entry.module.to_string())
+        };
+
         Some(ConfigSpec {
-            module: entry.module.to_string(),
+            module: config_module,
             name: config_name,
             fields,
         })
     }
 
-    /// Find config class in common locations (same directory, parent __init__.py, etc.)
-    fn find_config_in_common_locations(
+    /// Find config class in common locations and return the path where it was found
+    fn find_config_in_common_locations_with_path(
         source_path: &Path,
         config_name: &str,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
-    ) -> Option<String> {
+    ) -> Option<(PathBuf, String)> {
         let parent = source_path.parent()?;
         let class_with_base = format!("class {}(", config_name);
         let class_no_base = format!("class {}:", config_name);
 
-        let candidates = ["__init__.py", "config.py", "configs.py", "types.py"];
+        let candidates = [
+            "__init__.py",
+            "config.py",
+            "configs.py",
+            "types.py",
+            "plugin_config.py",
+        ];
 
         for filename in candidates {
             let candidate = parent.join(filename);
@@ -1067,11 +1130,58 @@ impl AstDiscovery {
                 if cached.content.contains(&class_with_base)
                     || cached.content.contains(&class_no_base)
                 {
-                    return Some(cached.content.clone());
+                    return Some((candidate, cached.content.clone()));
                 }
             }
         }
 
+        None
+    }
+
+    /// Resolve config module from import statements in the source file
+    fn resolve_config_module_from_imports(
+        content: &str,
+        config_name: &str,
+        current_module: &str,
+    ) -> Option<String> {
+        for line in content.lines() {
+            let trimmed = line.trim();
+
+            // Match: from X import Y or from X import Y, Z, ...
+            if let Some(rest) = trimmed.strip_prefix("from ") {
+                if let Some(import_idx) = rest.find(" import ") {
+                    let from_part = rest[..import_idx].trim();
+                    let import_part = rest[import_idx + 8..].trim();
+
+                    // Check if our config class is in the import list
+                    let imports: Vec<&str> = import_part
+                        .split(',')
+                        .map(|s| s.trim().split(" as ").next().unwrap_or(s.trim()).trim())
+                        .collect();
+
+                    if imports.contains(&config_name) {
+                        // Resolve relative imports
+                        if from_part.starts_with('.') {
+                            let dot_count = from_part.chars().take_while(|c| *c == '.').count();
+                            let relative_path = &from_part[dot_count..];
+
+                            let mut parts: Vec<&str> = current_module.split('.').collect();
+                            // Go up dot_count levels (one dot means same package)
+                            for _ in 0..dot_count {
+                                parts.pop();
+                            }
+
+                            if !relative_path.is_empty() {
+                                parts.push(relative_path);
+                            }
+
+                            return Some(parts.join("."));
+                        }
+                        return Some(from_part.to_string());
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -1170,6 +1280,14 @@ impl AstDiscovery {
     fn ast_has_class(ast: &PythonAst, class_name: &str) -> bool {
         let root = ast.root();
         let pattern = format!("class {}($$$BASES): $$$BODY", class_name);
+        let found = root.find_all(pattern.as_str()).next().is_some();
+        found
+    }
+
+    fn ast_has_function(ast: &PythonAst, function_name: &str) -> bool {
+        let root = ast.root();
+        // Match decorated or undecorated function definitions
+        let pattern = format!("def {}($$$PARAMS): $$$BODY", function_name);
         let found = root.find_all(pattern.as_str()).next().is_some();
         found
     }
