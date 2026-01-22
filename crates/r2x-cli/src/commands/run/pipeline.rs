@@ -135,6 +135,11 @@ fn run_pipeline(
     }
     logger::debug("All pipeline packages verified");
 
+    // Validate all plugin configs upfront before running anything
+    logger::debug("Validating pipeline configs...");
+    validate_pipeline_configs(config, pipeline, &manifest)?;
+    logger::debug("All pipeline configs validated");
+
     let pipeline_start = Instant::now();
     eprintln!("{}", format!("Running: {}", pipeline_name).cyan().bold());
 
@@ -374,6 +379,86 @@ fn plugin_kind_alias(kind: r2x_manifest::PluginKind) -> Option<&'static str> {
     }
 }
 
+/// Parameters that are automatically provided by the pipeline runtime,
+/// so they don't need to be specified in YAML config.
+fn is_auto_provided_param(name: &str) -> bool {
+    matches!(
+        name,
+        "store" | "data_store" | "stdin" | "system" | "path" | "folder_path" | "config"
+    )
+}
+
+/// Validate that all required config fields are present for all plugins in the pipeline.
+/// This runs BEFORE any plugin execution, so we fail fast on missing config.
+fn validate_pipeline_configs(
+    config: &PipelineConfig,
+    pipeline: &[String],
+    manifest: &Manifest,
+) -> Result<(), RunError> {
+    let mut errors: Vec<String> = Vec::new();
+
+    for plugin_name in pipeline {
+        let resolved = match resolve_plugin_ref(manifest, plugin_name) {
+            Ok(r) => r,
+            Err(_) => continue, // Skip validation for unresolved plugins (will fail later anyway)
+        };
+
+        let plugin = resolved.plugin;
+        let bindings = r2x_manifest::build_runtime_bindings_from_plugin(plugin);
+
+        // Get user-provided config from YAML
+        let yaml_config = match resolve_plugin_config_json(config, plugin_name, &resolved) {
+            Ok(c) => c,
+            Err(_) => "{}".to_string(),
+        };
+
+        let provided_keys: HashSet<String> =
+            match serde_json::from_str::<serde_json::Value>(&yaml_config) {
+                Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
+                _ => HashSet::new(),
+            };
+
+        // Check config fields for required ones
+        if let Some(ref config_spec) = bindings.config {
+            for field in &config_spec.fields {
+                if field.required
+                    && field.default.is_none()
+                    && !provided_keys.contains(&field.name)
+                    && !is_auto_provided_param(&field.name)
+                {
+                    errors.push(format!(
+                        "{}: missing required config field '{}'",
+                        plugin_name, field.name
+                    ));
+                }
+            }
+        }
+
+        // Check entry parameters for required ones
+        for param in &bindings.entry_parameters {
+            if param.required
+                && param.default.is_none()
+                && !provided_keys.contains(&param.name)
+                && !is_auto_provided_param(&param.name)
+            {
+                errors.push(format!(
+                    "{}: missing required parameter '{}'",
+                    plugin_name, param.name
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(RunError::Config(format!(
+            "Pipeline config validation failed:\n  - {}",
+            errors.join("\n  - ")
+        )))
+    }
+}
+
 fn prepare_pipeline_overrides(
     pipeline_input: Option<&str>,
     bindings: &r2x_manifest::runtime::RuntimeBindings,
@@ -388,8 +473,12 @@ fn prepare_pipeline_overrides(
         return Ok(None);
     }
 
+    // If the plugin doesn't have a json_path/path field, don't merge anything into config.
+    // The system JSON will be passed separately via stdin and deserialized by the Python bridge.
+    // Merging system JSON into config would pollute config fields (e.g., system_base_power: null
+    // from the system would overwrite system_base_power: 100 from YAML config).
     let Some(target_field) = determine_json_path_field(bindings, plugin_name) else {
-        return Ok(Some(raw.to_string()));
+        return Ok(None);
     };
 
     let parsed = match serde_json::from_str::<serde_json::Value>(raw) {
@@ -655,4 +744,86 @@ fn fallback_store_value(
         .map_err(|e| RunError::Config(format!("Failed to create store directory: {}", e)))?;
 
     Ok(serde_json::Value::String(store_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merge_config_values_replaces_existing() {
+        let mut target = json!({
+            "system_base_power": 100,
+            "system_name": "TestSystem"
+        });
+        let overrides = json!({
+            "system_base_power": 200,
+            "new_field": "value"
+        });
+
+        merge_config_values(&mut target, overrides);
+
+        assert_eq!(target["system_base_power"], json!(200));
+        assert_eq!(target["system_name"], json!("TestSystem"));
+        assert_eq!(target["new_field"], json!("value"));
+    }
+
+    #[test]
+    fn merge_config_values_adds_new_fields() {
+        let mut target = json!({
+            "system_name": "TestSystem"
+        });
+        let overrides = json!({
+            "optional_field": "new_value",
+            "another": 42
+        });
+
+        merge_config_values(&mut target, overrides);
+
+        assert_eq!(target["system_name"], json!("TestSystem"));
+        assert_eq!(target["optional_field"], json!("new_value"));
+        assert_eq!(target["another"], json!(42));
+    }
+
+    #[test]
+    fn merge_config_values_nested_merge() {
+        let mut target = json!({
+            "config": {
+                "base_power": 100,
+                "name": "Test"
+            }
+        });
+        let overrides = json!({
+            "config": {
+                "base_power": 200,
+                "extra": "new"
+            }
+        });
+
+        merge_config_values(&mut target, overrides);
+
+        assert_eq!(target["config"]["base_power"], json!(200));
+        assert_eq!(target["config"]["name"], json!("Test"));
+        assert_eq!(target["config"]["extra"], json!("new"));
+    }
+
+    #[test]
+    fn is_auto_provided_param_recognizes_store() {
+        assert!(is_auto_provided_param("store"));
+        assert!(is_auto_provided_param("data_store"));
+        assert!(is_auto_provided_param("stdin"));
+        assert!(is_auto_provided_param("system"));
+        assert!(is_auto_provided_param("path"));
+        assert!(is_auto_provided_param("folder_path"));
+        assert!(is_auto_provided_param("config"));
+    }
+
+    #[test]
+    fn is_auto_provided_param_rejects_user_params() {
+        assert!(!is_auto_provided_param("json_path"));
+        assert!(!is_auto_provided_param("output_path"));
+        assert!(!is_auto_provided_param("system_base_power"));
+        assert!(!is_auto_provided_param("model_year"));
+    }
 }

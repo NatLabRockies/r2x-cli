@@ -967,6 +967,7 @@ impl AstDiscovery {
     }
 
     /// Extract entry metadata using direct file parsing
+    #[allow(clippy::too_many_arguments)]
     fn extract_entry_metadata(
         discovery_root: &Path,
         source_path: &Path,
@@ -1029,6 +1030,7 @@ impl AstDiscovery {
     }
 
     /// Extract config class and fields using direct file parsing
+    #[allow(clippy::too_many_arguments)]
     fn extract_config_with_fields(
         discovery_root: &Path,
         source_path: &Path,
@@ -1199,35 +1201,37 @@ impl AstDiscovery {
         if matches!(implementation, ImplementationType::Function) {
             return Self::extract_config_type_from_function_text(content, symbol);
         }
-        let root = ast.root();
 
-        // Pattern 1: Class with generic type - class Symbol(Plugin[Config])
-        // Look for the class definition first
         let class_pattern = format!("class {}($$$BASES): $$$BODY", symbol);
-        let class_matches: Vec<_> = root.find_all(class_pattern.as_str()).collect();
 
-        for class_match in &class_matches {
-            // Get the base classes text and look for Plugin[ConfigName]
-            let env = class_match.get_env();
-            let bases = env.get_multiple_matches("$$$BASES");
-            for base in bases {
-                let base_text = base.text();
-                // Check if this base is Plugin[Something]
-                if base_text.contains("Plugin[") {
-                    if let Some(start) = base_text.find("Plugin[") {
-                        let rest = &base_text[start + 7..];
-                        if let Some(end) = rest.find(']') {
-                            let config_name = rest[..end].trim();
-                            if !config_name.is_empty() {
-                                return Some(config_name.to_string());
-                            }
-                        }
-                    }
-                }
+        for class_match in ast.root().find_all(class_pattern.as_str()) {
+            // ast-grep's $$$BASES doesn't capture correctly for Python class bases,
+            // so we find the argument_list child which contains "(Plugin[Config], ...)"
+            let config = class_match
+                .children()
+                .find(|c| c.kind() == "argument_list")
+                .and_then(|arg_list| Self::extract_plugin_generic(&arg_list.text()));
+
+            if config.is_some() {
+                return config;
             }
         }
 
         None
+    }
+
+    /// Extract config name from "Plugin[ConfigName]" in a base class list
+    fn extract_plugin_generic(bases_text: &str) -> Option<String> {
+        let start = bases_text.find("Plugin[")?;
+        let rest = &bases_text[start + 7..];
+        let end = rest.find(']')?;
+        let config_name = rest[..end].trim();
+
+        if config_name.is_empty() {
+            None
+        } else {
+            Some(config_name.to_string())
+        }
     }
 
     /// Extract config type from function definition in content
@@ -2058,5 +2062,65 @@ def break_gens(
             AstDiscovery::extract_class_name_from_match("def my_func(): pass"),
             None
         );
+    }
+
+    #[test]
+    fn test_find_config_class_name_from_class() {
+        // Test class with generic Plugin[Config] - simple single line
+        let source_simple = r#"class MyParser(Plugin[MyConfig]):
+    pass
+"#;
+        let ast = PythonAst::new(source_simple, Python);
+        let config_name = AstDiscovery::find_config_class_name(
+            &ast,
+            source_simple,
+            "MyParser",
+            &ImplementationType::Class,
+        );
+        assert_eq!(config_name, Some("MyConfig".to_string()));
+
+        // Test class with generic Plugin[Config] - realistic example
+        let source_reeds = r#"from r2x.api import Plugin
+
+class ReEDSParser(Plugin[ReEDSConfig]):
+    """ReEDS parser implementation."""
+
+    def run(self):
+        pass
+"#;
+        let ast_reeds = PythonAst::new(source_reeds, Python);
+        let config_name_reeds = AstDiscovery::find_config_class_name(
+            &ast_reeds,
+            source_reeds,
+            "ReEDSParser",
+            &ImplementationType::Class,
+        );
+        assert_eq!(config_name_reeds, Some("ReEDSConfig".to_string()));
+
+        // Test class with multiple bases - Plugin[Config] should still be found
+        let source_multi_base = r#"class MyExporter(SomeMixin, Plugin[ExporterConfig], AnotherMixin):
+    pass
+"#;
+        let ast_multi = PythonAst::new(source_multi_base, Python);
+        let config_name_multi = AstDiscovery::find_config_class_name(
+            &ast_multi,
+            source_multi_base,
+            "MyExporter",
+            &ImplementationType::Class,
+        );
+        assert_eq!(config_name_multi, Some("ExporterConfig".to_string()));
+
+        // Test class without Plugin generic - should return None
+        let source_no_plugin = r#"class RegularClass(BaseClass):
+    pass
+"#;
+        let ast_no_plugin = PythonAst::new(source_no_plugin, Python);
+        let config_name_none = AstDiscovery::find_config_class_name(
+            &ast_no_plugin,
+            source_no_plugin,
+            "RegularClass",
+            &ImplementationType::Class,
+        );
+        assert_eq!(config_name_none, None);
     }
 }

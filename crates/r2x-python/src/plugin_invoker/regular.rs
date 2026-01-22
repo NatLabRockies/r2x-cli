@@ -263,10 +263,9 @@ impl Bridge {
             None
         };
 
-        let system_instance = if stdin_obj.is_some() {
+        let system_instance = if let Some(stdin) = stdin_obj {
             use r2x_manifest::PluginKind;
             if bindings.plugin_kind == PluginKind::Exporter {
-                let stdin = stdin_obj.expect("checked Some above");
                 logger::step("Deserializing system from stdin for PluginContext");
 
                 let system_module = PyModule::import(py, "infrasys")?;

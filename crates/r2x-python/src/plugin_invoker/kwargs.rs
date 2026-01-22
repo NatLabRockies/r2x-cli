@@ -29,6 +29,19 @@ impl Bridge {
             }
         };
 
+        // For upgrader plugins without config metadata, pass all config values directly as kwargs.
+        // Upgraders typically have simple constructors (path, folder_path, etc.) and don't use
+        // the complex config class machinery that parsers/exporters use.
+        if runtime.plugin_kind == r2x_manifest::PluginKind::Upgrader
+            && runtime.config.is_none()
+            && runtime.entry_parameters.is_empty()
+        {
+            for (k, v) in config_dict {
+                kwargs.set_item(k, v)?;
+            }
+            return Ok(kwargs);
+        }
+
         let mut needs_config_class = false;
         let mut config_param_name = String::new();
 

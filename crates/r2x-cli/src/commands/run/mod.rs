@@ -114,7 +114,11 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
 pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, RunError> {
     let target = match bindings.implementation_type {
         r2x_manifest::ImplementationType::Class => {
-            if let Some(call_method) = &bindings.call_method {
+            // Upgrader plugins have their own invoker that already calls .run() internally,
+            // so we don't append the call_method to the target string for them.
+            if bindings.plugin_kind == r2x_manifest::PluginKind::Upgrader {
+                format!("{}:{}", bindings.entry_module, bindings.entry_name)
+            } else if let Some(call_method) = &bindings.call_method {
                 format!(
                     "{}:{}.{}",
                     bindings.entry_module, bindings.entry_name, call_method

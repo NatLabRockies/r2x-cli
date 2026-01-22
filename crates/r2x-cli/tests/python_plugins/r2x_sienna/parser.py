@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from r2x_core import PluginContext
 
 
 class SiennaConfig:
@@ -17,9 +19,16 @@ class SiennaConfig:
 class SiennaParser:
     """Parser that returns canned JSON output."""
 
-    def __init__(self, config: SiennaConfig | None = None, path: str | None = None, **_: Any) -> None:
+    def __init__(
+        self, config: SiennaConfig | None = None, path: str | None = None, **_: Any
+    ) -> None:
         self.config = config
         self.path = path
+
+    @classmethod
+    def from_context(cls, ctx: PluginContext) -> SiennaParser:
+        """Create parser instance from a PluginContext."""
+        return cls(config=ctx.config)
 
     def build_system(self) -> str:
         return '{"system": "sienna", "status": "ok"}'
