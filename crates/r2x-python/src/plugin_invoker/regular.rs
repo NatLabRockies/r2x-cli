@@ -111,6 +111,24 @@ impl Bridge {
                 format_duration(call_elapsed)
             ));
             logger::debug("Plugin execution completed");
+
+            // For exporters, skip serialization - they write their own output
+            // and return PluginContext which we don't need to pass downstream
+            let is_exporter = runtime_bindings
+                .map(|b| b.plugin_kind == r2x_manifest::PluginKind::Exporter)
+                .unwrap_or(false);
+
+            if is_exporter {
+                logger::debug("Exporter plugin completed, skipping result serialization");
+                return Ok(PluginInvocationResult {
+                    output: "{}".to_string(),
+                    timings: Some(PluginInvocationTimings {
+                        python_invocation: call_elapsed,
+                        serialization: Duration::ZERO,
+                    }),
+                });
+            }
+
             logger::debug("Serializing result to JSON");
 
             let result_unwrapped = {
