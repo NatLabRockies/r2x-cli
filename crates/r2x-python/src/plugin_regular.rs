@@ -1,19 +1,22 @@
-use super::{
-    logger, BridgeError, PluginInvocationResult, PluginInvocationTimings, RuntimeBindings,
-};
+//! Regular plugin invocation (non-upgrader)
+
+use crate::errors::BridgeError;
+use crate::plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
 use crate::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use pyo3::PyResult;
+use r2x_logger as logger;
+use r2x_manifest::runtime::RuntimeBindings;
 use std::time::{Duration, Instant};
 
 /// Guard that suppresses Python stdout and restores it on drop.
-pub(super) struct StdoutGuard<'py> {
+pub(crate) struct StdoutGuard<'py> {
     py: pyo3::Python<'py>,
     original: Option<pyo3::Py<PyAny>>,
 }
 
 impl<'py> StdoutGuard<'py> {
-    pub(super) fn new(py: pyo3::Python<'py>, suppress: bool) -> Result<Self, BridgeError> {
+    pub(crate) fn new(py: pyo3::Python<'py>, suppress: bool) -> Result<Self, BridgeError> {
         let original = if suppress {
             let sys = PyModule::import(py, "sys")?;
             let io = PyModule::import(py, "io")?;
@@ -41,7 +44,7 @@ impl Drop for StdoutGuard<'_> {
 }
 
 impl Bridge {
-    pub(super) fn invoke_plugin_regular(
+    pub(crate) fn invoke_plugin_regular(
         &self,
         target: &str,
         config_json: &str,
@@ -459,7 +462,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-fn format_python_error(py: pyo3::Python<'_>, err: pyo3::PyErr, context: &str) -> String {
+pub(crate) fn format_python_error(py: pyo3::Python<'_>, err: pyo3::PyErr, context: &str) -> String {
     if let Some(traceback_text) = render_traceback(py, &err) {
         format!("{}:\n{}", context, traceback_text)
     } else {

@@ -62,7 +62,6 @@ enum Commands {
     /// Remove a plugin
     Remove { plugin: String },
     /// Sync plugin manifest (re-run plugin discovery for all installed packages)
-    /// Useful when developing plugins locally with -e to refresh the plugin registry
     Sync,
     /// Clean the plugin manifest (removes all installed plugins)
     Clean {

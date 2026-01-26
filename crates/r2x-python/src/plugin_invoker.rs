@@ -1,17 +1,12 @@
 //! Plugin invocation and execution
 
 use crate::errors::BridgeError;
-use pyo3::prelude::*;
 use r2x_logger as logger;
 use r2x_manifest::{
     runtime::{build_runtime_bindings, RuntimeBindings},
     PluginKind, PluginSpec,
 };
 use std::time::Duration;
-
-mod kwargs;
-mod regular;
-mod upgrader;
 
 /// Timings for a plugin invocation phase
 pub struct PluginInvocationTimings {

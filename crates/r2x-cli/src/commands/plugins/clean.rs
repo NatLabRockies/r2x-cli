@@ -37,7 +37,9 @@ pub fn clean_manifest(yes: bool, _opts: &GlobalOpts) -> Result<(), String> {
     }
 
     manifest.packages.clear();
-    manifest.save().map_err(|e| format!("Failed to save manifest: {e}"))?;
+    manifest
+        .save()
+        .map_err(|e| format!("Failed to save manifest: {e}"))?;
 
     println!("{}", format!("Removed {total} plugin(s)").dimmed());
     Ok(())
@@ -61,7 +63,9 @@ fn uninstall_package(uv_path: &str, venv_path: &str, package_name: &str) {
             logger::debug(&format!("Failed to uninstall '{package_name}': {stderr}"));
         }
         Err(e) => {
-            logger::warn(&format!("Failed to run uv pip uninstall for '{package_name}': {e}"));
+            logger::warn(&format!(
+                "Failed to run uv pip uninstall for '{package_name}': {e}"
+            ));
         }
     }
 }

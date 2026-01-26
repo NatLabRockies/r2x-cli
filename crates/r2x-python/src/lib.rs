@@ -6,14 +6,24 @@
 //!
 //! Plugin discovery uses AST-based analysis instead of runtime inspection,
 //! making it more efficient and reducing Python interpreter overhead.
+//!
+//! ## PYTHONHOME Configuration
+//!
+//! PYTHONHOME is resolved from the venv's `pyvenv.cfg` file to ensure
+//! compatibility with PyO3 (which is linked at build time). This avoids
+//! version mismatches between the discovered Python and the compiled binary.
 
 pub mod errors;
-mod initialization;
 pub mod plugin_invoker;
+mod plugin_kwargs;
+mod plugin_regular;
+mod plugin_upgrader;
+mod python_bridge;
 mod utils;
 
 pub use errors::BridgeError;
-pub use initialization::{configure_python_venv, Bridge, PythonEnvironment};
+pub use plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
+pub use python_bridge::{configure_python_venv, Bridge, PythonEnvCompat as PythonEnvironment};
 pub use utils::{resolve_python_path, resolve_site_package_path, PYTHON_LIB_DIR};
 
 #[cfg(test)]

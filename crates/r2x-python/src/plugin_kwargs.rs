@@ -1,13 +1,17 @@
-use super::*;
+//! Keyword argument building for plugin invocation
+
+use crate::errors::BridgeError;
 use crate::Bridge;
 use pyo3::exceptions::PyFileNotFoundError;
+use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use r2x_logger as logger;
+use r2x_manifest::runtime::RuntimeBindings;
 use r2x_manifest::ConfigSpec;
 use std::path::Path;
 
 impl Bridge {
-    pub(super) fn build_kwargs<'py>(
+    pub(crate) fn build_kwargs<'py>(
         &self,
         py: pyo3::Python<'py>,
         config_dict: &pyo3::Bound<'py, PyDict>,
@@ -227,7 +231,7 @@ impl Bridge {
         Ok(kwargs)
     }
 
-    pub(super) fn instantiate_config_class<'py>(
+    pub(crate) fn instantiate_config_class<'py>(
         &self,
         py: pyo3::Python<'py>,
         config_params: &pyo3::Bound<'py, PyDict>,
@@ -257,7 +261,7 @@ impl Bridge {
         })
     }
 
-    pub(super) fn instantiate_data_store<'py>(
+    pub(crate) fn instantiate_data_store<'py>(
         &self,
         py: pyo3::Python<'py>,
         value: &pyo3::Bound<'py, PyAny>,
@@ -437,7 +441,7 @@ fn detect_missing_data_file_from_metadata(
     detect_missing_data_file_from_mapping(&class_obj, folder_path)
 }
 
-fn resolve_config_class<'py>(
+pub(crate) fn resolve_config_class<'py>(
     py: pyo3::Python<'py>,
     config_instance: Option<&pyo3::Bound<'py, PyAny>>,
     metadata: Option<&ConfigSpec>,
@@ -454,7 +458,7 @@ fn resolve_config_class<'py>(
 impl Bridge {
     /// Instantiate a PluginContext from r2x_core with config (positional) and optional
     /// keyword-only arguments (store, system).
-    pub(super) fn instantiate_plugin_context<'py>(
+    pub(crate) fn instantiate_plugin_context<'py>(
         &self,
         py: pyo3::Python<'py>,
         config_instance: &pyo3::Bound<'py, PyAny>,

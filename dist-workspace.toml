@@ -22,14 +22,11 @@ allow-dirty = ["ci"]
 # Standardize compression to xz for tar archives
 compression = "xz"
 
-copy-cdylibs = true
+# No longer need to copy Python shim libraries - Python is discovered at runtime
+# copy-cdylibs = true
 
-include = [
-    "./python-shim"
-]
-
-package-libraries = ["cdylib", "cstaticlib"]
-install-libraries = ["cdylib", "cstaticlib"]
+# package-libraries = ["cdylib", "cstaticlib"]
+# install-libraries = ["cdylib", "cstaticlib"]
 
 
 [dist.target."x86_64-pc-windows-msvc"]
