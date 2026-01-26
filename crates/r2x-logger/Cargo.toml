@@ -13,6 +13,6 @@ description = "Logging utilities for the r2x CLI"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-colored = "3.0"
+colored = "3.1"
 dirs = "6.0"
 indicatif = "0.18"
