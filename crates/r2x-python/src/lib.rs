@@ -7,10 +7,11 @@
 //! Plugin discovery uses AST-based analysis instead of runtime inspection,
 //! making it more efficient and reducing Python interpreter overhead.
 //!
-//! ## Runtime Python Detection
+//! ## PYTHONHOME Configuration
 //!
-//! This crate discovers Python at runtime, preferring uv-managed installations.
-//! It supports Python 3.11+ and dynamically loads the Python shared library.
+//! PYTHONHOME is resolved from the venv's `pyvenv.cfg` file to ensure
+//! compatibility with PyO3 (which is linked at build time). This avoids
+//! version mismatches between the discovered Python and the compiled binary.
 
 pub mod errors;
 pub mod plugin_invoker;
@@ -18,14 +19,11 @@ mod plugin_kwargs;
 mod plugin_regular;
 mod plugin_upgrader;
 mod python_bridge;
-mod python_discovery;
-mod python_loader;
 mod utils;
 
 pub use errors::BridgeError;
 pub use plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
 pub use python_bridge::{configure_python_venv, Bridge, PythonEnvCompat as PythonEnvironment};
-pub use python_discovery::PythonEnvironment as DiscoveredPythonEnvironment;
 pub use utils::{resolve_python_path, resolve_site_package_path, PYTHON_LIB_DIR};
 
 #[cfg(test)]

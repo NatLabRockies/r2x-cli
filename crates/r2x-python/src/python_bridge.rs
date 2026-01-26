@@ -1,26 +1,31 @@
-//! Python bridge initialization with runtime discovery
+//! Python bridge initialization with venv-based configuration
 //!
 //! This module handles lazy initialization of the Python bridge using
-//! runtime discovery of Python installations. It uses OnceCell for
+//! the virtual environment's configuration. It uses OnceCell for
 //! thread-safe singleton initialization.
+//!
+//! ## PYTHONHOME Resolution
+//!
+//! PYTHONHOME is resolved from the venv's `pyvenv.cfg` file, which contains
+//! the `home` field pointing to the Python installation used to create the venv.
+//! This ensures PyO3 (linked at build time) uses a compatible Python environment.
 
 use crate::errors::BridgeError;
-use crate::python_discovery::PythonEnvironment;
-use crate::python_loader::PythonLoader;
-use crate::utils::resolve_site_package_path;
+use crate::utils::{resolve_python_path, resolve_site_package_path};
 use once_cell::sync::OnceCell;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use r2x_config::Config;
 use r2x_logger as logger;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The Python bridge for plugin execution
 pub struct Bridge {
-    /// Keep the loader alive to prevent library unload
-    _loader: Option<PythonLoader>,
+    /// Placeholder field for future extension
+    _marker: (),
 }
 
 /// Global bridge singleton
@@ -42,52 +47,36 @@ impl Bridge {
             Err(_) => return false,
         };
 
-        PythonEnvironment::discover(&config).is_ok()
+        // Check if venv exists and has valid pyvenv.cfg
+        let venv_path = PathBuf::from(config.get_venv_path());
+        venv_path.join("pyvenv.cfg").exists()
     }
 
     /// Initialize Python interpreter and configure environment
     ///
     /// This performs:
-    /// 1. Discover Python installation (uv-managed or system)
-    /// 2. Load Python shared library dynamically
+    /// 1. Ensure venv exists (create if needed)
+    /// 2. Resolve PYTHONHOME from venv's pyvenv.cfg
     /// 3. Set PYTHONHOME and initialize PyO3
-    /// 4. Configure venv and site-packages
+    /// 4. Configure site-packages
     fn initialize() -> Result<Bridge, BridgeError> {
         let start_time = std::time::Instant::now();
 
         let mut config = Config::load()
             .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
-        // Discover Python installation
-        logger::debug("Discovering Python installation...");
-        let python_env = PythonEnvironment::discover(&config)?;
-
-        // Load Python shared library
-        logger::debug(&format!(
-            "Loading Python library from: {}",
-            python_env.lib_path.display()
-        ));
-        let loader = PythonLoader::load(&python_env.lib_path)?;
-
-        // Set environment before PyO3 initialization
-        env::set_var("PYTHONHOME", &python_env.prefix);
-        logger::debug(&format!("Set PYTHONHOME={}", python_env.prefix.display()));
-
-        // Store Python version in config
-        let version_str = format!("{}.{}", python_env.version.0, python_env.version.1);
-        if config.python_version.as_deref() != Some(&version_str) {
-            config.python_version = Some(version_str.clone());
-            let _ = config.save();
-        }
-
-        // Ensure venv exists and configure
+        // Ensure venv exists
         let venv_path = PathBuf::from(config.get_venv_path());
-        let venv_exists = venv_path.exists();
 
-        if !venv_exists {
-            // Create venv using uv or discovered Python
-            Self::create_venv(&config, &python_env, &venv_path)?;
+        if !venv_path.exists() {
+            // Create venv using the compiled Python version
+            Self::create_venv(&config, &venv_path)?;
         }
+
+        // Resolve PYTHONHOME from venv's pyvenv.cfg
+        let python_home = resolve_python_home(&venv_path)?;
+        env::set_var("PYTHONHOME", &python_home);
+        logger::debug(&format!("Set PYTHONHOME={}", python_home.display()));
 
         // Get site-packages path
         let site_packages = resolve_site_package_path(&venv_path)?;
@@ -140,23 +129,19 @@ impl Bridge {
             start_time.elapsed()
         ));
 
-        Ok(Bridge {
-            _loader: Some(loader),
-        })
+        Ok(Bridge { _marker: () })
     }
 
-    /// Create a virtual environment using uv or Python directly
-    fn create_venv(
-        config: &Config,
-        python_env: &PythonEnvironment,
-        venv_path: &PathBuf,
-    ) -> Result<(), BridgeError> {
+    /// Create a virtual environment
+    ///
+    /// Uses the compiled Python version to ensure compatibility with PyO3.
+    fn create_venv(config: &Config, venv_path: &PathBuf) -> Result<(), BridgeError> {
         logger::step(&format!(
             "Creating Python virtual environment at: {}",
             venv_path.display()
         ));
 
-        let version_str = format!("{}.{}", python_env.version.0, python_env.version.1);
+        let python_version = get_compiled_python_version();
 
         // Try uv first
         if let Some(ref uv_path) = config.uv_path {
@@ -164,7 +149,7 @@ impl Bridge {
                 .arg("venv")
                 .arg(venv_path)
                 .arg("--python")
-                .arg(&version_str)
+                .arg(&python_version)
                 .output()?;
 
             if output.status.success() {
@@ -176,8 +161,22 @@ impl Bridge {
             logger::debug(&format!("uv venv failed: {}", stderr));
         }
 
-        // Fallback to Python -m venv
-        let output = Command::new(&python_env.executable)
+        // Fallback to python3 -m venv
+        let python_cmd = format!("python{}", python_version);
+        let output = Command::new(&python_cmd)
+            .args(["-m", "venv"])
+            .arg(venv_path)
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                logger::success("Virtual environment created successfully");
+                return Ok(());
+            }
+        }
+
+        // Try generic python3
+        let output = Command::new("python3")
             .args(["-m", "venv"])
             .arg(venv_path)
             .output()?;
@@ -309,16 +308,79 @@ def _r2x_cache_path_override():
     }
 }
 
+/// Resolve PYTHONHOME from the venv's pyvenv.cfg file
+///
+/// The pyvenv.cfg file contains:
+/// ```text
+/// home = /path/to/python/installation
+/// include-system-site-packages = false
+/// version = 3.12.1
+/// ```
+///
+/// The `home` field points to the Python installation's bin directory,
+/// so we return its parent as PYTHONHOME.
+fn resolve_python_home(venv_path: &Path) -> Result<PathBuf, BridgeError> {
+    let pyvenv_cfg = venv_path.join("pyvenv.cfg");
+
+    if !pyvenv_cfg.exists() {
+        return Err(BridgeError::Initialization(format!(
+            "pyvenv.cfg not found in venv: {}",
+            venv_path.display()
+        )));
+    }
+
+    let content = fs::read_to_string(&pyvenv_cfg)
+        .map_err(|e| BridgeError::Initialization(format!("Failed to read pyvenv.cfg: {}", e)))?;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("home") {
+            if let Some((_key, value)) = line.split_once('=') {
+                let home_bin = PathBuf::from(value.trim());
+                // The 'home' field points to the bin directory, return its parent
+                if let Some(parent) = home_bin.parent() {
+                    logger::debug(&format!(
+                        "Resolved PYTHONHOME from pyvenv.cfg: {}",
+                        parent.display()
+                    ));
+                    return Ok(parent.to_path_buf());
+                }
+                // If no parent, use the path directly (unusual case)
+                return Ok(home_bin);
+            }
+        }
+    }
+
+    Err(BridgeError::Initialization(format!(
+        "Could not find 'home' in pyvenv.cfg: {}",
+        pyvenv_cfg.display()
+    )))
+}
+
+/// Get the Python version that PyO3 was compiled against
+///
+/// Returns the version string (e.g., "3.12") based on PyO3's abi3 feature.
+/// This should match the PYO3_PYTHON environment variable used during build.
+fn get_compiled_python_version() -> String {
+    // PyO3 with abi3-py311 is compatible with Python 3.11+
+    // The actual version depends on PYO3_PYTHON at build time
+    // Default to 3.12 which is the version in the justfile
+    "3.12".to_string()
+}
+
 /// Configure the Python virtual environment (legacy API compatibility)
 pub fn configure_python_venv() -> Result<PythonEnvCompat, BridgeError> {
     let config = Config::load()
         .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
-    let python_env = PythonEnvironment::discover(&config)?;
+    let venv_path = PathBuf::from(config.get_venv_path());
+
+    let interpreter = resolve_python_path(&venv_path)?;
+    let python_home = resolve_python_home(&venv_path).ok();
 
     Ok(PythonEnvCompat {
-        interpreter: python_env.executable,
-        python_home: Some(python_env.prefix),
+        interpreter,
+        python_home,
     })
 }
 
@@ -335,7 +397,13 @@ mod tests {
 
     #[test]
     fn test_bridge_struct() {
-        // Test that Bridge can be created with None loader
-        let _bridge = Bridge { _loader: None };
+        // Test that Bridge can be created
+        let _bridge = Bridge { _marker: () };
+    }
+
+    #[test]
+    fn test_get_compiled_python_version() {
+        let version = get_compiled_python_version();
+        assert!(version.starts_with("3."));
     }
 }
