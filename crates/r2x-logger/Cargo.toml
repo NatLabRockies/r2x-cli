@@ -1,6 +1,6 @@
 [package]
 name = "r2x-logger"
-version = "0.0.1"
+version = "0.0.2"
 edition = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
