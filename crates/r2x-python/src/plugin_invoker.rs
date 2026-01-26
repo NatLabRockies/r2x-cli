@@ -1,17 +1,12 @@
 //! Plugin invocation and execution
 
 use crate::errors::BridgeError;
-use pyo3::prelude::*;
 use r2x_logger as logger;
 use r2x_manifest::{
     runtime::{build_runtime_bindings, RuntimeBindings},
     PluginKind, PluginSpec,
 };
 use std::time::Duration;
-
-mod kwargs;
-mod regular;
-mod upgrader;
 
 /// Timings for a plugin invocation phase
 pub struct PluginInvocationTimings {
@@ -35,10 +30,7 @@ impl super::Bridge {
         stdin_json: Option<&str>,
         plugin_metadata: Option<&PluginSpec>,
     ) -> Result<PluginInvocationResult, BridgeError> {
-        let runtime_bindings = match plugin_metadata {
-            Some(meta) => Some(build_runtime_bindings(meta)),
-            None => None,
-        };
+        let runtime_bindings = plugin_metadata.map(build_runtime_bindings);
 
         if let Some(plugin) = plugin_metadata {
             if plugin.kind == PluginKind::Upgrader {
@@ -54,12 +46,35 @@ impl super::Bridge {
 
         self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings.as_ref())
     }
+
+    pub fn invoke_plugin_with_bindings(
+        &self,
+        target: &str,
+        config_json: &str,
+        stdin_json: Option<&str>,
+        runtime_bindings: Option<&RuntimeBindings>,
+    ) -> Result<PluginInvocationResult, BridgeError> {
+        if let Some(bindings) = runtime_bindings {
+            if bindings.plugin_kind == PluginKind::Upgrader {
+                logger::debug("Routing to upgrader plugin handler (runtime bindings)");
+                return self.invoke_upgrader_plugin(target, config_json, Some(bindings), None);
+            }
+        }
+
+        self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_plugin_invocation_placeholder() {
-        assert!(true);
+    fn plugin_invocation_result_basics() {
+        let result = PluginInvocationResult {
+            output: String::new(),
+            timings: None,
+        };
+        assert!(result.output.is_empty());
     }
 }

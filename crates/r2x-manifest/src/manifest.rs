@@ -3,9 +3,12 @@
 //! This module provides the core operations for managing the r2x plugin manifest,
 //! including CRUD operations, dependency tracking, and persistence.
 
-use super::types::{Manifest, Metadata, Package};
 use crate::errors::ManifestError;
-use std::path::PathBuf;
+use crate::types::{InstallType, Manifest, Package, Plugin};
+use smallvec::SmallVec;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 impl Manifest {
     /// Get the default path to the manifest file
@@ -33,88 +36,119 @@ impl Manifest {
     /// Load manifest from default location, returning empty manifest if file doesn't exist
     pub fn load() -> Result<Self, ManifestError> {
         let path = Self::path();
+        Self::load_from_path(&path)
+    }
+
+    /// Load manifest from a specific path
+    pub fn load_from_path(path: &Path) -> Result<Self, ManifestError> {
         if !path.exists() {
-            return Ok(Manifest {
-                metadata: Metadata {
-                    version: "1.0".to_string(),
-                    generated_at: chrono::Utc::now().to_rfc3339(),
-                    uv_lock_path: None,
-                },
-                packages: Vec::new(),
-            });
+            return Ok(Manifest::default());
         }
 
-        let content = std::fs::read_to_string(&path)?;
-        let manifest: Manifest = toml::from_str(&content)?;
+        let content = std::fs::read_to_string(path)?;
+        let mut manifest: Manifest = toml::from_str(&content)?;
+        manifest.rebuild_indexes();
         Ok(manifest)
     }
 
-    /// Save manifest to default location
+    /// Save manifest to default location with atomic write
     pub fn save(&self) -> Result<(), ManifestError> {
         let path = Self::path();
+        self.save_to_path(&path)
+    }
+
+    /// Save manifest to a specific path with atomic write
+    pub fn save_to_path(&self, path: &Path) -> Result<(), ManifestError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
+        // Serialize
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+
+        // Atomic write: write to temp file then rename
+        let temp_path = path.with_extension("toml.tmp");
+        {
+            let file = std::fs::File::create(&temp_path)?;
+            let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
+            writer.write_all(content.as_bytes())?;
+            writer.flush()?;
+        }
+
+        // Atomic rename
+        std::fs::rename(&temp_path, path)?;
         Ok(())
     }
 
     /// Clear all packages and save
     pub fn clear(&mut self) -> Result<(), ManifestError> {
         self.packages.clear();
+        self.package_index.clear();
         self.save()
+    }
+
+    /// O(1) package lookup by name
+    #[inline]
+    pub fn get_package(&self, name: &str) -> Option<&Package> {
+        self.package_index.get(name).map(|&idx| &self.packages[idx])
+    }
+
+    /// O(1) mutable package lookup by name
+    #[inline]
+    pub fn get_package_mut(&mut self, name: &str) -> Option<&mut Package> {
+        self.package_index
+            .get(name)
+            .copied()
+            .map(move |idx| &mut self.packages[idx])
     }
 
     /// Find or create a package in the manifest
     pub fn get_or_create_package(&mut self, name: &str) -> &mut Package {
-        if !self.packages.iter().any(|p| p.name == name) {
+        if !self.package_index.contains_key(name) {
+            let name_arc: Arc<str> = Arc::from(name);
+            let idx = self.packages.len();
             self.packages.push(Package {
-                name: name.to_string(),
-                entry_points_dist_info: String::new(),
+                name: name_arc.clone(),
+                version: Arc::from("0.0.0"),
                 editable_install: false,
-                pth_file: None,
-                resolved_source_path: None,
-                install_type: None,
-                installed_by: Vec::new(),
-                dependencies: Vec::new(),
+                source_uri: None,
+                install_type: InstallType::Explicit,
+                installed_by: SmallVec::new(),
+                dependencies: SmallVec::new(),
+                entry_point: None,
                 plugins: Vec::new(),
-                decorator_registrations: Vec::new(),
+                configs: Vec::new(),
+                content_hash: 0,
+                plugin_index: ahash::AHashMap::new(),
             });
+            self.package_index.insert(name_arc, idx);
         }
-        self.packages.iter_mut().find(|p| p.name == name).unwrap()
+
+        let idx = *self.package_index.get(name).unwrap();
+        &mut self.packages[idx]
     }
 
     /// Remove a package from the manifest
     pub fn remove_package(&mut self, name: &str) -> bool {
-        let initial_len = self.packages.len();
-        self.packages.retain(|p| p.name != name);
-        self.packages.len() < initial_len
+        if let Some(&idx) = self.package_index.get(name) {
+            self.packages.remove(idx);
+            self.rebuild_indexes();
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove all plugins belonging to a package from the manifest
     pub fn remove_plugins_by_package(&mut self, package_name: &str) -> usize {
-        let mut count = 0;
-        for pkg in &mut self.packages {
-            if pkg.name == package_name {
-                count = pkg.plugins.len();
-                pkg.plugins.clear();
-            }
+        if let Some(pkg) = self.get_package_mut(package_name) {
+            let count = pkg.plugins.len();
+            pkg.plugins.clear();
+            pkg.plugin_index.clear();
+            count
+        } else {
+            0
         }
-        count
-    }
-
-    /// Remove decorator registrations for a package
-    pub fn remove_decorator_registrations(&mut self, package_name: &str) -> bool {
-        for pkg in &mut self.packages {
-            if pkg.name == package_name {
-                let had_regs = !pkg.decorator_registrations.is_empty();
-                pkg.decorator_registrations.clear();
-                return had_regs;
-            }
-        }
-        false
     }
 
     /// List all plugins (compatibility method) - returns (plugin_name, package_name) tuples
@@ -124,7 +158,7 @@ impl Manifest {
             .flat_map(|pkg| {
                 pkg.plugins
                     .iter()
-                    .map(move |plugin| (plugin.name.clone(), pkg.name.clone()))
+                    .map(move |plugin| (plugin.name.to_string(), pkg.name.to_string()))
             })
             .collect()
     }
@@ -136,14 +170,7 @@ impl Manifest {
 
     /// List all plugins across all packages (compatibility helper)
     pub fn list_all_plugins(&self) -> Vec<(String, String)> {
-        self.packages
-            .iter()
-            .flat_map(|pkg| {
-                pkg.plugins
-                    .iter()
-                    .map(move |plugin| (plugin.name.clone(), pkg.name.clone()))
-            })
-            .collect()
+        self.list_plugins()
     }
 
     /// Count total plugins across all packages
@@ -153,26 +180,28 @@ impl Manifest {
 
     /// Mark a package as explicitly installed
     pub fn mark_explicit(&mut self, package_name: &str) {
-        if let Some(pkg) = self.packages.iter_mut().find(|p| p.name == package_name) {
-            pkg.install_type = Some("explicit".to_string());
+        if let Some(pkg) = self.get_package_mut(package_name) {
+            pkg.install_type = InstallType::Explicit;
         }
     }
 
     /// Mark a package as a dependency of another package
     pub fn mark_dependency(&mut self, package_name: &str, installed_by: &str) {
-        if let Some(pkg) = self.packages.iter_mut().find(|p| p.name == package_name) {
-            pkg.install_type = Some("dependency".to_string());
-            if !pkg.installed_by.contains(&installed_by.to_string()) {
-                pkg.installed_by.push(installed_by.to_string());
+        if let Some(pkg) = self.get_package_mut(package_name) {
+            pkg.install_type = InstallType::Dependency;
+            let installed_by_arc = Arc::from(installed_by);
+            if !pkg.installed_by.iter().any(|s| s.as_ref() == installed_by) {
+                pkg.installed_by.push(installed_by_arc);
             }
         }
     }
 
     /// Record that a package depends on another package
     pub fn add_dependency(&mut self, package_name: &str, dependency: &str) {
-        if let Some(pkg) = self.packages.iter_mut().find(|p| p.name == package_name) {
-            if !pkg.dependencies.contains(&dependency.to_string()) {
-                pkg.dependencies.push(dependency.to_string());
+        if let Some(pkg) = self.get_package_mut(package_name) {
+            let dep_arc = Arc::from(dependency);
+            if !pkg.dependencies.iter().any(|s| s.as_ref() == dependency) {
+                pkg.dependencies.push(dep_arc);
             }
         }
     }
@@ -183,9 +212,8 @@ impl Manifest {
         let mut removed = Vec::new();
 
         // Find the package and its dependencies
-        let dependencies = if let Some(pkg) = self.packages.iter().find(|p| p.name == package_name)
-        {
-            pkg.dependencies.clone()
+        let dependencies: Vec<Arc<str>> = if let Some(pkg) = self.get_package(package_name) {
+            pkg.dependencies.iter().cloned().collect()
         } else {
             return removed;
         };
@@ -198,15 +226,18 @@ impl Manifest {
         // Check each dependency
         for dep in dependencies {
             // Remove this package from the dependency's installed_by list
-            if let Some(dep_pkg) = self.packages.iter_mut().find(|p| p.name == dep) {
-                dep_pkg.installed_by.retain(|pkg| pkg != package_name);
+            if let Some(dep_pkg) = self.get_package_mut(&dep) {
+                dep_pkg
+                    .installed_by
+                    .retain(|pkg| pkg.as_ref() != package_name);
 
                 // If no other packages depend on it, remove it
                 if dep_pkg.installed_by.is_empty()
-                    && dep_pkg.install_type.as_deref() == Some("dependency")
+                    && dep_pkg.install_type == InstallType::Dependency
                 {
-                    if self.remove_package(&dep) {
-                        removed.push(dep);
+                    let dep_name = dep.to_string();
+                    if self.remove_package(&dep_name) {
+                        removed.push(dep_name);
                     }
                 }
             }
@@ -218,18 +249,23 @@ impl Manifest {
     /// Check if a package can be safely removed (has no dependents)
     pub fn can_remove_package(&self, package_name: &str) -> bool {
         // Check if any other package depends on this one
-        !self
-            .packages
-            .iter()
-            .any(|pkg| pkg.dependencies.contains(&package_name.to_string()))
+        !self.packages.iter().any(|pkg| {
+            pkg.dependencies
+                .iter()
+                .any(|dep| dep.as_ref() == package_name)
+        })
     }
 
     /// Get all packages that depend on the given package
     pub fn get_dependents(&self, package_name: &str) -> Vec<String> {
         self.packages
             .iter()
-            .filter(|pkg| pkg.dependencies.contains(&package_name.to_string()))
-            .map(|pkg| pkg.name.clone())
+            .filter(|pkg| {
+                pkg.dependencies
+                    .iter()
+                    .any(|dep| dep.as_ref() == package_name)
+            })
+            .map(|pkg| pkg.name.to_string())
             .collect()
     }
 
@@ -247,15 +283,52 @@ impl Manifest {
     }
 }
 
+impl Package {
+    /// Get a plugin by name with O(1) lookup
+    #[inline]
+    pub fn get_plugin(&self, name: &str) -> Option<&Plugin> {
+        self.plugin_index.get(name).map(|&idx| &self.plugins[idx])
+    }
+
+    /// Get a mutable plugin by name
+    #[inline]
+    pub fn get_plugin_mut(&mut self, name: &str) -> Option<&mut Plugin> {
+        self.plugin_index
+            .get(name)
+            .copied()
+            .map(move |idx| &mut self.plugins[idx])
+    }
+
+    /// Add a plugin to the package
+    pub fn add_plugin(&mut self, plugin: Plugin) {
+        let name = plugin.name.clone();
+        let idx = self.plugins.len();
+        self.plugins.push(plugin);
+        self.plugin_index.insert(name, idx);
+    }
+
+    /// Remove a plugin from the package
+    pub fn remove_plugin(&mut self, name: &str) -> bool {
+        if let Some(&idx) = self.plugin_index.get(name) {
+            self.plugins.remove(idx);
+            self.rebuild_plugin_index();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PluginType;
 
     #[test]
     fn test_manifest_default() {
         let manifest = Manifest::default();
         assert!(manifest.is_empty());
-        assert_eq!(manifest.metadata.version, "2.0");
+        assert_eq!(manifest.version.as_ref(), "3.0");
     }
 
     #[test]
@@ -263,10 +336,13 @@ mod tests {
         let mut manifest = Manifest::default();
 
         let pkg = manifest.get_or_create_package("r2x-test");
-        pkg.install_type = Some("explicit".to_string());
+        pkg.install_type = InstallType::Explicit;
 
         assert_eq!(manifest.packages.len(), 1);
-        assert_eq!(manifest.packages[0].name, "r2x-test");
+        assert_eq!(manifest.packages[0].name.as_ref(), "r2x-test");
+
+        // Verify O(1) lookup works
+        assert!(manifest.get_package("r2x-test").is_some());
     }
 
     #[test]
@@ -277,6 +353,7 @@ mod tests {
         assert_eq!(manifest.packages.len(), 1);
         assert!(manifest.remove_package("r2x-test"));
         assert_eq!(manifest.packages.len(), 0);
+        assert!(manifest.get_package("r2x-test").is_none());
     }
 
     #[test]
@@ -293,21 +370,15 @@ mod tests {
         manifest.add_dependency("r2x-main", "r2x-dep");
 
         // Verify structure
-        let main_pkg = manifest
-            .packages
-            .iter()
-            .find(|p| p.name == "r2x-main")
-            .unwrap();
-        assert_eq!(main_pkg.install_type, Some("explicit".to_string()));
-        assert_eq!(main_pkg.dependencies, vec!["r2x-dep"]);
+        let main_pkg = manifest.get_package("r2x-main").unwrap();
+        assert_eq!(main_pkg.install_type, InstallType::Explicit);
+        assert_eq!(main_pkg.dependencies.len(), 1);
+        assert_eq!(main_pkg.dependencies[0].as_ref(), "r2x-dep");
 
-        let dep_pkg = manifest
-            .packages
-            .iter()
-            .find(|p| p.name == "r2x-dep")
-            .unwrap();
-        assert_eq!(dep_pkg.install_type, Some("dependency".to_string()));
-        assert_eq!(dep_pkg.installed_by, vec!["r2x-main"]);
+        let dep_pkg = manifest.get_package("r2x-dep").unwrap();
+        assert_eq!(dep_pkg.install_type, InstallType::Dependency);
+        assert_eq!(dep_pkg.installed_by.len(), 1);
+        assert_eq!(dep_pkg.installed_by[0].as_ref(), "r2x-main");
     }
 
     #[test]
@@ -354,12 +425,9 @@ mod tests {
         assert_eq!(removed[0], "r2x-main1");
         assert_eq!(manifest.packages.len(), 2);
 
-        let shared = manifest
-            .packages
-            .iter()
-            .find(|p| p.name == "r2x-shared")
-            .unwrap();
-        assert_eq!(shared.installed_by, vec!["r2x-main2"]);
+        let shared = manifest.get_package("r2x-shared").unwrap();
+        assert_eq!(shared.installed_by.len(), 1);
+        assert_eq!(shared.installed_by[0].as_ref(), "r2x-main2");
     }
 
     #[test]
@@ -369,6 +437,33 @@ mod tests {
 
         assert!(!manifest.is_empty());
         manifest.packages.clear();
+        manifest.package_index.clear();
         assert!(manifest.is_empty());
+    }
+
+    #[test]
+    fn test_plugin_operations() {
+        let mut pkg = Package {
+            name: Arc::from("test-package"),
+            ..Default::default()
+        };
+
+        let plugin = Plugin {
+            name: Arc::from("test-plugin"),
+            plugin_type: PluginType::Class,
+            module: Arc::from("test.module"),
+            class_name: Some(Arc::from("TestClass")),
+            ..Default::default()
+        };
+
+        pkg.add_plugin(plugin);
+
+        // Test O(1) lookup
+        assert!(pkg.get_plugin("test-plugin").is_some());
+        assert!(pkg.get_plugin("nonexistent").is_none());
+
+        // Test removal
+        assert!(pkg.remove_plugin("test-plugin"));
+        assert!(pkg.get_plugin("test-plugin").is_none());
     }
 }

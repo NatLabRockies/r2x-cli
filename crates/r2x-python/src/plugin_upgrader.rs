@@ -1,11 +1,17 @@
-use super::{logger, BridgeError, PluginInvocationResult, RuntimeBindings};
+//! Upgrader plugin invocation
+
+use crate::errors::BridgeError;
+use crate::plugin_invoker::PluginInvocationResult;
+use crate::plugin_regular::StdoutGuard;
 use crate::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
+use r2x_logger as logger;
+use r2x_manifest::runtime::RuntimeBindings;
 use r2x_manifest::PluginSpec;
 use std::path::{Path, PathBuf};
 
 impl Bridge {
-    pub(super) fn invoke_upgrader_plugin(
+    pub(crate) fn invoke_upgrader_plugin(
         &self,
         target: &str,
         config_json: &str,
@@ -13,6 +19,8 @@ impl Bridge {
         plugin_metadata: Option<&PluginSpec>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
+            let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
+
             logger::debug(&format!("Invoking upgrader plugin: {}", target));
             let parts: Vec<&str> = target.split(':').collect();
             if parts.len() != 2 {

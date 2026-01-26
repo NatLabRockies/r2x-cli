@@ -62,7 +62,6 @@ enum Commands {
     /// Remove a plugin
     Remove { plugin: String },
     /// Sync plugin manifest (re-run plugin discovery for all installed packages)
-    /// Useful when developing plugins locally with -e to refresh the plugin registry
     Sync,
     /// Clean the plugin manifest (removes all installed plugins)
     Clean {
@@ -79,10 +78,7 @@ enum Commands {
     /// Run pipelines or plugins
     Run(run::RunCommand),
     /// Read a system from JSON (stdin or file) and open an interactive IPython session
-    Read {
-        /// Path to JSON file to read. If not provided, reads from stdin
-        file: Option<std::path::PathBuf>,
-    },
+    Read(read::ReadCommand),
 }
 
 #[derive(Subcommand)]
@@ -206,8 +202,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Read { file } => {
-            let cmd = read::ReadCommand { file };
+        Commands::Read(cmd) => {
             if let Err(e) = read::handle_read(cmd, cli.global) {
                 logger::error(&format!("Read command failed: {}", e));
                 std::process::exit(1);

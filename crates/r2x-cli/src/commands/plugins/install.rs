@@ -62,10 +62,9 @@ pub fn install_plugin(
         match get_package_info(&uv_path, &python_path, &package_name_for_query) {
             Ok((version, _deps)) => {
                 let manifest = Manifest::load().unwrap_or_default();
-                let has_plugins = manifest
-                    .packages
-                    .iter()
-                    .any(|pkg| pkg.name == package_name_for_query && !pkg.plugins.is_empty());
+                let has_plugins = manifest.packages.iter().any(|pkg| {
+                    pkg.name.as_ref() == package_name_for_query && !pkg.plugins.is_empty()
+                });
 
                 if has_plugins {
                     logger::debug(&format!(

@@ -1,4 +1,5 @@
 use crate::logger;
+use crate::manifest_lookup::resolve_plugin_ref;
 use crate::r2x_manifest::Manifest;
 use colored::Colorize;
 
@@ -15,12 +16,12 @@ pub fn show_run_help() -> Result<(), String> {
         println!("{}", "Installed plugins:".bold());
         for pkg in &manifest.packages {
             for plugin in &pkg.plugins {
-                let plugin_type = format!("{:?}", plugin.kind);
+                let plugin_type = format!("{:?}", plugin.plugin_type);
                 println!(
                     "  {} {} - from package {}",
-                    plugin.name.cyan(),
+                    plugin.name.as_ref().cyan(),
                     format!("({})", plugin_type).dimmed(),
-                    pkg.name.dimmed()
+                    pkg.name.as_ref().dimmed()
                 );
             }
         }
@@ -57,83 +58,61 @@ pub fn show_run_help() -> Result<(), String> {
 pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
-    let (_pkg, plugin) = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name == plugin_name)
-                .map(|p| (pkg, p))
-        })
-        .ok_or_else(|| format!("Plugin '{}' not found in manifest", plugin_name))?;
-
-    let bindings = r2x_manifest::build_runtime_bindings(plugin);
+    let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|e| e.to_string())?;
+    let plugin = resolved.plugin;
 
     logger::step(&format!("Plugin: {}", plugin_name));
 
-    println!("\nType: {:?}", plugin.kind);
+    println!("\nType: {:?}", plugin.plugin_type);
+    println!("Module: {}", plugin.module);
 
-    let needs_store = bindings.requires_store;
-
-    if needs_store {
-        println!("\nRequires data store: yes");
-        println!("\nData Store Arguments:");
-        println!("  --store-path <PATH>       Path to store directory (required)");
-        println!("  --store-name <NAME>       Name of the store (optional)");
+    // Show class or function name
+    if let Some(ref class_name) = plugin.class_name {
+        println!("Class: {}", class_name);
+    }
+    if let Some(ref function_name) = plugin.function_name {
+        println!("Function: {}", function_name);
     }
 
-    println!(
-        "\nCallable: {}.{}",
-        bindings.entry_module, bindings.entry_name
-    );
-    if let Some(call_method) = &bindings.call_method {
-        println!("Method: {}", call_method);
+    // Show config if available
+    if let Some(ref config_class) = plugin.config_class {
+        print!("\nConfiguration Class: {}", config_class);
+        if let Some(ref config_module) = plugin.config_module {
+            print!(" ({})", config_module);
+        }
+        println!();
     }
 
-    if !bindings.entry_parameters.is_empty() {
-        println!("\nCallable Parameters:");
-        for param in &bindings.entry_parameters {
-            let annotation = param.annotation.as_deref().unwrap_or("Any");
-            let required = if param.required {
-                "required"
-            } else {
-                "optional"
-            };
-            let default = param
-                .default
-                .as_deref()
-                .map(|d| format!(" (default: {})", d))
+    // Show parameters
+    if !plugin.parameters.is_empty() {
+        println!("\nParameters:");
+        for param in &plugin.parameters {
+            let module_str = param
+                .module
+                .as_ref()
+                .map(|m| format!(" ({})", m))
                 .unwrap_or_default();
             println!(
-                "  --{:<20} {:<15} {}{}",
-                param.name, annotation, required, default
+                "  --{:<20} {}{}",
+                param.name,
+                param.format_types(),
+                module_str
             );
+            if let Some(ref desc) = param.description {
+                println!("      {}", desc);
+            }
         }
     }
 
-    // Show config parameters
-    if let Some(config) = &bindings.config {
-        println!("\nConfiguration Class: {}.{}", config.module, config.name);
-        if !config.fields.is_empty() {
-            println!("\nConfiguration Parameters:");
-            for field in &config.fields {
-                let annotation = field.annotation.as_deref().unwrap_or("Any");
-                let required = if field.required {
-                    "required"
-                } else {
-                    "optional"
-                };
-                let default = field
-                    .default
-                    .as_deref()
-                    .map(|d| format!(" (default: {})", d))
-                    .unwrap_or_default();
-                println!(
-                    "  --{:<20} {:<15} {}{}",
-                    field.name, annotation, required, default
-                );
-            }
+    // Show config schema
+    if !plugin.config_schema.is_empty() {
+        println!("\nConfiguration Schema:");
+        for (field_name, field) in plugin.config_schema.iter() {
+            let req_marker = if field.required { " (required)" } else { "" };
+            println!(
+                "  --{:<20} {:?}{}",
+                field_name, field.field_type, req_marker
+            );
         }
     }
 
@@ -142,15 +121,7 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     println!("    (add -q to silence logs, -q -q to hide stdout)");
     println!("\nExamples:");
     println!("  r2x run --plugin {} --show-help", plugin_name);
-
-    if needs_store {
-        println!(
-            "  r2x run --plugin {} --store-path /path/to/store <other args>",
-            plugin_name
-        );
-    } else {
-        println!("  r2x run --plugin {} <args>", plugin_name);
-    }
+    println!("  r2x run --plugin {} <args>", plugin_name);
 
     Ok(())
 }

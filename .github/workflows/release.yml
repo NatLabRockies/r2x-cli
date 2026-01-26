@@ -45,89 +45,8 @@ on:
       - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
-  build-shim-macos-arm:
-    if: ${{ !github.event.pull_request }}
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - uses: ./.github/actions/build-python-shim
-        with:
-          target_triple: aarch64-apple-darwin
-          py_version: 3.12
-
-  build-shim-macos-intel:
-    if: ${{ !github.event.pull_request }}
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - uses: ./.github/actions/build-python-shim
-        with:
-          target_triple: x86_64-apple-darwin
-          py_version: 3.12
-
-  build-shim-linux-x86:
-    if: ${{ !github.event.pull_request }}
-    runs-on: ubuntu-22.04
-    container: rockylinux:8
-    steps:
-      - name: Install prerequisites in Rocky Linux 8 container
-        shell: bash
-        run: |
-          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - uses: ./.github/actions/build-python-shim
-        with:
-          target_triple: x86_64-unknown-linux-gnu
-          py_version: 3.12
-
-  build-shim-linux-arm:
-    if: ${{ !github.event.pull_request }}
-    runs-on: ubuntu-22.04-arm
-    container: rockylinux:8
-    steps:
-      - name: Install prerequisites in Rocky Linux 8 container
-        shell: bash
-        run: |
-          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - uses: ./.github/actions/build-python-shim
-        with:
-          target_triple: aarch64-unknown-linux-gnu
-          py_version: 3.12
-
-  build-shim-windows-x86:
-    if: ${{ !github.event.pull_request }}
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - uses: ./.github/actions/build-python-shim
-        with:
-          target_triple: x86_64-pc-windows-msvc
-          py_version: 3.12
-
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
-    needs:
-      - build-shim-macos-arm
-      - build-shim-macos-intel
-      - build-shim-linux-x86
-      - build-shim-linux-arm
-      - build-shim-windows-x86
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
@@ -141,10 +60,6 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-
-      - name: mkdir python-shim
-        shell: bash
-        run: mkdir python-shim
 
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
@@ -215,54 +130,10 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Set Target Triple
-        shell: bash
-        run: |
-          IFS=' ' read -r -a targets <<< "${{ join(matrix.targets, ' ') }}"
-          TARGET_TRIPLE="${targets[0]}"
-          echo "Debug: TARGET_TRIPLE is $TARGET_TRIPLE"
-          echo "TARGET_TRIPLE=${TARGET_TRIPLE}" >> $GITHUB_ENV
-
-      - name: Download Specific Python Shim
-        uses: actions/download-artifact@v4
-        with:
-          name: python-shim-${{ env.TARGET_TRIPLE }}
-          path: .
-
-      - name: Extract Specific Python Shim
-        shell: bash
-        run: |
-          SHIM_FILE=$(ls python-shim-${{ env.TARGET_TRIPLE }}.* 2>/dev/null)
-          if [[ -z "$SHIM_FILE" ]]; then
-            echo "Shim file not found"
-            exit 1
-          fi
-          if [[ "$SHIM_FILE" == *.zip ]]; then
-            unzip "$SHIM_FILE"
-          elif [[ "$SHIM_FILE" == *.tar.* ]]; then
-            tar -xf "$SHIM_FILE"
-          else
-            echo "Unknown archive format: $SHIM_FILE"
-            exit 1
-          fi
-
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
-
-      - name: Set Shim Library Path
-        shell: bash
-        run: |
-          SHIM_DIR="$PWD/python-shim/${TARGET_TRIPLE}"
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            echo "LIBRARY_PATH=$SHIM_DIR:$LIBRARY_PATH" >> $GITHUB_ENV
-            echo "LD_LIBRARY_PATH=$SHIM_DIR:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          elif [[ "${{ runner.os }}" == "macOS" ]]; then
-            echo "DYLD_LIBRARY_PATH=$SHIM_DIR:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
-          elif [[ "${{ runner.os }}" == "Windows" ]]; then
-            echo "PATH=$SHIM_DIR;$PATH" >> $GITHUB_ENV
-          fi
 
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
@@ -354,17 +225,6 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-
-      - name: Modify installer script to copy python-shim
-        shell: bash
-        run: |
-          find $GITHUB_WORKSPACE -type f
-          python scripts/modify_installer.py target/distrib/r2x-installer.sh
-
-      - name: Modify PowerShell installer script to copy python-shim
-        shell: bash
-        run: |
-          python scripts/modify_installer.py target/distrib/r2x-installer.ps1
 
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4

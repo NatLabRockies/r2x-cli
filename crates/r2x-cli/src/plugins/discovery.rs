@@ -5,7 +5,8 @@
 
 use crate::logger;
 use crate::plugins::{find_package_path, utils, AstDiscovery};
-use crate::r2x_manifest::Manifest;
+use r2x_manifest::{InstallType, Manifest, Plugin};
+use std::sync::Arc;
 
 /// Options for plugin discovery and registration
 pub struct DiscoveryOptions {
@@ -40,64 +41,52 @@ pub fn discover_and_register_entry_points_with_deps(
         Ok(m) => m,
         Err(e) => {
             logger::warn(&format!("Failed to load manifest: {}", e));
-            Manifest {
-                metadata: crate::r2x_manifest::Metadata {
-                    version: "1.0".to_string(),
-                    generated_at: chrono::Utc::now().to_rfc3339(),
-                    uv_lock_path: None,
-                },
-                packages: Vec::new(),
-            }
+            Manifest::default()
         }
     };
 
-    // Check if we already have this package in the manifest
-    let has_package_cached = manifest
-        .packages
-        .iter()
-        .any(|p| p.name == *package_name_full);
-
-    // Check if cached package has plugins - force rediscovery if empty
-    let cached_has_plugins = manifest
-        .packages
-        .iter()
-        .find(|p| p.name == *package_name_full)
+    // Check if we already have this package in the manifest with plugins
+    let has_cached_plugins = manifest
+        .get_package(package_name_full)
         .map(|pkg| !pkg.plugins.is_empty())
         .unwrap_or(false);
 
-    let (discovered_plugins, decorator_regs) =
-        if has_package_cached && !no_cache && cached_has_plugins {
-            if let Some(pkg) = manifest
-                .packages
-                .iter()
-                .find(|p| p.name == *package_name_full)
-            {
-                (pkg.plugins.clone(), pkg.decorator_registrations.clone())
-            } else {
-                (Vec::new(), Vec::new())
-            }
-        } else {
-            let package_path = find_package_path(package_name_full)
-                .map_err(|e| format!("Failed to locate package '{}': {}", package_name_full, e))?;
+    // Discover or use cached plugins
+    let discovered_plugins: Vec<Plugin> = if has_cached_plugins && !no_cache {
+        // Use cached plugins
+        manifest
+            .get_package(package_name_full)
+            .map(|pkg| pkg.plugins.clone())
+            .unwrap_or_default()
+    } else {
+        // Discover from source
+        let package_path = find_package_path(package_name_full)
+            .map_err(|e| format!("Failed to locate package '{}': {}", package_name_full, e))?;
 
-            logger::debug(&format!(
-                "Found package path for '{}': {:?}",
-                package_name_full, package_path
-            ));
+        logger::debug(&format!(
+            "Found package path for '{}': {:?}",
+            package_name_full, package_path
+        ));
 
-            AstDiscovery::discover_plugins(
-                &package_path,
-                package_name_full,
-                venv_path.as_deref(),
-                Some(package_version),
-            )
-            .map_err(|e| format!("Failed to discover plugins for '{}': {}", package, e))?
-        };
+        let (ast_plugins, _decorator_regs) = AstDiscovery::discover_plugins(
+            &package_path,
+            package_name_full,
+            venv_path.as_deref(),
+            Some(package_version),
+        )
+        .map_err(|e| format!("Failed to discover plugins for '{}': {}", package, e))?;
+
+        // Convert discovered plugins to manifest plugins
+        ast_plugins
+            .into_iter()
+            .map(|p| p.to_manifest_plugin())
+            .collect()
+    };
 
     for plugin in &discovered_plugins {
         logger::debug(&format!(
-            "Discovered plugin '{}' of kind {:?}",
-            plugin.name, plugin.kind
+            "Discovered plugin '{}' of type {:?}",
+            plugin.name, plugin.plugin_type
         ));
     }
 
@@ -113,41 +102,50 @@ pub fn discover_and_register_entry_points_with_deps(
         total_plugins, package
     ));
 
+    // Update package in manifest
     {
         let pkg = manifest.get_or_create_package(package_name_full);
-        pkg.entry_points_dist_info = String::new();
-        pkg.plugins = discovered_plugins.clone();
-        pkg.decorator_registrations = decorator_regs.clone();
-        // Only update editable fields if they're explicitly set (e.g., during install)
-        // During sync, these should be preserved from existing manifest
+        pkg.plugins = discovered_plugins;
+        pkg.version = Arc::from(package_version);
+        pkg.install_type = InstallType::Explicit;
+
         if opts.editable {
             pkg.editable_install = true;
-            pkg.resolved_source_path = opts.source_path.clone();
+            pkg.source_uri = opts.source_path.map(Arc::from);
         }
     }
     manifest.mark_explicit(package_name_full);
 
+    // Filter r2x dependencies
     let r2x_dependencies: Vec<String> = dependencies
         .iter()
         .filter(|dep| utils::looks_like_r2x_plugin(dep))
         .cloned()
         .collect();
 
+    // Set dependencies on the main package
     {
         let pkg = manifest.get_or_create_package(package_name_full);
-        pkg.dependencies = r2x_dependencies.clone();
+        pkg.dependencies = r2x_dependencies
+            .iter()
+            .map(|s| Arc::from(s.as_str()))
+            .collect();
     }
 
+    // Process each r2x dependency
     for dep in r2x_dependencies {
         manifest.add_dependency(package_name_full, &dep);
 
-        let has_dep_cached = manifest.packages.iter().any(|p| p.name == dep);
-        let (dep_plugins, dep_decorators) = if has_dep_cached && !no_cache {
-            if let Some(pkg) = manifest.packages.iter().find(|p| p.name == dep) {
-                (pkg.plugins.clone(), pkg.decorator_registrations.clone())
-            } else {
-                (Vec::new(), Vec::new())
-            }
+        let has_dep_cached = manifest
+            .get_package(&dep)
+            .map(|pkg| !pkg.plugins.is_empty())
+            .unwrap_or(false);
+
+        let dep_plugins: Vec<Plugin> = if has_dep_cached && !no_cache {
+            manifest
+                .get_package(&dep)
+                .map(|pkg| pkg.plugins.clone())
+                .unwrap_or_default()
         } else {
             match find_package_path(&dep) {
                 Ok(dep_path) => match AstDiscovery::discover_plugins(
@@ -156,13 +154,16 @@ pub fn discover_and_register_entry_points_with_deps(
                     venv_path.as_deref(),
                     None,
                 ) {
-                    Ok(result) => result,
+                    Ok((ast_plugins, _decorators)) => ast_plugins
+                        .into_iter()
+                        .map(|p| p.to_manifest_plugin())
+                        .collect(),
                     Err(e) => {
                         logger::warn(&format!(
                             "Failed to discover plugins from dependency '{}': {}",
                             &dep, e
                         ));
-                        (Vec::new(), Vec::new())
+                        Vec::new()
                     }
                 },
                 Err(e) => {
@@ -170,7 +171,7 @@ pub fn discover_and_register_entry_points_with_deps(
                         "Failed to locate dependency package '{}': {}",
                         &dep, e
                     ));
-                    (Vec::new(), Vec::new())
+                    Vec::new()
                 }
             }
         };
@@ -183,7 +184,6 @@ pub fn discover_and_register_entry_points_with_deps(
         {
             let dep_pkg = manifest.get_or_create_package(&dep);
             dep_pkg.plugins = dep_plugins;
-            dep_pkg.decorator_registrations = dep_decorators;
         }
         manifest.mark_dependency(&dep, package_name_full);
         total_plugins += dep_count;

@@ -1,13 +1,17 @@
-use super::*;
+//! Keyword argument building for plugin invocation
+
+use crate::errors::BridgeError;
 use crate::Bridge;
 use pyo3::exceptions::PyFileNotFoundError;
+use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use r2x_logger as logger;
+use r2x_manifest::runtime::RuntimeBindings;
 use r2x_manifest::ConfigSpec;
 use std::path::Path;
 
 impl Bridge {
-    pub(super) fn build_kwargs<'py>(
+    pub(crate) fn build_kwargs<'py>(
         &self,
         py: pyo3::Python<'py>,
         config_dict: &pyo3::Bound<'py, PyDict>,
@@ -29,6 +33,19 @@ impl Bridge {
             }
         };
 
+        // For upgrader plugins without config metadata, pass all config values directly as kwargs.
+        // Upgraders typically have simple constructors (path, folder_path, etc.) and don't use
+        // the complex config class machinery that parsers/exporters use.
+        if runtime.plugin_kind == r2x_manifest::PluginKind::Upgrader
+            && runtime.config.is_none()
+            && runtime.entry_parameters.is_empty()
+        {
+            for (k, v) in config_dict {
+                kwargs.set_item(k, v)?;
+            }
+            return Ok(kwargs);
+        }
+
         let mut needs_config_class = false;
         let mut config_param_name = String::new();
 
@@ -37,7 +54,7 @@ impl Bridge {
         // allowing plugin authors to name their config parameter anything they want.
         if let Some(config_spec) = &runtime.config {
             let config_class_name = &config_spec.name;
-            logger::debug(&format!(
+            logger::step(&format!(
                 "Looking for config parameter with annotation matching '{}'",
                 config_class_name
             ));
@@ -73,10 +90,12 @@ impl Bridge {
             }
 
             // Last resort: we have config metadata but no matching param, use "config" as default
+            // This is expected for function plugins where entry_parameters contains config fields
+            // rather than the actual function signature parameters
             if !needs_config_class {
                 needs_config_class = true;
                 config_param_name = "config".to_string();
-                logger::warn("No matching config parameter found in function signature, defaulting to 'config'");
+                logger::step("Using default config parameter name 'config'");
             }
         }
 
@@ -98,10 +117,7 @@ impl Bridge {
                 params
             };
 
-            logger::step(&format!(
-                "Instantiating config class with params: {:?}",
-                config_params
-            ));
+            logger::step("Instantiating config class with params");
             let config_obj =
                 self.instantiate_config_class(py, &config_params, runtime.config.as_ref())?;
             logger::step(&format!(
@@ -133,19 +149,50 @@ impl Bridge {
 
                 if let Some(value) = value {
                     let config_binding = config_instance.as_ref().map(|obj| obj.bind(py));
-                    let store_instance = match config_binding {
-                        Some(ref binding) => self.instantiate_data_store(
+                    let store_instance = if let Some(binding) = config_binding.as_ref() {
+                        self.instantiate_data_store(
                             py,
                             &value,
                             Some(binding),
                             runtime.config.as_ref(),
-                        )?,
-                        None => {
-                            self.instantiate_data_store(py, &value, None, runtime.config.as_ref())?
-                        }
+                        )?
+                    } else {
+                        self.instantiate_data_store(py, &value, None, runtime.config.as_ref())?
                     };
                     kwargs.set_item(&param.name, store_instance)?;
                 }
+                continue;
+            }
+
+            // Skip parameters that are config fields when we have a config class
+            // (those values are already inside the config object)
+            let is_config_field = if needs_config_class {
+                // First check config metadata if available
+                let in_metadata = runtime
+                    .config
+                    .as_ref()
+                    .map(|spec| spec.fields.iter().any(|f| f.name == param.name))
+                    .unwrap_or(false);
+
+                // If not found in metadata, check the config instance directly
+                if !in_metadata {
+                    if let Some(ref config_obj) = config_instance {
+                        config_obj.bind(py).hasattr(&*param.name).unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+
+            if is_config_field {
+                logger::debug(&format!(
+                    "Skipping '{}' as separate kwarg - it's a config field",
+                    param.name
+                ));
                 continue;
             }
 
@@ -184,7 +231,7 @@ impl Bridge {
         Ok(kwargs)
     }
 
-    pub(super) fn instantiate_config_class<'py>(
+    pub(crate) fn instantiate_config_class<'py>(
         &self,
         py: pyo3::Python<'py>,
         config_params: &pyo3::Bound<'py, PyDict>,
@@ -206,7 +253,7 @@ impl Bridge {
             ))
         })?;
 
-        config_class.call((), Some(&config_params)).map_err(|e| {
+        config_class.call((), Some(config_params)).map_err(|e| {
             BridgeError::Python(format!(
                 "Failed to instantiate config class '{}': {}",
                 config_meta.name, e
@@ -214,7 +261,7 @@ impl Bridge {
         })
     }
 
-    pub(super) fn instantiate_data_store<'py>(
+    pub(crate) fn instantiate_data_store<'py>(
         &self,
         py: pyo3::Python<'py>,
         value: &pyo3::Bound<'py, PyAny>,
@@ -245,7 +292,10 @@ impl Bridge {
                 .map_err(|e| {
                     BridgeError::Python(format!("DataStore missing from_plugin_config: {}", e))
                 })?;
-            match from_config.call1((config, path)) {
+            // path is keyword-only in from_plugin_config(plugin_config, *, path)
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("path", &path)?;
+            match from_config.call((config,), Some(&kwargs)) {
                 Ok(store) => Ok(store),
                 Err(err) => {
                     logger::debug(
@@ -325,11 +375,7 @@ fn extract_missing_data_file(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<
             break;
         }
         if let Ok(repr) = ctx.str() {
-            logger::debug(&format!(
-                "Python exception context[{}]: {}",
-                depth,
-                repr.to_string()
-            ));
+            logger::debug(&format!("Python exception context[{}]: {}", depth, repr));
         }
         if ctx.is_instance_of::<PyFileNotFoundError>() {
             if let Ok(text) = ctx.str() {
@@ -395,7 +441,7 @@ fn detect_missing_data_file_from_metadata(
     detect_missing_data_file_from_mapping(&class_obj, folder_path)
 }
 
-fn resolve_config_class<'py>(
+pub(crate) fn resolve_config_class<'py>(
     py: pyo3::Python<'py>,
     config_instance: Option<&pyo3::Bound<'py, PyAny>>,
     metadata: Option<&ConfigSpec>,
@@ -407,4 +453,39 @@ fn resolve_config_class<'py>(
     let meta = metadata?;
     let module = PyModule::import(py, &meta.module).ok()?;
     module.getattr(&meta.name).ok()
+}
+
+impl Bridge {
+    /// Instantiate a PluginContext from r2x_core with config (positional) and optional
+    /// keyword-only arguments (store, system).
+    pub(crate) fn instantiate_plugin_context<'py>(
+        &self,
+        py: pyo3::Python<'py>,
+        config_instance: &pyo3::Bound<'py, PyAny>,
+        store_instance: Option<&pyo3::Bound<'py, PyAny>>,
+        system_instance: Option<&pyo3::Bound<'py, PyAny>>,
+    ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
+        let context_module = PyModule::import(py, "r2x_core").map_err(|e| {
+            BridgeError::Python(format!(
+                "Failed to import r2x_core for PluginContext: {}",
+                e
+            ))
+        })?;
+        let context_class = context_module.getattr("PluginContext").map_err(|e| {
+            BridgeError::Python(format!("Failed to get PluginContext class: {}", e))
+        })?;
+
+        let kwargs = PyDict::new(py);
+        if let Some(store) = store_instance {
+            kwargs.set_item("store", store)?;
+        }
+        if let Some(system) = system_instance {
+            kwargs.set_item("system", system)?;
+        }
+
+        // config is positional (first argument), rest are keyword-only
+        context_class
+            .call((config_instance,), Some(&kwargs))
+            .map_err(|e| BridgeError::Python(format!("Failed to create PluginContext: {}", e)))
+    }
 }

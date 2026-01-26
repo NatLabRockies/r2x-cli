@@ -6,7 +6,7 @@
 use super::errors::BridgeError;
 use r2x_logger as logger;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The name of the library directory in a Python venv (e.g., "Lib" on Windows, "lib" on Unix)
 #[cfg(windows)]
@@ -34,7 +34,7 @@ const PYTHON_EXE_CANDIDATES: &[&str] = &["python.exe", "python3.exe", "python3.1
 // Windows
 // .venv/Lib/site-packages
 
-pub fn resolve_site_package_path(venv_path: &PathBuf) -> Result<PathBuf, BridgeError> {
+pub fn resolve_site_package_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
     logger::debug(&format!(
         "Resolving site-packages path for venv: {}",
         venv_path.display()
@@ -136,7 +136,7 @@ pub fn resolve_site_package_path(venv_path: &PathBuf) -> Result<PathBuf, BridgeE
     }
 }
 
-pub fn resolve_python_path(venv_path: &PathBuf) -> Result<PathBuf, BridgeError> {
+pub fn resolve_python_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
     // validate venv path is a valid directory
     if !venv_path.is_dir() {
         return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
@@ -286,7 +286,7 @@ mod tests {
         let lib_dir = venv_path.join("lib");
         fs::create_dir_all(&lib_dir).unwrap();
 
-        let result = resolve_site_package_path(&venv_path.to_path_buf());
+        let result = resolve_site_package_path(venv_path);
         assert!(result.is_err());
 
         match result {
@@ -363,7 +363,7 @@ mod tests {
         let site_packages_312 = python_312.join("site-packages");
         fs::create_dir_all(&site_packages_312).unwrap();
 
-        let result = resolve_site_package_path(&venv_path.to_path_buf());
+        let result = resolve_site_package_path(venv_path);
         assert!(result.is_ok());
 
         let site_packages = result.unwrap();

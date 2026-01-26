@@ -1,6 +1,7 @@
 use super::RunError;
 use crate::errors::PipelineError;
 use crate::logger;
+use crate::manifest_lookup::{resolve_plugin_ref, PluginRefError, ResolvedPlugin};
 use crate::package_verification;
 use crate::pipeline_config::PipelineConfig;
 use crate::python_bridge::Bridge;
@@ -85,21 +86,16 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
     println!("\nPipeline flow (--dry-run):");
 
     for (index, plugin_name) in pipeline.iter().enumerate() {
-        let (_pkg, plugin) = manifest
-            .packages
-            .iter()
-            .find_map(|pkg| {
-                pkg.plugins
-                    .iter()
-                    .find(|p| p.name == *plugin_name)
-                    .map(|p| (pkg, p))
-            })
-            .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
+        let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
+            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.to_string()),
+            _ => RunError::Config(err.to_string()),
+        })?;
+        let plugin = resolved.plugin;
 
-        let bindings = r2x_manifest::build_runtime_bindings(plugin);
-        let has_obj = bindings.implementation_type == r2x_manifest::ImplementationType::Class;
+        // Check if it's a class-based plugin
+        let is_class = plugin.class_name.is_some();
         let input_marker = if index > 0 { "← stdin" } else { "" };
-        let output_marker = if has_obj { "→ stdout" } else { "" };
+        let output_marker = if is_class { "→ stdout" } else { "" };
 
         print!("  {}", plugin_name);
         if !input_marker.is_empty() {
@@ -139,6 +135,11 @@ fn run_pipeline(
     }
     logger::debug("All pipeline packages verified");
 
+    // Validate all plugin configs upfront before running anything
+    logger::debug("Validating pipeline configs...");
+    validate_pipeline_configs(config, pipeline, &manifest)?;
+    logger::debug("All pipeline configs validated");
+
     let pipeline_start = Instant::now();
     eprintln!("{}", format!("Running: {}", pipeline_name).cyan().bold());
 
@@ -166,24 +167,16 @@ fn run_pipeline(
         logger::spinner_start(&format!("  {} [{}/{}]", plugin_name, step_num, total_steps));
         let step_start = Instant::now();
 
-        let (pkg, plugin) = manifest
-            .packages
-            .iter()
-            .find_map(|pkg| {
-                pkg.plugins
-                    .iter()
-                    .find(|p| p.name == *plugin_name)
-                    .map(|p| (pkg, p))
-            })
-            .ok_or_else(|| RunError::PluginNotFound(plugin_name.to_string()))?;
+        let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
+            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.to_string()),
+            _ => RunError::Config(err.to_string()),
+        })?;
+        let pkg = resolved.package;
+        let plugin = resolved.plugin;
 
-        let bindings = r2x_manifest::build_runtime_bindings(plugin);
+        let bindings = r2x_manifest::build_runtime_bindings_from_plugin(plugin);
 
-        let yaml_config = if config.config.contains_key(plugin_name) {
-            config.get_plugin_config_json(plugin_name)?
-        } else {
-            "{}".to_string()
-        };
+        let yaml_config = resolve_plugin_config_json(config, plugin_name, &resolved)?;
 
         if let Ok(serde_json::Value::Object(map)) =
             serde_json::from_str::<serde_json::Value>(&yaml_config)
@@ -211,7 +204,6 @@ fn run_pipeline(
         let target = super::build_call_target(&bindings)?;
         let bridge = Bridge::get()?;
         logger::debug(&format!("Invoking: {}", target));
-        logger::debug(&format!("Config: {}", final_config_json));
 
         // Set current plugin context for logging
         logger::set_current_plugin(Some(plugin_name.to_string()));
@@ -224,38 +216,42 @@ fn run_pipeline(
             ));
         }
 
-        let invocation_result =
-            match bridge.invoke_plugin(&target, &final_config_json, stdin_json, Some(plugin)) {
-                Ok(inv_result) => {
-                    let elapsed = step_start.elapsed();
-                    logger::spinner_success(&format!(
-                        "{} [{}/{}] ({})",
-                        plugin_name,
-                        step_num,
-                        total_steps,
-                        super::format_duration(elapsed)
-                    ));
-                    if logger::get_verbosity() > 0 {
-                        if let Some(timings) = &inv_result.timings {
-                            super::print_plugin_timing_breakdown(timings);
-                        }
+        let invocation_result = match bridge.invoke_plugin_with_bindings(
+            &target,
+            &final_config_json,
+            stdin_json,
+            Some(&bindings),
+        ) {
+            Ok(inv_result) => {
+                let elapsed = step_start.elapsed();
+                logger::spinner_success(&format!(
+                    "{} [{}/{}] ({})",
+                    plugin_name,
+                    step_num,
+                    total_steps,
+                    super::format_duration(elapsed)
+                ));
+                if logger::get_verbosity() > 0 {
+                    if let Some(timings) = &inv_result.timings {
+                        super::print_plugin_timing_breakdown(timings);
                     }
-                    inv_result
                 }
-                Err(e) => {
-                    let elapsed = step_start.elapsed();
-                    logger::spinner_error(&format!(
-                        "{} [{}/{}] ({})",
-                        plugin_name,
-                        step_num,
-                        total_steps,
-                        super::format_duration(elapsed)
-                    ));
-                    // Clear plugin context before returning error
-                    logger::set_current_plugin(None);
-                    return Err(RunError::Bridge(e));
-                }
-            };
+                inv_result
+            }
+            Err(e) => {
+                let elapsed = step_start.elapsed();
+                logger::spinner_error(&format!(
+                    "{} [{}/{}] ({})",
+                    plugin_name,
+                    step_num,
+                    total_steps,
+                    super::format_duration(elapsed)
+                ));
+                // Clear plugin context before returning error
+                logger::set_current_plugin(None);
+                return Err(RunError::Bridge(e));
+            }
+        };
 
         // Clear plugin context after execution
         logger::set_current_plugin(None);
@@ -300,6 +296,169 @@ fn run_pipeline(
     Ok(())
 }
 
+fn resolve_plugin_config_json(
+    config: &PipelineConfig,
+    plugin_ref: &str,
+    resolved: &ResolvedPlugin<'_>,
+) -> Result<String, RunError> {
+    let plugin_name = resolved.plugin.name.as_ref();
+    let package_name = resolved.package.name.as_ref();
+    let kind = r2x_manifest::build_runtime_bindings_from_plugin(resolved.plugin).plugin_kind;
+    let kind_alias = plugin_kind_alias(kind);
+
+    for key in config_key_candidates(plugin_ref, package_name, plugin_name, kind_alias) {
+        if config.config.contains_key(&key) {
+            return config
+                .get_plugin_config_json(&key)
+                .map_err(RunError::Pipeline);
+        }
+    }
+
+    Ok("{}".to_string())
+}
+
+fn config_key_candidates(
+    plugin_ref: &str,
+    package_name: &str,
+    plugin_name: &str,
+    kind_alias: Option<&str>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+    let mut push = |key: String| {
+        if seen.insert(key.clone()) {
+            candidates.push(key);
+        }
+    };
+
+    push(plugin_ref.to_string());
+
+    if let Some((ref_package, ref_name)) = plugin_ref.split_once('.') {
+        let ref_name_underscore = ref_name.replace('-', "_");
+        if ref_name_underscore != ref_name {
+            push(format!("{}.{}", ref_package, ref_name_underscore));
+        }
+
+        if ref_package != package_name {
+            push(format!("{}.{}", package_name, ref_name));
+            if ref_name_underscore != ref_name {
+                push(format!("{}.{}", package_name, ref_name_underscore));
+            }
+        }
+    }
+
+    push(plugin_name.to_string());
+    let plugin_name_underscore = plugin_name.replace('-', "_");
+    if plugin_name_underscore != plugin_name {
+        push(plugin_name_underscore.clone());
+    }
+
+    push(format!("{}.{}", package_name, plugin_name));
+    if plugin_name_underscore != plugin_name {
+        push(format!("{}.{}", package_name, plugin_name_underscore));
+    }
+
+    if let Some(alias) = kind_alias {
+        if let Some((ref_package, _)) = plugin_ref.split_once('.') {
+            push(format!("{}.{}", ref_package, alias));
+        }
+        push(format!("{}.{}", package_name, alias));
+    }
+
+    candidates
+}
+
+fn plugin_kind_alias(kind: r2x_manifest::PluginKind) -> Option<&'static str> {
+    match kind {
+        r2x_manifest::PluginKind::Parser => Some("parser"),
+        r2x_manifest::PluginKind::Exporter => Some("exporter"),
+        r2x_manifest::PluginKind::Upgrader => Some("upgrader"),
+        r2x_manifest::PluginKind::Modifier => Some("modifier"),
+        r2x_manifest::PluginKind::Translation => Some("translation"),
+        r2x_manifest::PluginKind::Utility => None,
+    }
+}
+
+/// Parameters that are automatically provided by the pipeline runtime,
+/// so they don't need to be specified in YAML config.
+fn is_auto_provided_param(name: &str) -> bool {
+    matches!(
+        name,
+        "store" | "data_store" | "stdin" | "system" | "path" | "folder_path" | "config"
+    )
+}
+
+/// Validate that all required config fields are present for all plugins in the pipeline.
+/// This runs BEFORE any plugin execution, so we fail fast on missing config.
+fn validate_pipeline_configs(
+    config: &PipelineConfig,
+    pipeline: &[String],
+    manifest: &Manifest,
+) -> Result<(), RunError> {
+    let mut errors: Vec<String> = Vec::new();
+
+    for plugin_name in pipeline {
+        let resolved = match resolve_plugin_ref(manifest, plugin_name) {
+            Ok(r) => r,
+            Err(_) => continue, // Skip validation for unresolved plugins (will fail later anyway)
+        };
+
+        let plugin = resolved.plugin;
+        let bindings = r2x_manifest::build_runtime_bindings_from_plugin(plugin);
+
+        // Get user-provided config from YAML
+        let yaml_config = match resolve_plugin_config_json(config, plugin_name, &resolved) {
+            Ok(c) => c,
+            Err(_) => "{}".to_string(),
+        };
+
+        let provided_keys: HashSet<String> =
+            match serde_json::from_str::<serde_json::Value>(&yaml_config) {
+                Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
+                _ => HashSet::new(),
+            };
+
+        // Check config fields for required ones
+        if let Some(ref config_spec) = bindings.config {
+            for field in &config_spec.fields {
+                if field.required
+                    && field.default.is_none()
+                    && !provided_keys.contains(&field.name)
+                    && !is_auto_provided_param(&field.name)
+                {
+                    errors.push(format!(
+                        "{}: missing required config field '{}'",
+                        plugin_name, field.name
+                    ));
+                }
+            }
+        }
+
+        // Check entry parameters for required ones
+        for param in &bindings.entry_parameters {
+            if param.required
+                && param.default.is_none()
+                && !provided_keys.contains(&param.name)
+                && !is_auto_provided_param(&param.name)
+            {
+                errors.push(format!(
+                    "{}: missing required parameter '{}'",
+                    plugin_name, param.name
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(RunError::Config(format!(
+            "Pipeline config validation failed:\n  - {}",
+            errors.join("\n  - ")
+        )))
+    }
+}
+
 fn prepare_pipeline_overrides(
     pipeline_input: Option<&str>,
     bindings: &r2x_manifest::runtime::RuntimeBindings,
@@ -314,8 +473,12 @@ fn prepare_pipeline_overrides(
         return Ok(None);
     }
 
+    // If the plugin doesn't have a json_path/path field, don't merge anything into config.
+    // The system JSON will be passed separately via stdin and deserialized by the Python bridge.
+    // Merging system JSON into config would pollute config fields (e.g., system_base_power: null
+    // from the system would overwrite system_base_power: 100 from YAML config).
     let Some(target_field) = determine_json_path_field(bindings, plugin_name) else {
-        return Ok(Some(raw.to_string()));
+        return Ok(None);
     };
 
     let parsed = match serde_json::from_str::<serde_json::Value>(raw) {
@@ -581,4 +744,86 @@ fn fallback_store_value(
         .map_err(|e| RunError::Config(format!("Failed to create store directory: {}", e)))?;
 
     Ok(serde_json::Value::String(store_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merge_config_values_replaces_existing() {
+        let mut target = json!({
+            "system_base_power": 100,
+            "system_name": "TestSystem"
+        });
+        let overrides = json!({
+            "system_base_power": 200,
+            "new_field": "value"
+        });
+
+        merge_config_values(&mut target, overrides);
+
+        assert_eq!(target["system_base_power"], json!(200));
+        assert_eq!(target["system_name"], json!("TestSystem"));
+        assert_eq!(target["new_field"], json!("value"));
+    }
+
+    #[test]
+    fn merge_config_values_adds_new_fields() {
+        let mut target = json!({
+            "system_name": "TestSystem"
+        });
+        let overrides = json!({
+            "optional_field": "new_value",
+            "another": 42
+        });
+
+        merge_config_values(&mut target, overrides);
+
+        assert_eq!(target["system_name"], json!("TestSystem"));
+        assert_eq!(target["optional_field"], json!("new_value"));
+        assert_eq!(target["another"], json!(42));
+    }
+
+    #[test]
+    fn merge_config_values_nested_merge() {
+        let mut target = json!({
+            "config": {
+                "base_power": 100,
+                "name": "Test"
+            }
+        });
+        let overrides = json!({
+            "config": {
+                "base_power": 200,
+                "extra": "new"
+            }
+        });
+
+        merge_config_values(&mut target, overrides);
+
+        assert_eq!(target["config"]["base_power"], json!(200));
+        assert_eq!(target["config"]["name"], json!("Test"));
+        assert_eq!(target["config"]["extra"], json!("new"));
+    }
+
+    #[test]
+    fn is_auto_provided_param_recognizes_store() {
+        assert!(is_auto_provided_param("store"));
+        assert!(is_auto_provided_param("data_store"));
+        assert!(is_auto_provided_param("stdin"));
+        assert!(is_auto_provided_param("system"));
+        assert!(is_auto_provided_param("path"));
+        assert!(is_auto_provided_param("folder_path"));
+        assert!(is_auto_provided_param("config"));
+    }
+
+    #[test]
+    fn is_auto_provided_param_rejects_user_params() {
+        assert!(!is_auto_provided_param("json_path"));
+        assert!(!is_auto_provided_param("output_path"));
+        assert!(!is_auto_provided_param("system_base_power"));
+        assert!(!is_auto_provided_param("model_year"));
+    }
 }

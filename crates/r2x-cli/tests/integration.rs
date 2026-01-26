@@ -287,119 +287,48 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 fn stub_manifest_toml() -> String {
-    r#"[metadata]
-version = "1.0"
+    r#"version = "3.0"
 generated_at = "2024-01-01T00:00:00Z"
 
 [[packages]]
 name = "r2x-reeds"
-entry_points_dist_info = ""
+version = "0.1.0"
 editable_install = false
 install_type = "explicit"
-decorator_registrations = []
 
 [[packages.plugins]]
 name = "r2x_reeds.upgrader"
-kind = "UPGRADER"
-entry = "r2x_reeds.upgrader.data_upgrader.ReEDSUpgrader"
-
-[packages.plugins.invocation]
-implementation = "CLASS"
-method = "upgrade"
-
-[[packages.plugins.invocation.constructor]]
-name = "folder_path"
-required = true
-
-[[packages.plugins.invocation.constructor]]
-name = "steps"
-required = false
-
-[packages.plugins.io]
-consumes = []
-produces = []
+type = "class"
+module = "r2x_reeds.upgrader.data_upgrader"
+class_name = "ReEDSUpgrader"
 
 [[packages.plugins]]
 name = "r2x_reeds.parser"
-kind = "PARSER"
-entry = "r2x_reeds.parser.ReEDSParser"
-
-[packages.plugins.invocation]
-implementation = "CLASS"
-method = "build_system"
-
-[[packages.plugins.invocation.constructor]]
-name = "config"
-required = false
-
-[[packages.plugins.invocation.constructor]]
-name = "data_store"
-required = false
-
-[packages.plugins.io]
-consumes = ["STORE_FOLDER", "CONFIG_FILE"]
-produces = ["SYSTEM"]
-
-[packages.plugins.resources.config]
+type = "class"
 module = "r2x_reeds.parser"
-name = "ReEDSConfig"
-
-[[packages.plugins.resources.config.fields]]
-name = "weather_year"
-required = false
-
-[[packages.plugins.resources.config.fields]]
-name = "solve_year"
-required = false
+class_name = "ReEDSParser"
+config_class = "ReEDSConfig"
+config_module = "r2x_reeds.parser"
 
 [[packages]]
 name = "r2x-sienna"
-entry_points_dist_info = ""
+version = "0.1.0"
 editable_install = false
 install_type = "explicit"
-decorator_registrations = []
 
 [[packages.plugins]]
 name = "r2x-sienna.upgrader"
-kind = "UPGRADER"
-entry = "r2x_sienna.upgrader.SiennaUpgrader"
-
-[packages.plugins.invocation]
-implementation = "CLASS"
-method = "upgrade"
-
-[[packages.plugins.invocation.constructor]]
-name = "path"
-required = true
-
-[packages.plugins.io]
-consumes = []
-produces = []
+type = "class"
+module = "r2x_sienna.upgrader"
+class_name = "SiennaUpgrader"
 
 [[packages.plugins]]
 name = "r2x-sienna.parser"
-kind = "PARSER"
-entry = "r2x_sienna.parser.SiennaParser"
-
-[packages.plugins.invocation]
-implementation = "CLASS"
-method = "build_system"
-
-[[packages.plugins.invocation.constructor]]
-name = "config"
-required = false
-
-[packages.plugins.io]
-consumes = ["STORE_FOLDER", "CONFIG_FILE"]
-produces = ["SYSTEM"]
-
-[packages.plugins.resources.config]
+type = "class"
 module = "r2x_sienna.parser"
-name = "SiennaConfig"
-
-[[packages.plugins.resources.config.fields]]
-name = "system_name"
-required = false
+class_name = "SiennaParser"
+config_class = "SiennaConfig"
+config_module = "r2x_sienna.parser"
 "#
     .to_string()
 }
@@ -413,7 +342,7 @@ fn build_reeds_pipeline(store_path: &Path, output: &Path) -> String {
 
 config:
   r2x_reeds.upgrader:
-    store_path: "{store}"
+    folder_path: "{store}"
   r2x_reeds.parser:
     weather_year: 2012
     solve_year: 2032

@@ -111,7 +111,7 @@ impl PluginExtractor {
             return "enum_value".to_string();
         }
 
-        if value_str.chars().next().map_or(false, |c| c.is_uppercase()) {
+        if value_str.chars().next().is_some_and(|c| c.is_uppercase()) {
             return "class_reference".to_string();
         }
 

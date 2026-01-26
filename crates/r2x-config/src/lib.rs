@@ -339,7 +339,7 @@ impl Config {
                 }
             }
 
-            return Err("Failed to locate uv after installation. Verify that ~/.local/bin or ~/.cargo/bin is in your PATH".into());
+            Err("Failed to locate uv after installation. Verify that ~/.local/bin or ~/.cargo/bin is in your PATH".into())
         }
     }
 

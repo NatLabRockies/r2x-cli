@@ -1,17 +1,26 @@
-use super::setup_config;
+use crate::config_manager::Config;
 use crate::logger;
-use crate::plugins::{
-    discovery::{discover_and_register_entry_points_with_deps, DiscoveryOptions},
-    install::get_package_info,
-};
+use crate::plugins::AstDiscovery;
 use crate::r2x_manifest::Manifest;
 use crate::GlobalOpts;
 use colored::Colorize;
+use std::path::PathBuf;
 
+/// Fast sync that re-discovers plugins using AST parsing
+///
+/// Optimized for speed:
+/// 1. Uses source_uri from manifest directly (no directory scanning)
+/// 2. Loads config/manifest only once
+/// 3. Pure Rust AST parsing via ast-grep
 pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
-    logger::debug("Loading manifest for syncing");
+    let total_start = std::time::Instant::now();
 
-    let manifest = Manifest::load().map_err(|e| {
+    // Load config once
+    let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+    let venv_path = config.get_venv_path();
+
+    // Load manifest once
+    let mut manifest = Manifest::load().map_err(|e| {
         logger::error(&format!("Failed to load manifest: {}", e));
         format!("Failed to load manifest: {}", e)
     })?;
@@ -21,69 +30,92 @@ pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
         return Ok(());
     }
 
-    let (uv_path, _venv_path, python_path) = setup_config()?;
-    let total_start = std::time::Instant::now();
-
-    let packages_to_sync: Vec<String> = manifest
+    // Collect package info from manifest
+    let packages_to_sync: Vec<_> = manifest
         .packages
         .iter()
-        .map(|pkg| pkg.name.clone())
+        .filter_map(|pkg| {
+            // source_uri is required for sync - it tells us where the package source is
+            pkg.source_uri.as_ref().map(|uri| {
+                (
+                    pkg.name.to_string(),
+                    pkg.version.to_string(),
+                    pkg.editable_install,
+                    uri.to_string(),
+                )
+            })
+        })
         .collect();
 
     if packages_to_sync.is_empty() {
-        logger::warn("No packages found in manifest to sync.");
+        logger::warn("No packages with source_uri found. Nothing to sync.");
         return Ok(());
     }
 
     let num_packages = packages_to_sync.len();
     logger::step(&format!("Syncing {} package(s)...", num_packages));
 
-    for package_name in packages_to_sync {
-        logger::spinner_start(&format!("Syncing: {}", package_name));
+    let mut total_plugins = 0;
 
-        let (package_version, dependencies) =
-            match get_package_info(&uv_path, &python_path, &package_name) {
-                Ok((version, deps)) => (version, deps),
-                Err(e) => {
-                    logger::spinner_error(&format!(
-                        "Failed to get package info for {}: {}",
-                        package_name, e
-                    ));
-                    logger::debug(&format!("Skipping package: {}", package_name));
-                    (None, Vec::new())
-                }
-            };
+    for (package_name, version, editable, source_uri) in packages_to_sync {
+        let package_path = PathBuf::from(&source_uri);
 
-        match discover_and_register_entry_points_with_deps(
-            &uv_path,
-            &python_path,
-            DiscoveryOptions {
-                package: package_name.to_string(),
-                package_name_full: package_name.to_string(),
-                dependencies,
-                package_version,
-                // Always re-scan when syncing so manifest reflects the latest plugin code
-                no_cache: true,
-                // During sync, preserve existing editable/source_path from manifest
-                editable: false,
-                source_path: None,
-            },
+        // Re-discover plugins using AST (fast, pure Rust)
+        let (ast_plugins, _decorators) = match AstDiscovery::discover_plugins(
+            &package_path,
+            &package_name,
+            Some(&venv_path),
+            Some(&version),
         ) {
-            Ok(_) => {
-                logger::spinner_stop();
-                logger::info(&format!("Successfully synced: {}", package_name));
-            }
+            Ok(result) => result,
             Err(e) => {
-                logger::spinner_error(&format!("Failed to sync {}: {}", package_name, e));
-                return Err(format!("Failed to sync package '{}': {}", package_name, e));
+                logger::warn(&format!(
+                    "Failed to discover plugins for '{}': {}",
+                    package_name, e
+                ));
+                continue;
             }
+        };
+
+        let plugin_count = ast_plugins.len();
+        if plugin_count == 0 {
+            logger::debug(&format!("No plugins found in package '{}'", package_name));
+            continue;
         }
+
+        // Convert and update manifest
+        let plugins: Vec<_> = ast_plugins
+            .into_iter()
+            .map(|p| p.to_manifest_plugin())
+            .collect();
+
+        {
+            let pkg = manifest.get_or_create_package(&package_name);
+            pkg.plugins = plugins;
+            pkg.editable_install = editable;
+            pkg.source_uri = Some(std::sync::Arc::from(source_uri));
+        }
+
+        total_plugins += plugin_count;
+        logger::debug(&format!(
+            "Synced {} plugin(s) from '{}'",
+            plugin_count, package_name
+        ));
     }
+
+    // Save manifest once at the end
+    manifest
+        .save()
+        .map_err(|e| format!("Failed to save manifest: {}", e))?;
 
     let elapsed_ms = total_start.elapsed().as_millis();
     println!(
         "{}",
-        format!("Synced {} package(s) in {}ms", num_packages, elapsed_ms).dimmed()
+        format!(
+            "Synced {} package(s), {} plugin(s) in {}ms",
+            num_packages, total_plugins, elapsed_ms
+        )
+        .dimmed()
     );
 
     Ok(())

@@ -2,10 +2,11 @@
 
 use crate::config_manager::Config;
 use crate::logger;
+use crate::manifest_lookup::resolve_plugin_ref;
 use crate::r2x_manifest::Manifest;
 use r2x_python::resolve_site_package_path;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,22 +61,9 @@ pub fn verify_plugin_packages(
 ) -> Result<VerificationResult, VerificationError> {
     logger::debug(&format!("Verifying packages for plugin: {}", plugin_key));
 
-    // Find the plugin and its package from manifest
-    let package_name = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name == plugin_key)
-                .map(|_| pkg.name.clone())
-        })
-        .ok_or_else(|| {
-            VerificationError::VerificationFailed(format!(
-                "Plugin '{}' not found in manifest",
-                plugin_key
-            ))
-        })?;
+    let resolved = resolve_plugin_ref(manifest, plugin_key)
+        .map_err(|e| VerificationError::VerificationFailed(e.to_string()))?;
+    let package_name = resolved.package.name.to_string();
 
     // Get venv path
     let config = Config::load().map_err(|e| {
@@ -108,7 +96,7 @@ pub fn verify_plugin_packages(
 /// # Returns
 /// List of packages that are not installed or invalid
 fn check_packages_installed(
-    venv_path: &PathBuf,
+    venv_path: &Path,
     packages: &[&str],
 ) -> Result<Vec<String>, VerificationError> {
     let site_packages = get_site_packages_dir(venv_path)?;
@@ -137,7 +125,7 @@ fn check_packages_installed(
 }
 
 /// Get the site-packages directory from venv
-fn get_site_packages_dir(venv_path: &PathBuf) -> Result<PathBuf, VerificationError> {
+fn get_site_packages_dir(venv_path: &Path) -> Result<PathBuf, VerificationError> {
     logger::debug(&format!(
         "Getting site-packages directory for venv: {}",
         venv_path.display()
@@ -150,7 +138,7 @@ fn get_site_packages_dir(venv_path: &PathBuf) -> Result<PathBuf, VerificationErr
 }
 
 /// Check if a dist-info directory matching the pattern exists
-fn dist_info_exists(site_packages: &PathBuf, pattern: &str) -> bool {
+fn dist_info_exists(site_packages: &Path, pattern: &str) -> bool {
     let pattern_prefix = pattern.split('-').next().unwrap_or("");
 
     if let Ok(entries) = std::fs::read_dir(site_packages) {
@@ -304,14 +292,15 @@ pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, Verif
     }
 
     // Collect all unique package names from manifest
-    let mut all_packages: HashSet<&str> = HashSet::new();
+    let mut all_packages: HashSet<String> = HashSet::new();
     for pkg in &manifest.packages {
-        all_packages.insert(&pkg.name);
+        all_packages.insert(pkg.name.to_string());
     }
 
     // Check which packages are missing
-    let packages_vec: Vec<&str> = all_packages.into_iter().collect();
-    let missing = check_packages_installed(&venv_path, &packages_vec)?;
+    let packages_vec: Vec<String> = all_packages.into_iter().collect();
+    let packages_refs: Vec<&str> = packages_vec.iter().map(|s| s.as_str()).collect();
+    let missing = check_packages_installed(&venv_path, &packages_refs)?;
 
     for package in missing {
         missing_packages.insert(package);
