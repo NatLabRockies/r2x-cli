@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "r2x-ast"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "r2x-python"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "once_cell",
  "pyo3",
