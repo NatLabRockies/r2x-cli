@@ -887,9 +887,9 @@ dependencies = [
  "anyhow",
  "ast-grep-core",
  "ast-grep-language",
+ "r2x-config",
  "r2x-logger",
  "r2x-manifest",
- "r2x-python",
  "serde",
  "serde_json",
  "smallvec",
@@ -905,6 +905,7 @@ version = "0.0.5"
 dependencies = [
  "dirs",
  "serde",
+ "tempfile",
  "toml",
  "which",
 ]

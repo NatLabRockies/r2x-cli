@@ -266,34 +266,36 @@ impl PluginExtractor {
         }
 
         let (annotation, default, is_required) = match rest {
-            Some(rest) if rest.contains('=') => {
-                let eq_idx = rest.find('=').unwrap();
-                let annotation = rest[..eq_idx].trim();
-                let default = rest[eq_idx + 1..].trim();
-                (
-                    (!annotation.is_empty()).then(|| annotation.to_string()),
-                    (!default.is_empty()).then(|| default.to_string()),
-                    false,
-                )
-            }
             Some(rest) => {
-                let annotation = rest.trim();
-                (
-                    (!annotation.is_empty()).then(|| annotation.to_string()),
-                    None,
-                    true,
-                )
+                if let Some(eq_idx) = rest.find('=') {
+                    let annotation = rest[..eq_idx].trim();
+                    let default = rest[eq_idx + 1..].trim();
+                    (
+                        (!annotation.is_empty()).then(|| annotation.to_string()),
+                        (!default.is_empty()).then(|| default.to_string()),
+                        false,
+                    )
+                } else {
+                    let annotation = rest.trim();
+                    (
+                        (!annotation.is_empty()).then(|| annotation.to_string()),
+                        None,
+                        true,
+                    )
+                }
             }
-            None if param_str.contains('=') => {
-                let eq_idx = param_str.find('=').unwrap();
-                let default = param_str[eq_idx + 1..].trim();
-                (
-                    None,
-                    (!default.is_empty()).then(|| default.to_string()),
-                    false,
-                )
+            None => {
+                if let Some(eq_idx) = param_str.find('=') {
+                    let default = param_str[eq_idx + 1..].trim();
+                    (
+                        None,
+                        (!default.is_empty()).then(|| default.to_string()),
+                        false,
+                    )
+                } else {
+                    (None, None, true)
+                }
             }
-            None => (None, None, true),
         };
 
         Some(ParameterEntry {

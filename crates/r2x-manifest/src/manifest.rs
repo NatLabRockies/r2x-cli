@@ -17,19 +17,18 @@ impl Manifest {
         // On Windows: use AppData/Local/r2x/manifest.toml
         #[cfg(not(target_os = "windows"))]
         {
-            dirs::home_dir()
-                .expect("Could not determine home directory")
-                .join(".cache")
-                .join("r2x")
-                .join("manifest.toml")
+            dirs::home_dir().map_or_else(
+                || PathBuf::from(".cache/r2x/manifest.toml"),
+                |h| h.join(".cache").join("r2x").join("manifest.toml"),
+            )
         }
 
         #[cfg(target_os = "windows")]
         {
-            dirs::cache_dir()
-                .expect("Could not determine cache directory")
-                .join("r2x")
-                .join("manifest.toml")
+            dirs::cache_dir().map_or_else(
+                || PathBuf::from("cache\\r2x\\manifest.toml"),
+                |c| c.join("r2x").join("manifest.toml"),
+            )
         }
     }
 
@@ -124,7 +123,8 @@ impl Manifest {
             self.package_index.insert(name_arc, idx);
         }
 
-        let idx = *self.package_index.get(name).unwrap();
+        // Safety: we just inserted the package if it didn't exist, so this lookup will succeed
+        let idx = self.package_index.get(name).copied().unwrap_or(0);
         &mut self.packages[idx]
     }
 
@@ -369,16 +369,23 @@ mod tests {
         manifest.mark_dependency("r2x-dep", "r2x-main");
         manifest.add_dependency("r2x-main", "r2x-dep");
 
-        // Verify structure
-        let main_pkg = manifest.get_package("r2x-main").unwrap();
-        assert_eq!(main_pkg.install_type, InstallType::Explicit);
-        assert_eq!(main_pkg.dependencies.len(), 1);
-        assert_eq!(main_pkg.dependencies[0].as_ref(), "r2x-dep");
+        // Verify structure - using assert! for test failure semantics
+        assert!(
+            manifest
+                .get_package("r2x-main")
+                .is_some_and(|main_pkg| main_pkg.install_type == InstallType::Explicit
+                    && main_pkg.dependencies.len() == 1
+                    && main_pkg.dependencies[0].as_ref() == "r2x-dep"),
+            "Expected r2x-main package with correct dependencies"
+        );
 
-        let dep_pkg = manifest.get_package("r2x-dep").unwrap();
-        assert_eq!(dep_pkg.install_type, InstallType::Dependency);
-        assert_eq!(dep_pkg.installed_by.len(), 1);
-        assert_eq!(dep_pkg.installed_by[0].as_ref(), "r2x-main");
+        assert!(
+            manifest.get_package("r2x-dep").is_some_and(|dep_pkg| dep_pkg.install_type
+                == InstallType::Dependency
+                && dep_pkg.installed_by.len() == 1
+                && dep_pkg.installed_by[0].as_ref() == "r2x-main"),
+            "Expected r2x-dep as dependency of r2x-main"
+        );
     }
 
     #[test]
@@ -425,9 +432,11 @@ mod tests {
         assert_eq!(removed[0], "r2x-main1");
         assert_eq!(manifest.packages.len(), 2);
 
-        let shared = manifest.get_package("r2x-shared").unwrap();
-        assert_eq!(shared.installed_by.len(), 1);
-        assert_eq!(shared.installed_by[0].as_ref(), "r2x-main2");
+        assert!(
+            manifest.get_package("r2x-shared").is_some_and(|shared| shared.installed_by.len() == 1
+                && shared.installed_by[0].as_ref() == "r2x-main2"),
+            "Expected r2x-shared with r2x-main2 as installer"
+        );
     }
 
     #[test]

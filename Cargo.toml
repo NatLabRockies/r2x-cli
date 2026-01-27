@@ -21,6 +21,74 @@ r2x-python = { path = "crates/r2x-python", version = "0.0.10" }
 r2x-logger = { path = "crates/r2x-logger", version = "0.0.2" }
 r2x-ast = { path = "crates/r2x-ast", version = "0.0.7" }
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+# Note: warnings = "deny" is NOT set here so that warn-level lints don't fail local builds
+# Use `just clippy-strict` or `cargo clippy -- -D warnings` for CI to fail on warnings
+
+[workspace.lints.clippy]
+# Enable pedantic lints for stricter code quality
+# Priority -1 so individual lint settings override
+pedantic = { level = "warn", priority = -1 }
+
+# Pedantic overrides - these are too noisy or don't fit this codebase
+missing_errors_doc = "allow"  # Requires extensive documentation work
+missing_panics_doc = "allow"  # Requires extensive documentation work
+must_use_candidate = "allow"  # Very noisy, too subjective
+doc_markdown = "allow"  # Backticks in docs - low value for effort
+similar_names = "allow"  # Often false positives
+too_many_lines = "allow"  # Subjective function length
+module_name_repetitions = "allow"  # FooModule::foo patterns are common
+struct_excessive_bools = "allow"  # Sometimes structs legitimately need multiple bools
+fn_params_excessive_bools = "allow"  # Sometimes functions legitimately need multiple bools
+items_after_statements = "allow"  # Style preference, not harmful
+uninlined_format_args = "allow"  # format!("{}", x) vs format!("{x}") is minor
+return_self_not_must_use = "allow"  # Builder pattern returns
+cast_lossless = "allow"  # Builder pattern returns values where vars are known to be in range
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+default_trait_access = "allow"  # Default::default() vs TypeName::default() is style
+match_same_arms = "allow"  # Sometimes separate match arms are clearer
+unused_async = "allow"  # Some async functions don't await but are async for API consistency
+manual_let_else = "allow"  # let..else is newer syntax, current style is fine
+used_underscore_binding = "allow"  # Underscore bindings sometimes intentional for documentation
+ref_option_ref = "allow"  # Option<T> vs Option<&T> - sometimes &Option is intentional
+format_push_string = "allow"  # push_str with format! is equivalent
+case_sensitive_file_extension_comparisons = "allow"  # Often intentional
+unnecessary_wraps = "allow"  # Sometimes for API consistency
+needless_pass_by_value = "allow"  # Often for clearer API design
+trivially_copy_pass_by_ref = "allow"  # Often for API consistency
+no_effect_underscore_binding = "allow"  # Used for documentation or future use
+redundant_closure_for_method_calls = "allow"  # Closure is often clearer
+result_large_err = "allow"  # Error types need rich context for good UX
+
+# Panic safety - deny any operations that could panic in library code
+# Note: panic is set to warn (not deny) because test code uses assert! macros
+# which are panic-based. Use unwrap_used/expect_used to catch direct panics.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "warn"
+
+# Prohibit all allow attributes - no exceptions
+allow_attributes = "deny"
+
+# No debug macros in production code
+dbg_macro = "deny"
+
+# No incomplete code markers
+todo = "deny"
+unimplemented = "deny"
+
+# Restrict pub use - only use for re-exporting deps (per AGENTS.md line 62)
+# Set to warn (not deny) to allow existing crate API patterns while encouraging
+# minimal re-exports going forward
+pub_use = "warn"
+
+# NOTE: print_stdout/print_stderr are denied at crate level for libraries only
+# See per-crate config below - CLI crate needs to print for user output
+
 [profile.dist]
 inherits = "release"
 lto = "thin"

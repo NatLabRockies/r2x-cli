@@ -1,3 +1,5 @@
+pub mod venv_paths;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -31,17 +33,15 @@ impl Config {
 
         // Default config file path (platform-appropriate).
         #[cfg(not(target_os = "windows"))]
-        let default = dirs::home_dir()
-            .expect("Could not determine home directory")
-            .join(".config")
-            .join("r2x")
-            .join("r2x.toml");
+        let Some(default) = dirs::home_dir().map(|h| h.join(".config").join("r2x").join("r2x.toml"))
+        else {
+            return PathBuf::from(".r2x.toml");
+        };
 
         #[cfg(target_os = "windows")]
-        let default = dirs::config_dir()
-            .expect("Could not determine config directory")
-            .join("r2x")
-            .join("r2x.toml");
+        let Some(default) = dirs::config_dir().map(|c| c.join("r2x").join("r2x.toml")) else {
+            return PathBuf::from(".r2x.toml");
+        };
 
         // Look for a pointer file next to the default config, e.g. ~/.config/r2x/.r2x_config_path
         // If present and contains a non-empty path, use that path as the config file location.
@@ -149,21 +149,16 @@ impl Config {
             #[cfg(not(target_os = "windows"))]
             {
                 dirs::home_dir()
-                    .expect("Could not determine home directory")
-                    .join(".cache")
-                    .join("r2x")
-                    .to_str()
-                    .expect("Invalid path")
-                    .to_string()
+                    .map(|h| h.join(".cache").join("r2x"))
+                    .and_then(|p| p.to_str().map(String::from))
+                    .unwrap_or_else(|| ".cache/r2x".to_string())
             }
             #[cfg(target_os = "windows")]
             {
                 dirs::cache_dir()
-                    .expect("Could not determine cache directory")
-                    .join("r2x")
-                    .to_str()
-                    .expect("Invalid path")
-                    .to_string()
+                    .map(|c| c.join("r2x"))
+                    .and_then(|p| p.to_str().map(String::from))
+                    .unwrap_or_else(|| "cache\\r2x".to_string())
             }
         })
     }
@@ -178,48 +173,42 @@ impl Config {
         #[cfg(not(target_os = "windows"))]
         {
             // New preferred default: ~/.config/r2x/.venv (hidden folder, avoids spaces on macOS)
-            let default = dirs::home_dir()
-                .expect("Could not determine home directory")
-                .join(".config")
-                .join("r2x")
-                .join(".venv");
+            let Some(default) = dirs::home_dir().map(|h| h.join(".config").join("r2x").join(".venv"))
+            else {
+                return ".config/r2x/.venv".to_string();
+            };
 
             // Legacy location (may point to macOS 'Application Support' via config_dir)
             let legacy = dirs::config_dir()
-                .unwrap_or_else(|| {
-                    dirs::home_dir()
-                        .expect("Could not determine home directory")
-                        .join(".config")
-                })
-                .join("r2x")
-                .join(".venv");
+                .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+                .map(|c| c.join("r2x").join(".venv"));
 
             // If a legacy venv exists and the default does not, attempt a best-effort migration
             // by renaming the legacy directory into the default location. If migration fails,
             // prefer returning the legacy path so we don't lose the existing environment.
-            if legacy.exists() && !default.exists() {
-                if let Some(parent) = default.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::rename(&legacy, &default).is_ok() {
-                    return default.to_str().expect("Invalid path").to_string();
-                } else {
-                    return legacy.to_str().expect("Invalid path").to_string();
+            if let Some(ref legacy_path) = legacy {
+                if legacy_path.exists() && !default.exists() {
+                    if let Some(parent) = default.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::rename(legacy_path, &default).is_ok() {
+                        return default.to_string_lossy().to_string();
+                    }
+                    return legacy_path.to_string_lossy().to_string();
                 }
             }
 
             // Otherwise return the default path
-            default.to_str().expect("Invalid path").to_string()
+            default.to_string_lossy().to_string()
         }
 
         #[cfg(target_os = "windows")]
         {
             // On Windows, use the platform config_dir as before (with .venv hidden folder).
-            let path = dirs::config_dir()
-                .expect("Could not determine config directory")
-                .join("r2x")
-                .join(".venv");
-            return path.to_str().expect("Invalid path").to_string();
+            dirs::config_dir()
+                .map(|c| c.join("r2x").join(".venv"))
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "config\\r2x\\.venv".to_string())
         }
     }
 
@@ -244,8 +233,8 @@ impl Config {
             || version.contains("~=")
             || version.contains("!=")
             || version.contains("==")
-            || version.contains(">")
-            || version.contains("<")
+            || version.contains('>')
+            || version.contains('<')
         {
             format!("r2x-core{}", version)
         } else {

@@ -24,17 +24,21 @@ if [[ ! -f "$BINARY" ]]; then
     exit 1
 fi
 
+# Add rpath entry, ignoring "already exists" errors
+add_rpath() {
+    install_name_tool -add_rpath "$1" "$2" 2>/dev/null || true
+}
+
 fix_macos() {
     local binary="$1"
 
     echo "Fixing Python dylib paths for macOS binary: $binary"
 
-    # Find the libpython reference
+    # Find the libpython reference (try specific pattern first, then broader)
     local python_lib
     python_lib=$(otool -L "$binary" | grep -o '/.*libpython[0-9.]*\.dylib' | head -1 || true)
 
     if [[ -z "$python_lib" ]]; then
-        echo "No libpython reference found in binary. Checking for other python libs..."
         python_lib=$(otool -L "$binary" | grep -o '/.*python.*\.dylib' | head -1 || true)
     fi
 
@@ -43,46 +47,29 @@ fix_macos() {
         return 0
     fi
 
-    echo "Found Python library reference: $python_lib"
+    echo "Found: $python_lib"
 
-    # Extract the library filename (e.g., libpython3.12.dylib)
-    local lib_name
+    local lib_name new_path
     lib_name=$(basename "$python_lib")
+    new_path="@rpath/$lib_name"
 
-    # Convert to @rpath-relative path
-    local new_path="@rpath/$lib_name"
-
-    echo "Converting: $python_lib -> $new_path"
-
+    echo "Converting to: $new_path"
     install_name_tool -change "$python_lib" "$new_path" "$binary"
 
-    # Add common rpath locations
-    # These allow the binary to find libpython in common installation locations
+    # Add common rpath locations for finding libpython
+    add_rpath "@executable_path/../lib" "$binary"
+    add_rpath "/usr/local/lib" "$binary"
+    add_rpath "/opt/homebrew/lib" "$binary"
 
-    # User's uv-managed Python (relative to home)
-    install_name_tool -add_rpath "@executable_path/../lib" "$binary" 2>/dev/null || true
-
-    # System Python locations
-    install_name_tool -add_rpath "/usr/local/lib" "$binary" 2>/dev/null || true
-    install_name_tool -add_rpath "/opt/homebrew/lib" "$binary" 2>/dev/null || true
-
-    # Verify the change
+    # Verify
     echo ""
-    echo "Verification - Python library references after fix:"
-    otool -L "$binary" | grep -i python || echo "(no python references)"
-
+    echo "Python references after fix:"
+    otool -L "$binary" | grep -i python || echo "  (none)"
     echo ""
     echo "rpath entries:"
-    otool -l "$binary" | grep -A2 LC_RPATH | grep path || echo "(no rpath entries)"
-
+    otool -l "$binary" | grep -A2 LC_RPATH | grep path || echo "  (none)"
     echo ""
-    echo "Done! Binary fixed: $binary"
-    echo ""
-    echo "NOTE: Users must have Python installed and libpython accessible via:"
-    echo "  - @executable_path/../lib"
-    echo "  - /usr/local/lib"
-    echo "  - /opt/homebrew/lib"
-    echo "  - Or set DYLD_LIBRARY_PATH to Python's lib directory"
+    echo "Done! Users need libpython accessible via rpath or DYLD_LIBRARY_PATH."
 }
 
 fix_linux() {
@@ -90,15 +77,13 @@ fix_linux() {
 
     echo "Fixing Python library paths for Linux binary: $binary"
 
-    # Check if patchelf is available
     if ! command -v patchelf &> /dev/null; then
         echo "Error: patchelf is required but not installed."
-        echo "Install with: dnf install -y epel-release patchelf  # (RHEL/Rocky)"
-        echo "         or: apt-get install -y patchelf  # (Debian/Ubuntu)"
+        echo "  RHEL/Rocky: dnf install -y epel-release patchelf"
+        echo "  Debian/Ubuntu: apt-get install -y patchelf"
         exit 1
     fi
 
-    # Find current Python library reference
     local python_lib
     python_lib=$(ldd "$binary" 2>/dev/null | grep -o '/.*libpython[0-9.]*\.so[0-9.]*' | head -1 || true)
 
@@ -107,33 +92,23 @@ fix_linux() {
         return 0
     fi
 
-    echo "Found Python library reference: $python_lib"
+    echo "Found: $python_lib"
 
-    # Set rpath to include common Python library locations
     # $ORIGIN allows finding libs relative to the binary
     local new_rpath='$ORIGIN/../lib:$ORIGIN:$ORIGIN/../lib/python3.12/config-3.12-x86_64-linux-gnu:/usr/local/lib:/usr/lib:/usr/lib64'
 
     echo "Setting rpath to: $new_rpath"
-
     patchelf --set-rpath "$new_rpath" "$binary"
 
     # Verify
     echo ""
-    echo "Verification - rpath after fix:"
+    echo "rpath after fix:"
     patchelf --print-rpath "$binary"
-
     echo ""
-    echo "Dynamic libraries:"
-    ldd "$binary" | grep -i python || echo "(no python references - may use dlopen)"
-
+    echo "Python references:"
+    ldd "$binary" | grep -i python || echo "  (none - may use dlopen)"
     echo ""
-    echo "Done! Binary fixed: $binary"
-    echo ""
-    echo "NOTE: Users must have Python installed with libpython accessible via:"
-    echo "  - \$ORIGIN/../lib (relative to binary)"
-    echo "  - /usr/local/lib"
-    echo "  - /usr/lib or /usr/lib64"
-    echo "  - Or set LD_LIBRARY_PATH to Python's lib directory"
+    echo "Done! Users need libpython accessible via rpath or LD_LIBRARY_PATH."
 }
 
 # Call the appropriate fix function based on platform

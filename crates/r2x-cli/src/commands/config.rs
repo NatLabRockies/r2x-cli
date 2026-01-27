@@ -445,7 +445,7 @@ fn handle_venv_create(skip_confirmation: bool) {
                         venv_path,
                         "[y/n] ›".dimmed()
                     );
-                    io::stdout().flush().unwrap();
+                    let _ = io::stdout().flush();
                     logger::debug("Prompting user for venv replacement confirmation");
 
                     let mut response = String::new();

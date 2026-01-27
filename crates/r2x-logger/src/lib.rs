@@ -14,12 +14,12 @@ static SPINNER: Mutex<Option<ProgressBar>> = Mutex::new(None);
 
 /// Get the current verbosity level for use by other modules (e.g., Python bridge)
 pub fn get_verbosity() -> u8 {
-    VERBOSITY.lock().ok().map(|v| *v).unwrap_or(0)
+    VERBOSITY.lock().ok().map_or(0, |v| *v)
 }
 
 /// Get whether Python logging to console is enabled
 pub fn get_log_python() -> bool {
-    LOG_PYTHON.lock().ok().map(|v| *v).unwrap_or(false)
+    LOG_PYTHON.lock().ok().is_some_and(|v| *v)
 }
 
 /// Set whether Python logging to console is enabled
@@ -31,7 +31,7 @@ pub fn set_log_python(enabled: bool) {
 
 /// Get whether stdout logging is disabled
 pub fn get_no_stdout() -> bool {
-    NO_STDOUT.lock().ok().map(|v| *v).unwrap_or(false)
+    NO_STDOUT.lock().ok().is_some_and(|v| *v)
 }
 
 /// Set whether stdout logging is disabled
@@ -92,7 +92,9 @@ fn init() -> Result<(), String> {
         let _ = fs::remove_file(&log_file);
     }
 
-    let mut log_file_guard = LOG_FILE.lock().unwrap();
+    let mut log_file_guard = LOG_FILE
+        .lock()
+        .map_err(|e| format!("Failed to lock log file mutex: {e}"))?;
     *log_file_guard = Some(log_file);
 
     Ok(())
@@ -116,7 +118,7 @@ fn get_config_dir() -> Result<PathBuf, String> {
 
 /// Write to log file
 fn write_to_log(message: &str) {
-    write_to_log_with_source(message, "RUST")
+    write_to_log_with_source(message, "RUST");
 }
 
 /// Write to log file with custom source tag
@@ -236,12 +238,12 @@ pub fn spinner_start(message: &str) {
     }
 
     let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        indicatif::ProgressStyle::default_spinner()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-            .template("{spinner:.cyan} {msg}")
-            .unwrap(),
-    );
+    let style = indicatif::ProgressStyle::default_spinner()
+        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        .template("{spinner:.cyan} {msg}");
+    if let Ok(s) = style {
+        spinner.set_style(s);
+    }
     spinner.enable_steady_tick(std::time::Duration::from_millis(80));
     spinner.set_message(message.to_string());
 

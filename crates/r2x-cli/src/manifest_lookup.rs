@@ -196,28 +196,28 @@ mod tests {
     #[test]
     fn resolves_plugin_by_exact_name() {
         let manifest = sample_manifest();
-        let resolved = resolve_plugin_ref(&manifest, "reeds-parser").unwrap();
-        assert_eq!(resolved.plugin.name.as_ref(), "reeds-parser");
+        let resolved = resolve_plugin_ref(&manifest, "reeds-parser");
+        assert!(resolved.is_ok_and(|r| r.plugin.name.as_ref() == "reeds-parser"));
     }
 
     #[test]
     fn resolves_plugin_by_package_prefix() {
         let manifest = sample_manifest();
-        let resolved = resolve_plugin_ref(&manifest, "r2x-reeds.reeds-parser").unwrap();
-        assert_eq!(resolved.plugin.name.as_ref(), "reeds-parser");
+        let resolved = resolve_plugin_ref(&manifest, "r2x-reeds.reeds-parser");
+        assert!(resolved.is_ok_and(|r| r.plugin.name.as_ref() == "reeds-parser"));
     }
 
     #[test]
     fn resolves_plugin_with_underscore_variants() {
         let manifest = sample_manifest();
-        let resolved = resolve_plugin_ref(&manifest, "r2x_reeds.break_gens").unwrap();
-        assert_eq!(resolved.plugin.name.as_ref(), "break-gens");
+        let resolved = resolve_plugin_ref(&manifest, "r2x_reeds.break_gens");
+        assert!(resolved.is_ok_and(|r| r.plugin.name.as_ref() == "break-gens"));
     }
 
     #[test]
     fn resolves_plugin_kind_alias() {
         let manifest = sample_manifest();
-        let resolved = resolve_plugin_ref(&manifest, "r2x-reeds.parser").unwrap();
-        assert_eq!(resolved.plugin.name.as_ref(), "reeds-parser");
+        let resolved = resolve_plugin_ref(&manifest, "r2x-reeds.parser");
+        assert!(resolved.is_ok_and(|r| r.plugin.name.as_ref() == "reeds-parser"));
     }
 }

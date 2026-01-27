@@ -621,15 +621,13 @@ def my_transform(system):
         // Check class extraction
         let class = cache.find_class("MyParser");
         assert!(class.is_some());
-        let class = class.unwrap();
-        assert_eq!(class.generic_param, Some("MyConfig".to_string()));
-        assert!(class.methods.contains(&"on_build".to_string()));
+        assert!(class.is_some_and(|c| c.generic_param == Some("MyConfig".to_string())
+            && c.methods.contains(&"on_build".to_string())));
 
         // Check Plugin class lookup
         let plugin = cache.find_plugin_class("MyParser");
         assert!(plugin.is_some());
-        let (_, config_name) = plugin.unwrap();
-        assert_eq!(config_name, "MyConfig");
+        assert!(plugin.is_some_and(|(_, config_name)| config_name == "MyConfig"));
 
         // Check decorated function extraction
         let decorated = cache.get_all_decorated_functions();
@@ -655,8 +653,7 @@ class PCMDefaultsConfig:
 
         let config = cache.find_config_class_content("PCMDefaultsConfig");
         assert!(config.is_some());
-        let (_, content) = config.unwrap();
-        assert!(content.contains("class PCMDefaultsConfig"));
+        assert!(config.is_some_and(|(_, content)| content.contains("class PCMDefaultsConfig")));
 
         Ok(())
     }

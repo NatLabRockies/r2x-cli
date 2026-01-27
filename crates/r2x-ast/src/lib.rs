@@ -11,10 +11,19 @@
 
 pub mod decorator_scanner;
 pub mod discovery_types;
+pub mod entry_points;
 pub mod extractor;
+pub mod naming;
 pub mod package_cache;
 pub mod schema_extractor;
 
+use crate::entry_points::{
+    find_pyproject_toml_path, parse_all_entry_points, parse_pyproject_entry_points,
+};
+// Re-export for tests
+#[cfg(test)]
+use crate::entry_points::is_r2x_section;
+use crate::naming::{camel_to_kebab, find_matching_paren, snake_to_kebab};
 use crate::package_cache::PackageAstCache;
 use anyhow::{anyhow, Result};
 use ast_grep_language::Python;
@@ -90,7 +99,7 @@ impl AstDiscovery {
                     let content = std::fs::read_to_string(&entry_points_path)
                         .map_err(|e| anyhow!("Failed to read entry_points.txt: {}", e))?;
 
-                    Self::parse_all_entry_points(&content)
+                    parse_all_entry_points(&content)
                 }
                 Err(e) => {
                     logger::debug(&format!(
@@ -263,7 +272,7 @@ impl AstDiscovery {
         // Strategy 3: Use venv site-packages if provided
         if let Some(venv) = venv_path {
             let venv_path = std::path::PathBuf::from(venv);
-            if let Ok(site_packages) = r2x_python::resolve_site_package_path(&venv_path) {
+            if let Ok(site_packages) = r2x_config::venv_paths::resolve_site_packages(&venv_path) {
                 if let Some(entry_points) =
                     Self::find_dist_info_entry_points(&site_packages, &normalized_name)
                 {
@@ -284,7 +293,7 @@ impl AstDiscovery {
         discovery_root: &Path,
         package_name_full: &str,
     ) -> Vec<EntryPointInfo> {
-        let pyproject_path = match Self::find_pyproject_toml_path(package_path, discovery_root) {
+        let pyproject_path = match find_pyproject_toml_path(package_path, discovery_root) {
             Some(path) => path,
             None => return Vec::new(),
         };
@@ -300,77 +309,13 @@ impl AstDiscovery {
             }
         };
 
-        let entries = Self::parse_pyproject_entry_points(&content);
+        let entries = parse_pyproject_entry_points(&content);
         if !entries.is_empty() {
             logger::debug(&format!(
                 "Parsed {} entry points from pyproject.toml for '{}'",
                 entries.len(),
                 package_name_full
             ));
-        }
-
-        entries
-    }
-
-    fn find_pyproject_toml_path(package_path: &Path, discovery_root: &Path) -> Option<PathBuf> {
-        let mut seen = std::collections::HashSet::new();
-        let candidates = [
-            Some(package_path),
-            package_path.parent(),
-            discovery_root.parent(),
-            discovery_root.parent().and_then(|p| p.parent()),
-        ];
-
-        for candidate in candidates.into_iter().flatten() {
-            let candidate = candidate.to_path_buf();
-            if !seen.insert(candidate.clone()) {
-                continue;
-            }
-
-            let pyproject = candidate.join("pyproject.toml");
-            if pyproject.exists() {
-                return Some(pyproject);
-            }
-        }
-
-        None
-    }
-
-    fn parse_pyproject_entry_points(content: &str) -> Vec<EntryPointInfo> {
-        let mut entries = Vec::new();
-        let parsed: toml::Value = match toml::from_str(content) {
-            Ok(parsed) => parsed,
-            Err(_) => return entries,
-        };
-
-        let entry_points = match parsed
-            .get("project")
-            .and_then(|project| project.get("entry-points"))
-            .and_then(|value| value.as_table())
-        {
-            Some(entry_points) => entry_points,
-            None => return entries,
-        };
-
-        for (section, values) in entry_points {
-            if !Self::is_r2x_section(section) {
-                continue;
-            }
-
-            let Some(table) = values.as_table() else {
-                continue;
-            };
-
-            for (name, target) in table {
-                let Some(target_str) = target.as_str() else {
-                    continue;
-                };
-
-                let line = format!("{} = {}", name, target_str);
-                if let Some(entry) = Self::parse_entry_point_line(&line, section) {
-                    entries.push(entry);
-                }
-            }
         }
 
         entries
@@ -396,82 +341,6 @@ impl AstDiscovery {
             }
         }
         None
-    }
-
-    /// Parse all r2x-related entry points from entry_points.txt
-    ///
-    /// This function scans for all sections that are r2x-related:
-    /// - `[r2x_plugin]` - main plugin registration
-    /// - `[r2x.*]` - any section starting with "r2x." (e.g., r2x.transforms, r2x.parsers)
-    ///
-    /// Returns a vector of EntryPointInfo for all discovered entry points.
-    fn parse_all_entry_points(content: &str) -> Vec<EntryPointInfo> {
-        let mut entries = Vec::new();
-        let mut current_section: Option<String> = None;
-
-        for line in content.lines() {
-            let line = line.trim();
-
-            // Skip empty lines and comments
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            // Check for section header
-            if line.starts_with('[') && line.ends_with(']') {
-                let section = &line[1..line.len() - 1];
-                // Check if this section is r2x-related
-                if Self::is_r2x_section(section) {
-                    current_section = Some(section.to_string());
-                } else {
-                    current_section = None;
-                }
-                continue;
-            }
-
-            // Parse entry point within a relevant section
-            if let Some(ref section) = current_section {
-                if let Some(entry) = Self::parse_entry_point_line(line, section) {
-                    entries.push(entry);
-                }
-            }
-        }
-
-        logger::debug(&format!(
-            "Parsed {} entry points from entry_points.txt",
-            entries.len()
-        ));
-        entries
-    }
-
-    /// Check if a section name is r2x-related
-    fn is_r2x_section(section: &str) -> bool {
-        section == "r2x_plugin" || section.starts_with("r2x.")
-    }
-
-    /// Parse a single entry point line in the format: name = module:symbol
-    fn parse_entry_point_line(line: &str, section: &str) -> Option<EntryPointInfo> {
-        let eq_idx = line.find('=')?;
-        let name = line[..eq_idx].trim();
-        let value = line[eq_idx + 1..].trim();
-
-        // Handle quoted values (e.g., name = "module:symbol")
-        let value = value.trim_matches('"').trim_matches('\'');
-
-        let colon_idx = value.find(':')?;
-        let module = value[..colon_idx].trim();
-        let symbol = value[colon_idx + 1..].trim();
-
-        if name.is_empty() || module.is_empty() || symbol.is_empty() {
-            return None;
-        }
-
-        Some(EntryPointInfo {
-            name: name.to_string(),
-            module: module.to_string(),
-            symbol: symbol.to_string(),
-            section: section.to_string(),
-        })
     }
 
     /// Resolve a module path to a source file location
@@ -592,7 +461,7 @@ impl AstDiscovery {
                 }
 
                 entries.push(EntryPointInfo {
-                    name: Self::camel_to_kebab(&class.name),
+                    name: camel_to_kebab(&class.name),
                     module: module.clone(),
                     symbol: class.name.clone(),
                     section: "r2x_plugin".to_string(),
@@ -632,7 +501,7 @@ impl AstDiscovery {
             let func_name = func.function_name.as_str();
 
             entries.push(EntryPointInfo {
-                name: Self::snake_to_kebab(func_name),
+                name: snake_to_kebab(func_name),
                 module,
                 symbol: func_name.to_string(),
                 section: "r2x.transforms".to_string(),
@@ -680,57 +549,6 @@ impl AstDiscovery {
         }
         Some(name.to_string())
     }
-
-    /// Convert CamelCase class name to kebab-case plugin name
-    ///
-    /// Preserves suffixes (unlike the old implementation that stripped them):
-    /// - ReEDSParser -> reeds-parser
-    /// - MyExporter -> my-exporter
-    /// - SimplePlugin -> simple-plugin
-    fn camel_to_kebab(class_name: &str) -> String {
-        let mut result = String::new();
-
-        for (i, ch) in class_name.chars().enumerate() {
-            if ch.is_uppercase() && i > 0 {
-                let prev_upper = class_name
-                    .chars()
-                    .nth(i - 1)
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false);
-                let next_upper = class_name
-                    .chars()
-                    .nth(i + 1)
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false);
-                let next_lower = class_name
-                    .chars()
-                    .nth(i + 1)
-                    .map(|c| c.is_lowercase())
-                    .unwrap_or(false);
-
-                // Add hyphen when:
-                // 1. Starting new word from lowercase, unless entering an acronym
-                //    (e.g., "my" -> "P" in "myParser", but NOT "Re" -> "E" in "ReEDS")
-                // 2. End of acronym transitioning to new word
-                //    (e.g., "S" -> "P" in "ReEDSParser")
-                let start_new_word = !prev_upper && !next_upper;
-                let end_of_acronym = prev_upper && next_lower;
-
-                if start_new_word || end_of_acronym {
-                    result.push('-');
-                }
-            }
-            result.push(ch.to_ascii_lowercase());
-        }
-
-        result
-    }
-
-    /// Convert snake_case function name to kebab-case plugin name
-    fn snake_to_kebab(func_name: &str) -> String {
-        func_name.replace('_', "-")
-    }
-
     /// Deduplicate entry points by symbol name
     ///
     /// When merging entry_points.txt with ast-grep discoveries, we may have
@@ -1243,7 +1061,7 @@ impl AstDiscovery {
         let after_start = &content[start + search.len()..];
 
         // Find closing paren (handle nested parens)
-        let paren_end = Self::find_matching_paren(after_start)?;
+        let paren_end = find_matching_paren(after_start)?;
         let params_text = &after_start[..paren_end];
 
         // Look for "config:" pattern
@@ -1260,25 +1078,6 @@ impl AstDiscovery {
         } else {
             None
         }
-    }
-
-    /// Find the position of matching closing paren, handling nested parens/brackets
-    fn find_matching_paren(text: &str) -> Option<usize> {
-        let mut depth = 0;
-        for (i, ch) in text.char_indices() {
-            match ch {
-                '(' | '[' | '{' => depth += 1,
-                ')' => {
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                    depth -= 1;
-                }
-                ']' | '}' => depth -= 1,
-                _ => {}
-            }
-        }
-        None
     }
 
     fn ast_has_class(ast: &PythonAst, class_name: &str) -> bool {
@@ -1385,7 +1184,7 @@ impl AstDiscovery {
         let after_start = &content[start + search.len()..];
 
         // Find closing paren
-        let Some(paren_end) = Self::find_matching_paren(after_start) else {
+        let Some(paren_end) = find_matching_paren(after_start) else {
             return Vec::new();
         };
         let params_text = &after_start[..paren_end];
@@ -1715,7 +1514,7 @@ mod tests {
         let content = r#"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
 "#;
-        let entries = AstDiscovery::parse_all_entry_points(content);
+        let entries = parse_all_entry_points(content);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "reeds");
         assert_eq!(entries[0].module, "r2x_reeds");
@@ -1735,7 +1534,7 @@ add-emission-cap = r2x_reeds.sysmod.emission_cap:add_emission_cap
 [console_scripts]
 some-cli = some_module:main
 "#;
-        let entries = AstDiscovery::parse_all_entry_points(content);
+        let entries = parse_all_entry_points(content);
         assert_eq!(entries.len(), 3);
 
         // Check r2x_plugin entry
@@ -1760,18 +1559,18 @@ some-cli = some_module:main
 [gui_scripts]
 some-gui = some_module:gui_main
 "#;
-        let entries = AstDiscovery::parse_all_entry_points(content);
+        let entries = parse_all_entry_points(content);
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_is_r2x_section() {
-        assert!(AstDiscovery::is_r2x_section("r2x_plugin"));
-        assert!(AstDiscovery::is_r2x_section("r2x.transforms"));
-        assert!(AstDiscovery::is_r2x_section("r2x.parsers"));
-        assert!(AstDiscovery::is_r2x_section("r2x.exporters"));
-        assert!(!AstDiscovery::is_r2x_section("console_scripts"));
-        assert!(!AstDiscovery::is_r2x_section("gui_scripts"));
+        assert!(is_r2x_section("r2x_plugin"));
+        assert!(is_r2x_section("r2x.transforms"));
+        assert!(is_r2x_section("r2x.parsers"));
+        assert!(is_r2x_section("r2x.exporters"));
+        assert!(!is_r2x_section("console_scripts"));
+        assert!(!is_r2x_section("gui_scripts"));
     }
 
     #[test]
@@ -1920,20 +1719,14 @@ def add_pcm_defaults(
         // Should have the 3 params
         assert_eq!(params.len(), 3);
 
-        let fpath = params
-            .iter()
-            .find(|p| p.name == "pcm_defaults_fpath")
-            .unwrap();
-        assert_eq!(fpath.annotation.as_deref(), Some("str | None"));
-        assert_eq!(fpath.default.as_deref(), Some("None"));
-        assert!(!fpath.required);
+        let fpath = params.iter().find(|p| p.name == "pcm_defaults_fpath");
+        assert!(fpath.is_some_and(|f| f.annotation.as_deref() == Some("str | None")
+            && f.default.as_deref() == Some("None")
+            && !f.required));
 
-        let override_param = params
-            .iter()
-            .find(|p| p.name == "pcm_defaults_override")
-            .unwrap();
-        assert_eq!(override_param.annotation.as_deref(), Some("bool"));
-        assert_eq!(override_param.default.as_deref(), Some("False"));
+        let override_param = params.iter().find(|p| p.name == "pcm_defaults_override");
+        assert!(override_param.is_some_and(|p| p.annotation.as_deref() == Some("bool")
+            && p.default.as_deref() == Some("False")));
     }
 
     #[test]
@@ -1954,36 +1747,30 @@ def add_pcm_defaults(
     #[test]
     fn test_camel_to_kebab() {
         // Simple CamelCase
-        assert_eq!(AstDiscovery::camel_to_kebab("MyParser"), "my-parser");
-        assert_eq!(
-            AstDiscovery::camel_to_kebab("SimplePlugin"),
-            "simple-plugin"
-        );
-        assert_eq!(AstDiscovery::camel_to_kebab("MyExporter"), "my-exporter");
+        assert_eq!(camel_to_kebab("MyParser"), "my-parser");
+        assert_eq!(camel_to_kebab("SimplePlugin"), "simple-plugin");
+        assert_eq!(camel_to_kebab("MyExporter"), "my-exporter");
 
         // Acronyms (consecutive uppercase)
-        assert_eq!(AstDiscovery::camel_to_kebab("ReEDSParser"), "reeds-parser");
-        assert_eq!(AstDiscovery::camel_to_kebab("XMLParser"), "xml-parser");
-        assert_eq!(AstDiscovery::camel_to_kebab("HTTPClient"), "http-client");
+        assert_eq!(camel_to_kebab("ReEDSParser"), "reeds-parser");
+        assert_eq!(camel_to_kebab("XMLParser"), "xml-parser");
+        assert_eq!(camel_to_kebab("HTTPClient"), "http-client");
 
         // Single word
-        assert_eq!(AstDiscovery::camel_to_kebab("Parser"), "parser");
-        assert_eq!(AstDiscovery::camel_to_kebab("Reeds"), "reeds");
+        assert_eq!(camel_to_kebab("Parser"), "parser");
+        assert_eq!(camel_to_kebab("Reeds"), "reeds");
 
         // All uppercase acronym
-        assert_eq!(AstDiscovery::camel_to_kebab("HTTP"), "http");
-        assert_eq!(AstDiscovery::camel_to_kebab("API"), "api");
+        assert_eq!(camel_to_kebab("HTTP"), "http");
+        assert_eq!(camel_to_kebab("API"), "api");
     }
 
     #[test]
     fn test_snake_to_kebab() {
-        assert_eq!(
-            AstDiscovery::snake_to_kebab("add_pcm_defaults"),
-            "add-pcm-defaults"
-        );
-        assert_eq!(AstDiscovery::snake_to_kebab("break_gens"), "break-gens");
-        assert_eq!(AstDiscovery::snake_to_kebab("simple"), "simple");
-        assert_eq!(AstDiscovery::snake_to_kebab("a_b_c"), "a-b-c");
+        assert_eq!(snake_to_kebab("add_pcm_defaults"), "add-pcm-defaults");
+        assert_eq!(snake_to_kebab("break_gens"), "break-gens");
+        assert_eq!(snake_to_kebab("simple"), "simple");
+        assert_eq!(snake_to_kebab("a_b_c"), "a-b-c");
     }
 
     #[test]

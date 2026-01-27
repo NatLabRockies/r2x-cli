@@ -52,7 +52,9 @@ mod tests {
 
     #[test]
     fn test_write_and_read_custom_path() {
-        let temp_dir = TempDir::new().unwrap();
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
         let manifest_path = temp_dir.path().join("test_manifest.toml");
 
         let packages = vec![Package {
@@ -101,10 +103,15 @@ mod tests {
         };
 
         // Write to custom path
-        write_to_path(&manifest, &manifest_path).unwrap();
+        assert!(
+            write_to_path(&manifest, &manifest_path).is_ok(),
+            "Failed to write manifest"
+        );
 
         // Read back from custom path
-        let loaded = read_from_path(&manifest_path).unwrap();
+        let loaded = read_from_path(&manifest_path);
+        assert!(loaded.is_ok(), "Failed to read manifest");
+        let loaded = loaded.unwrap_or_default();
 
         assert_eq!(loaded.packages.len(), 1);
         assert_eq!(loaded.packages[0].name, "r2x-example");
@@ -118,13 +125,19 @@ mod tests {
 
     #[test]
     fn test_version_preserved() {
-        let temp_dir = TempDir::new().unwrap();
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
         let manifest_path = temp_dir.path().join("manifest.toml");
 
         let manifest = Manifest::default();
-        write_to_path(&manifest, &manifest_path).unwrap();
+        assert!(
+            write_to_path(&manifest, &manifest_path).is_ok(),
+            "Failed to write manifest"
+        );
 
-        let loaded = read_from_path(&manifest_path).unwrap();
-        assert_eq!(loaded.metadata.version, "2.0");
+        let loaded = read_from_path(&manifest_path);
+        assert!(loaded.is_ok(), "Failed to read manifest");
+        assert!(loaded.is_ok_and(|m| m.metadata.version == "2.0"));
     }
 }

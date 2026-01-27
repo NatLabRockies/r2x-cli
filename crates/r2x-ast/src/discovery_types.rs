@@ -1,9 +1,52 @@
 //! Local types for AST-based plugin discovery
 //!
-//! These types are used internally by the r2x-ast crate for discovery
-//! and are converted to the new manifest types when stored.
+//! This module defines AST-specific types and re-exports common execution types
+//! from r2x_manifest to avoid duplication.
+//!
+//! ## Re-exported types (from r2x_manifest::execution_types)
+//!
+//! - `PluginKind` - Plugin type enumeration
+//! - `InvocationSpec` - How to construct and invoke a plugin
+//! - `ImplementationType` - Class or Function
+//! - `ArgumentSpec` - Argument specification
+//! - `IOContract` - Input/output contract
+//! - `IOSlot` - I/O slot type
+//! - `ResourceSpec` - Resource requirements
+//! - `StoreSpec` - Data store specification
+//! - `StoreMode` - Data store mode
+//! - `UpgradeSpec` - Upgrade specification
+//!
+//! ## Local types (AST-specific)
+//!
+//! - `EntryPointInfo` - Entry point parsed from entry_points.txt
+//! - `DiscoveredPlugin` - Plugin discovered via AST analysis
+//! - `ConfigSpec` - Configuration specification (with ConfigField)
+//! - `ConfigField` - Configuration field (uses Vec<String> for types)
+//! - `DecoratorRegistration` - Function registration via decorator
+//! - `FunctionSignature` - Complete function signature
+//! - `FunctionParameter` - Single function parameter
+//! - `VarArgType` - Variable argument type
 
 use serde::{Deserialize, Serialize};
+
+// Re-export common types from r2x_manifest::execution_types
+// Note: ResourceSpec and ConfigSpec are NOT re-exported because they have
+// different field structures (AST uses ConfigField with types: Vec<String>,
+// execution uses ExecConfigField with annotation: Option<String>)
+pub use r2x_manifest::{
+    ArgumentSpec, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind, StoreMode,
+    StoreSpec, UpgradeSpec,
+};
+
+/// Resource requirements (config and data store)
+///
+/// Note: This is an AST-specific version that uses the local ConfigSpec.
+/// For execution, see r2x_manifest::ResourceSpec.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceSpec {
+    pub store: Option<StoreSpec>,
+    pub config: Option<ConfigSpec>,
+}
 
 /// Entry point information parsed from entry_points.txt
 ///
@@ -98,91 +141,10 @@ pub struct DiscoveredPlugin {
     pub tags: Vec<String>,
 }
 
-/// Plugin kind/type enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum PluginKind {
-    Parser,
-    Exporter,
-    Modifier,
-    Upgrader,
-    Utility,
-    Translation,
-}
-
-/// How to construct and invoke a plugin
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InvocationSpec {
-    pub implementation: ImplementationType,
-    pub method: Option<String>,
-    #[serde(default)]
-    pub constructor: Vec<ArgumentSpec>,
-    #[serde(default)]
-    pub call: Vec<ArgumentSpec>,
-}
-
-/// Implementation type for plugins
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ImplementationType {
-    Class,
-    Function,
-}
-
-/// Argument specification for constructor or call
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArgumentSpec {
-    pub name: String,
-    pub annotation: Option<String>,
-    pub default: Option<String>,
-    pub required: bool,
-}
-
-/// Input/output contract for a plugin
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IOContract {
-    #[serde(default)]
-    pub consumes: Vec<IOSlot>,
-    #[serde(default)]
-    pub produces: Vec<IOSlot>,
-}
-
-/// I/O slot type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum IOSlot {
-    System,
-    ConfigFile,
-    StoreFolder,
-    File,
-    Folder,
-    Data,
-}
-
-/// Resource requirements (config and data store)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceSpec {
-    pub store: Option<StoreSpec>,
-    pub config: Option<ConfigSpec>,
-}
-
-/// Data store specification
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoreSpec {
-    pub mode: StoreMode,
-    pub path: Option<String>,
-}
-
-/// Data store mode
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum StoreMode {
-    Folder,
-    Manifest,
-    Inline,
-}
-
-/// Configuration specification
+/// Configuration specification (AST-specific version with ConfigField)
+///
+/// Note: This differs from r2x_manifest::ConfigSpec which uses ExecConfigField.
+/// This version uses ConfigField with `types: Vec<String>` for union type support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigSpec {
     pub module: String,
@@ -191,7 +153,10 @@ pub struct ConfigSpec {
     pub fields: Vec<ConfigField>,
 }
 
-/// Configuration field specification
+/// Configuration field specification (AST-specific)
+///
+/// This version supports union types via `types: Vec<String>` which is
+/// needed during AST discovery. For runtime execution, see ExecConfigField.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigField {
     pub name: String,
@@ -201,14 +166,6 @@ pub struct ConfigField {
     pub required: bool,
     /// Description extracted from Field(description="...")
     pub description: Option<String>,
-}
-
-/// Upgrade specification for upgrader plugins
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpgradeSpec {
-    pub version_strategy_json: Option<String>,
-    pub version_reader_json: Option<String>,
-    pub upgrade_steps_json: Option<String>,
 }
 
 /// Function registration via decorator

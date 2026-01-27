@@ -69,7 +69,7 @@ fn default_method_for_kind(kind: &PluginKind) -> Option<String> {
         PluginKind::Translation => Some("run".to_string()),
         PluginKind::Upgrader => Some("run".to_string()),
         PluginKind::Modifier => Some("run".to_string()),
-        _ => None,
+        PluginKind::Utility => None,
     }
 }
 

@@ -454,48 +454,51 @@ mod tests {
 
     #[test]
     fn test_extract_simple_fields() {
-        let source = r#"
+        let source = r"
 class MyConfig(BaseModel):
     name: str
     count: int = 10
     enabled: bool = True
-"#;
+";
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "MyConfig").unwrap();
+        let fields = extractor.extract(source, "MyConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
         assert!(!fields.is_empty());
 
-        let name_field = fields.get("name").unwrap();
-        assert_eq!(name_field.field_type, FieldType::Str);
-        assert!(name_field.required);
+        let name_field = fields.get("name");
+        assert!(name_field.is_some_and(|f| f.field_type == FieldType::Str && f.required));
 
-        let count_field = fields.get("count").unwrap();
-        assert_eq!(count_field.field_type, FieldType::Int);
-        assert!(!count_field.required);
-        assert_eq!(count_field.default, Some(DefaultValue::Int(10)));
+        let count_field = fields.get("count");
+        assert!(count_field.is_some_and(|f| f.field_type == FieldType::Int
+            && !f.required
+            && f.default == Some(DefaultValue::Int(10))));
     }
 
     #[test]
     fn test_extract_field_constraints() {
-        let source = r#"
+        let source = r"
 class MyConfig(BaseModel):
     threshold: float = Field(ge=0.0, le=1.0)
     name: str = Field(min_length=1, max_length=50)
-"#;
+";
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "MyConfig").unwrap();
+        let fields = extractor.extract(source, "MyConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
-        let threshold = fields.get("threshold").unwrap();
-        assert_eq!(threshold.constraints.len(), 2);
-        assert!(threshold.constraints.contains(&Constraint::Ge(0.0)));
-        assert!(threshold.constraints.contains(&Constraint::Le(1.0)));
+        let threshold = fields.get("threshold");
+        assert!(threshold.is_some_and(|t| t.constraints.len() == 2
+            && t.constraints.contains(&Constraint::Ge(0.0))
+            && t.constraints.contains(&Constraint::Le(1.0))));
 
-        let name = fields.get("name").unwrap();
-        assert_eq!(name.constraints.len(), 2);
-        assert!(name.constraints.contains(&Constraint::MinLen(1)));
-        assert!(name.constraints.contains(&Constraint::MaxLen(50)));
+        let name = fields.get("name");
+        assert!(name.is_some_and(|n| n.constraints.len() == 2
+            && n.constraints.contains(&Constraint::MinLen(1))
+            && n.constraints.contains(&Constraint::MaxLen(50))));
     }
 
     #[test]
@@ -506,65 +509,66 @@ class MyConfig(BaseModel):
 "#;
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "MyConfig").unwrap();
+        let fields = extractor.extract(source, "MyConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
-        let mode = fields.get("mode").unwrap();
-        assert!(mode.enum_values.is_some());
-        let values = mode.enum_values.as_ref().unwrap();
-        assert_eq!(values.len(), 3);
-        assert!(values.iter().any(|v| v.as_ref() == "fast"));
-        assert!(values.iter().any(|v| v.as_ref() == "slow"));
-        assert!(values.iter().any(|v| v.as_ref() == "balanced"));
+        let mode = fields.get("mode");
+        assert!(mode.is_some_and(|m| m.enum_values.as_ref().is_some_and(|values| values.len() == 3
+            && values.iter().any(|v| v.as_ref() == "fast")
+            && values.iter().any(|v| v.as_ref() == "slow")
+            && values.iter().any(|v| v.as_ref() == "balanced"))));
     }
 
     #[test]
     fn test_extract_list_type() {
-        let source = r#"
+        let source = r"
 class MyConfig(BaseModel):
     items: List[str] = []
-"#;
+";
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "MyConfig").unwrap();
+        let fields = extractor.extract(source, "MyConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
-        let items = fields.get("items").unwrap();
-        assert_eq!(items.field_type, FieldType::Array);
-        assert_eq!(items.items.as_ref().map(|s| s.as_ref()), Some("str"));
+        let items = fields.get("items");
+        assert!(items.is_some_and(|i| i.field_type == FieldType::Array
+            && i.items.as_ref().map(|s| s.as_ref()) == Some("str")));
     }
 
     #[test]
     fn test_extract_optional_type() {
-        let source = r#"
+        let source = r"
 class MyConfig(BaseModel):
     optional_value: Optional[int] = None
-"#;
+";
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "MyConfig").unwrap();
+        let fields = extractor.extract(source, "MyConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
-        let optional = fields.get("optional_value").unwrap();
-        assert_eq!(optional.field_type, FieldType::Int);
-        assert!(!optional.required);
+        let optional = fields.get("optional_value");
+        assert!(optional.is_some_and(|o| o.field_type == FieldType::Int && !o.required));
     }
 
     #[test]
     fn test_extract_nested_type() {
-        let source = r#"
+        let source = r"
 class MyConfig(BaseModel):
     database: DatabaseConfig
-"#;
+";
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "MyConfig").unwrap();
+        let fields = extractor.extract(source, "MyConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
-        let database = fields.get("database").unwrap();
-        assert_eq!(database.field_type, FieldType::Object);
-        assert!(database.nested.is_some());
-        let nested = database.nested.as_ref().unwrap();
-        assert_eq!(
-            nested.class.as_ref().map(|s| s.as_ref()),
-            Some("DatabaseConfig")
-        );
+        let database = fields.get("database");
+        assert!(database.is_some_and(|d| d.field_type == FieldType::Object
+            && d.nested.as_ref().is_some_and(|n| n.class.as_ref().map(|s| s.as_ref())
+                == Some("DatabaseConfig"))));
     }
 
     #[test]
@@ -587,7 +591,9 @@ class PCMDefaultsConfig(PluginConfig):
 "#;
 
         let extractor = SchemaExtractor::new();
-        let fields = extractor.extract(source, "PCMDefaultsConfig").unwrap();
+        let fields = extractor.extract(source, "PCMDefaultsConfig");
+        assert!(fields.is_ok());
+        let fields = fields.unwrap_or_default();
 
         eprintln!(
             "Extracted fields: {:?}",
@@ -604,8 +610,10 @@ class PCMDefaultsConfig(PluginConfig):
             "Should have pcm_defaults_override field"
         );
 
-        let override_field = fields.get("pcm_defaults_override").unwrap();
-        assert_eq!(override_field.field_type, FieldType::Bool);
-        assert!(!override_field.required); // Has default value
+        let override_field = fields.get("pcm_defaults_override");
+        assert!(
+            override_field.is_some_and(|f| f.field_type == FieldType::Bool && !f.required),
+            "pcm_defaults_override should be bool and not required"
+        );
     }
 }
