@@ -376,164 +376,57 @@ fn get_compiled_python_version() -> String {
 /// This provides better error messages than the cryptic dyld errors on macOS
 /// or DLL loading errors on Windows.
 fn check_python_library_available() -> Result<(), BridgeError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        // On macOS, try to find libpython in common locations
         let python_version = get_compiled_python_version();
-        let lib_name = format!("libpython{}.dylib", python_version);
 
-        let search_paths = [
-            // Homebrew locations
-            "/opt/homebrew/lib",
-            "/usr/local/lib",
-            // Common Python framework locations
-            "/Library/Frameworks/Python.framework/Versions/Current/lib",
-        ];
+        #[cfg(target_os = "macos")]
+        let (lib_names, search_paths, env_var) = (
+            vec![format!("libpython{}.dylib", python_version)],
+            &[
+                "/opt/homebrew/lib",
+                "/usr/local/lib",
+                "/Library/Frameworks/Python.framework/Versions/Current/lib",
+            ][..],
+            "DYLD_LIBRARY_PATH",
+        );
 
-        // Check DYLD_LIBRARY_PATH first
-        if let Ok(paths) = env::var("DYLD_LIBRARY_PATH") {
-            for path in paths.split(':') {
-                let lib_path = PathBuf::from(path).join(&lib_name);
-                if lib_path.exists() {
-                    logger::debug(&format!("Found Python library at: {}", lib_path.display()));
-                    return Ok(());
-                }
-            }
-        }
+        #[cfg(target_os = "linux")]
+        let (lib_names, search_paths, env_var) = (
+            vec![
+                format!("libpython{}.so", python_version),
+                format!("libpython{}.so.1.0", python_version),
+            ],
+            &[
+                "/usr/lib",
+                "/usr/lib64",
+                "/usr/local/lib",
+                "/usr/local/lib64",
+            ][..],
+            "LD_LIBRARY_PATH",
+        );
 
-        // Check standard locations
-        for search_path in &search_paths {
-            let lib_path = PathBuf::from(search_path).join(&lib_name);
-            if lib_path.exists() {
-                logger::debug(&format!("Found Python library at: {}", lib_path.display()));
+        // Check environment variable paths first
+        if let Ok(paths) = env::var(env_var) {
+            if find_lib_in_paths(paths.split(':'), &lib_names) {
                 return Ok(());
             }
         }
 
-        // Try to find Python via uv (this works regardless of HOME setting)
-        if let Ok(output) = Command::new("uv")
-            .args(["python", "find", &python_version])
-            .output()
-        {
-            if output.status.success() {
-                let python_path = String::from_utf8_lossy(&output.stdout);
-                let python_path = python_path.trim();
-                if let Some(parent) = PathBuf::from(python_path).parent() {
-                    // Python binary is in bin/, lib is in ../lib/
-                    let lib_dir = parent.parent().map(|p| p.join("lib")).unwrap_or_default();
-                    let lib_path = lib_dir.join(&lib_name);
-                    if lib_path.exists() {
-                        logger::debug(&format!(
-                            "Found Python library via uv: {}",
-                            lib_path.display()
-                        ));
-                        // Set DYLD_LIBRARY_PATH to help the dynamic linker
-                        if let Some(existing) = env::var_os("DYLD_LIBRARY_PATH") {
-                            let mut paths = env::split_paths(&existing).collect::<Vec<_>>();
-                            paths.insert(0, lib_dir.clone());
-                            if let Ok(new_path) = env::join_paths(&paths) {
-                                env::set_var("DYLD_LIBRARY_PATH", new_path);
-                            }
-                        } else {
-                            env::set_var("DYLD_LIBRARY_PATH", &lib_dir);
-                        }
-                        logger::debug(&format!(
-                            "Set DYLD_LIBRARY_PATH to include: {}",
-                            lib_dir.display()
-                        ));
-                        return Ok(());
-                    }
-                }
-            }
+        // Check standard system locations
+        if find_lib_in_paths(search_paths.iter().copied(), &lib_names) {
+            return Ok(());
         }
 
-        // Library not found in expected locations, but don't fail -
-        // let PyO3 try to load it via rpath or other mechanisms.
-        // The binary may have been fixed with install_name_tool to use @rpath.
-        logger::debug(&format!(
-            "Python library {} not found in standard locations, relying on rpath",
-            lib_name
-        ));
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, check common locations
-        let python_version = get_compiled_python_version();
-        let lib_names = [
-            format!("libpython{}.so", python_version),
-            format!("libpython{}.so.1.0", python_version),
-        ];
-
-        let search_paths = [
-            "/usr/lib",
-            "/usr/lib64",
-            "/usr/local/lib",
-            "/usr/local/lib64",
-        ];
-
-        // Check LD_LIBRARY_PATH first
-        if let Ok(paths) = env::var("LD_LIBRARY_PATH") {
-            for path in paths.split(':') {
-                for lib_name in &lib_names {
-                    let lib_path = PathBuf::from(path).join(lib_name);
-                    if lib_path.exists() {
-                        logger::debug(&format!("Found Python library at: {}", lib_path.display()));
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        // Check standard locations
-        for search_path in &search_paths {
-            for lib_name in &lib_names {
-                let lib_path = PathBuf::from(search_path).join(lib_name);
-                if lib_path.exists() {
-                    logger::debug(&format!("Found Python library at: {}", lib_path.display()));
-                    return Ok(());
-                }
-            }
-        }
-
-        // Try to find Python via uv (this works regardless of HOME setting)
-        if let Ok(output) = Command::new("uv")
-            .args(["python", "find", &python_version])
-            .output()
-        {
-            if output.status.success() {
-                let python_path = String::from_utf8_lossy(&output.stdout);
-                let python_path = python_path.trim();
-                if let Some(parent) = PathBuf::from(python_path).parent() {
-                    // Python binary is in bin/, lib is in ../lib/
-                    let lib_dir = parent.parent().map(|p| p.join("lib")).unwrap_or_default();
-                    for lib_name in &lib_names {
-                        let lib_path = lib_dir.join(lib_name);
-                        if lib_path.exists() {
-                            logger::debug(&format!(
-                                "Found Python library via uv: {}",
-                                lib_path.display()
-                            ));
-                            // Set LD_LIBRARY_PATH to help the dynamic linker
-                            if let Some(existing) = env::var_os("LD_LIBRARY_PATH") {
-                                let mut paths = env::split_paths(&existing).collect::<Vec<_>>();
-                                paths.insert(0, lib_dir.clone());
-                                if let Ok(new_path) = env::join_paths(&paths) {
-                                    env::set_var("LD_LIBRARY_PATH", new_path);
-                                }
-                            } else {
-                                env::set_var("LD_LIBRARY_PATH", &lib_dir);
-                            }
-                            logger::debug(&format!(
-                                "Set LD_LIBRARY_PATH to include: {}",
-                                lib_dir.display()
-                            ));
-                            return Ok(());
-                        }
-                    }
-                }
-            }
+        // Try to find Python via uv and set up the library path
+        if let Some(lib_dir) = find_python_lib_via_uv(&python_version, &lib_names) {
+            prepend_to_env_path(env_var, &lib_dir);
+            logger::debug(&format!(
+                "Set {} to include: {}",
+                env_var,
+                lib_dir.display()
+            ));
+            return Ok(());
         }
 
         // Library not found in expected locations, but don't fail -
@@ -558,11 +451,76 @@ fn check_python_library_available() -> Result<(), BridgeError> {
     }
 }
 
+/// Search for any of the library names in the given paths.
+/// Returns true if found, logging the discovery.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn find_lib_in_paths<I, S>(paths: I, lib_names: &[String]) -> bool
+where
+    I: Iterator<Item = S>,
+    S: AsRef<str>,
+{
+    for path in paths {
+        for lib_name in lib_names {
+            let lib_path = PathBuf::from(path.as_ref()).join(lib_name);
+            if lib_path.exists() {
+                logger::debug(&format!("Found Python library at: {}", lib_path.display()));
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Try to find Python library via uv python find command.
+/// Returns the lib directory path if found.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn find_python_lib_via_uv(python_version: &str, lib_names: &[String]) -> Option<PathBuf> {
+    let output = Command::new("uv")
+        .args(["python", "find", python_version])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let python_path = String::from_utf8_lossy(&output.stdout);
+    let python_path = python_path.trim();
+
+    // Python binary is in bin/, lib is in ../lib/
+    let lib_dir = PathBuf::from(python_path).parent()?.parent()?.join("lib");
+
+    for lib_name in lib_names {
+        let lib_path = lib_dir.join(lib_name);
+        if lib_path.exists() {
+            logger::debug(&format!(
+                "Found Python library via uv: {}",
+                lib_path.display()
+            ));
+            return Some(lib_dir);
+        }
+    }
+
+    None
+}
+
+/// Prepend a directory to an environment path variable.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn prepend_to_env_path(env_var: &str, dir: &Path) {
+    if let Some(existing) = env::var_os(env_var) {
+        let mut paths = env::split_paths(&existing).collect::<Vec<_>>();
+        paths.insert(0, dir.to_path_buf());
+        if let Ok(new_path) = env::join_paths(&paths) {
+            env::set_var(env_var, new_path);
+        }
+    } else {
+        env::set_var(env_var, dir);
+    }
+}
+
 /// Setup Windows DLL search path for Python
 #[cfg(target_os = "windows")]
 fn setup_windows_dll_path() -> Result<(), BridgeError> {
-    use std::process::Command;
-
     let python_version = get_compiled_python_version();
     let dll_name = format!("python{}.dll", python_version.replace(".", ""));
 
