@@ -23,7 +23,10 @@ walkdir = "2.4"
 toml = { version = "0.9", features = ["preserve_order"] }
 r2x-manifest = { workspace = true }
 r2x-logger = { workspace = true }
-r2x-python = { workspace = true }
+r2x-config = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[lints]
+workspace = true

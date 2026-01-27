@@ -180,14 +180,14 @@ mod tests {
 
     #[test]
     fn test_extract_package_name_pypi() {
-        assert_eq!(extract_package_name("r2x-reeds").unwrap(), "r2x-reeds");
+        assert!(extract_package_name("r2x-reeds").is_ok_and(|s| s == "r2x-reeds"));
     }
 
     #[test]
     fn test_extract_package_name_git_url() {
-        assert_eq!(
-            extract_package_name("git+https://github.com/nrel/r2x-reeds@main").unwrap(),
-            "r2x-reeds"
+        assert!(
+            extract_package_name("git+https://github.com/nrel/r2x-reeds@main")
+                .is_ok_and(|s| s == "r2x-reeds")
         );
     }
 
@@ -203,13 +203,13 @@ mod tests {
     #[test]
     fn test_build_package_spec_pypi() {
         let result = build_package_spec("r2x-reeds", None, None, None, None);
-        assert_eq!(result.unwrap(), "r2x-reeds");
+        assert!(result.is_ok_and(|s| s == "r2x-reeds"));
     }
 
     #[test]
     fn test_build_package_spec_local_path() {
         let result = build_package_spec("./packages/r2x-reeds", None, None, None, None);
-        assert_eq!(result.unwrap(), "./packages/r2x-reeds");
+        assert!(result.is_ok_and(|s| s == "./packages/r2x-reeds"));
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
             None,
             None,
         );
-        assert!(result.unwrap().contains("@develop"));
+        assert!(result.is_ok_and(|s| s.contains("@develop")));
     }
 
     #[test]
@@ -253,8 +253,7 @@ mod tests {
     #[test]
     fn test_build_package_spec_with_tilde_path() {
         let result = build_package_spec("~/some/local/path", None, None, None, None);
-        let spec = result.unwrap();
         // The spec should be an absolute path (tilde expanded)
-        assert!(!spec.starts_with('~'));
+        assert!(result.is_ok_and(|s| !s.starts_with('~')));
     }
 }

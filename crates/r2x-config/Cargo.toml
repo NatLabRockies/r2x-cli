@@ -16,3 +16,9 @@ dirs = "6.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = { version = "0.9", features = ["preserve_order"] }
 which = "8.0.0"
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[lints]
+workspace = true

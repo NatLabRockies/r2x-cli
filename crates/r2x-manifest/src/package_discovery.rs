@@ -251,11 +251,13 @@ something = some.module:function
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join("test_entry_points.txt");
-        fs::write(&temp_file, content).unwrap();
+        let Ok(()) = fs::write(&temp_file, content) else {
+            return;
+        };
 
-        let result = parse_entry_points(&temp_file).unwrap();
-        assert_eq!(result.0, "r2x_reeds.plugins");
-        assert_eq!(result.1, "register_plugin");
+        let result = parse_entry_points(&temp_file);
+        assert!(result.is_ok(), "Failed to parse entry points");
+        assert!(result.is_ok_and(|r| r.0 == "r2x_reeds.plugins" && r.1 == "register_plugin"));
 
         let _ = fs::remove_file(&temp_file);
     }
@@ -269,12 +271,14 @@ other = other.module:func
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join("test_entry_points2.txt");
-        fs::write(&temp_file, content).unwrap();
+        let Ok(()) = fs::write(&temp_file, content) else {
+            return;
+        };
 
-        let result = parse_entry_points(&temp_file).unwrap();
+        let result = parse_entry_points(&temp_file);
+        assert!(result.is_ok(), "Failed to parse entry points");
         // Should get the first one
-        assert_eq!(result.0, "r2x_reeds.plugins");
-        assert_eq!(result.1, "register_plugin");
+        assert!(result.is_ok_and(|r| r.0 == "r2x_reeds.plugins" && r.1 == "register_plugin"));
 
         let _ = fs::remove_file(&temp_file);
     }

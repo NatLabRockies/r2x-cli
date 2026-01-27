@@ -51,3 +51,6 @@ r2x-logger = { workspace = true }
 assert_cmd = "2.1"
 predicates = "3.0"
 tempfile = "3.8"
+
+[lints]
+workspace = true

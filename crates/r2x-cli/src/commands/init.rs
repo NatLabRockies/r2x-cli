@@ -97,7 +97,7 @@ pub fn handle_init(filename: Option<String>, _opts: GlobalOpts) {
                 target_filename,
                 "[y/n] ›".dimmed()
             );
-            io::stdout().flush().unwrap();
+            let _ = io::stdout().flush();
 
             let mut response = String::new();
             if io::stdin().read_line(&mut response).is_ok() {

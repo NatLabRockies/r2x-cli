@@ -980,7 +980,7 @@ impl PluginExtractor {
         let description = extract_description_from_field(definition);
 
         let default = default.and_then(|value| {
-            let cleaned = value.split('#').next().unwrap().trim();
+            let cleaned = value.split('#').next().unwrap_or("").trim();
             if cleaned.is_empty() {
                 None
             } else {

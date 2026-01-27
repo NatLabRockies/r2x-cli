@@ -17,7 +17,13 @@ fmt:
 	{{CARGO}} fmt --all
 
 clippy:
-	{{CARGO}} clippy --workspace --all-targets
+	{{CARGO}} clippy --workspace --all-targets --all-features
+
+clippy-strict:
+	{{CARGO}} clippy --workspace --all-targets --all-features -- -D warnings
+
+clippy-fix:
+	{{CARGO}} clippy --workspace --all-targets --all-features --fix --allow-dirty --allow-staged
 
 lint: fmt clippy
 

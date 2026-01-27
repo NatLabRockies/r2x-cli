@@ -1,5 +1,7 @@
 fn main() {
-    let target = std::env::var("TARGET").expect("TARGET not set");
+    let Ok(target) = std::env::var("TARGET") else {
+        return;
+    };
 
     // Add rpath for finding bundled libraries next to the executable
     if target.contains("apple-darwin") {

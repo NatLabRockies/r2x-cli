@@ -111,7 +111,7 @@ impl Bridge {
         pyo3::Python::attach(|py| {
             let site = PyModule::import(py, "site")
                 .map_err(|e| BridgeError::Python(format!("Failed to import site module: {}", e)))?;
-            site.call_method1("addsitedir", (site_packages.to_str().unwrap(),))
+            site.call_method1("addsitedir", (site_packages.to_string_lossy().as_ref(),))
                 .map_err(|e| BridgeError::Python(format!("Failed to add site directory: {}", e)))?;
             Ok::<(), BridgeError>(())
         })?;
@@ -235,8 +235,12 @@ def _r2x_cache_path_override():
             let code_cstr = std::ffi::CString::new(patch_code).map_err(|e| {
                 BridgeError::Python(format!("Failed to prepare cache override script: {}", e))
             })?;
-            let filename = std::ffi::CString::new("r2x_cache_patch.py").unwrap();
-            let module_name = std::ffi::CString::new("r2x_cache_patch").unwrap();
+            let filename = std::ffi::CString::new("r2x_cache_patch.py").map_err(|e| {
+                BridgeError::Python(format!("Failed to create filename: {}", e))
+            })?;
+            let module_name = std::ffi::CString::new("r2x_cache_patch").map_err(|e| {
+                BridgeError::Python(format!("Failed to create module name: {}", e))
+            })?;
             let patch_module = PyModule::from_code(
                 py,
                 code_cstr.as_c_str(),

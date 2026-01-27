@@ -74,9 +74,7 @@ impl SyncEngine {
 
     /// Take ownership of the manifest
     pub fn into_manifest(self) -> Manifest {
-        Arc::try_unwrap(self.manifest)
-            .map(|lock| lock.into_inner())
-            .unwrap_or_else(|arc| arc.read().clone())
+        Arc::try_unwrap(self.manifest).map_or_else(|arc| arc.read().clone(), |lock| lock.into_inner())
     }
 
     /// Sync packages - HOT PATH
@@ -95,7 +93,7 @@ impl SyncEngine {
         // 2. Diff with read lock only
         let changes = {
             let manifest = self.manifest.read();
-            self.compute_changes(&manifest, &packages_with_hashes)
+            Self::compute_changes(&manifest, &packages_with_hashes)
         };
 
         // 3. Count results
@@ -113,7 +111,7 @@ impl SyncEngine {
         // 4. Apply with brief write lock
         if !changes.is_empty() {
             let mut manifest = self.manifest.write();
-            self.apply_changes(&mut manifest, changes);
+            Self::apply_changes(&mut manifest, changes);
             manifest.rebuild_indexes();
         }
 
@@ -127,7 +125,7 @@ impl SyncEngine {
     }
 
     /// Fast diff using pre-computed hashes
-    fn compute_changes(&self, old: &Manifest, new: &[Package]) -> Vec<Change> {
+    fn compute_changes(old: &Manifest, new: &[Package]) -> Vec<Change> {
         new.par_iter()
             .filter_map(|new_pkg| match old.get_package(&new_pkg.name) {
                 Some(old_pkg) if old_pkg.content_hash == new_pkg.content_hash => None,
@@ -138,7 +136,7 @@ impl SyncEngine {
     }
 
     /// Apply changes to the manifest
-    fn apply_changes(&self, manifest: &mut Manifest, changes: Vec<Change>) {
+    fn apply_changes(manifest: &mut Manifest, changes: Vec<Change>) {
         for change in changes {
             match change {
                 Change::Insert(pkg) => {

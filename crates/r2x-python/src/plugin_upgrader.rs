@@ -172,17 +172,19 @@ impl Bridge {
 
             let data_arg = if upgrade_is_system {
                 saw_system_step = true;
-                if system_data.is_none() {
+                let data_ref = if let Some(ref data) = system_data {
+                    data
+                } else {
                     let resolved =
                         resolve_system_json_path(&path_buf).map_err(BridgeError::Python)?;
                     let data = load_system_data(py, &loads, &resolved)?;
                     system_data = Some(data);
                     system_json_path = Some(resolved);
-                }
-                system_data
-                    .as_ref()
-                    .expect("system_data populated")
-                    .clone_ref(py)
+                    system_data.as_ref().ok_or_else(|| {
+                        BridgeError::Python("system_data should be populated".to_string())
+                    })?
+                };
+                data_ref.clone_ref(py)
             } else {
                 path_handle.clone_ref(py)
             };

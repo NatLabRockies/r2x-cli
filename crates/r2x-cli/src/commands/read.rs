@@ -1643,8 +1643,7 @@ mod tests {
             exec: Some(PathBuf::from("script.py")),
             interactive: false,
         };
-        assert!(cmd.exec.is_some());
-        assert_eq!(cmd.exec.unwrap(), PathBuf::from("script.py"));
+        assert!(cmd.exec.is_some_and(|e| e == PathBuf::from("script.py")));
         assert!(!cmd.interactive);
     }
 
