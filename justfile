@@ -8,6 +8,7 @@ export PYO3_PYTHON := `uv python find 3.12 2>/dev/null || uv python find 3.11 2>
 prepare-r2x:
 	{{CARGO}} build -p {{R2X_PKG}}
 	if [ "$(uname)" = "Darwin" ]; then install_name_tool -change @rpath/libiconv.2.dylib /usr/lib/libiconv.2.dylib {{R2X_BIN}}; fi
+	./scripts/fix_python_dylib.sh {{R2X_BIN}}
 
 smoke-r2x: prepare-r2x
 	{{R2X_BIN}} --help > /dev/null

@@ -1,10 +1,7 @@
+# Build setup steps for r2x CI
+# These steps are used as a reference for setting up the build environment.
+
 - name: Setup uv & Python
   uses: ./.github/actions/setup-uv-python
   with:
     python-version: "3.12"
-
-
-- name: Prepare Python shim
-  shell: bash
-  run: |
-    PY_VERSION=3.12 ./scripts/prepare_python_shim.sh

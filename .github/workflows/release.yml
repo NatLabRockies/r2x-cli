@@ -119,7 +119,8 @@ jobs:
         if: ${{ matrix.container }}
         shell: bash
         run: |
-          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel
+          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel epel-release
+          dnf install -y patchelf
       - name: enable windows longpaths
         if: runner.os == 'Windows'
         shell: bash
@@ -163,6 +164,63 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+
+      - name: Fix Python library paths in release binaries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "Fixing Python library paths in release archives..."
+
+          # Find all tar.gz and tar.xz archives produced by dist
+          for archive in target/distrib/*.tar.gz target/distrib/*.tar.xz; do
+            [ -f "$archive" ] || continue
+            echo "Processing archive: $archive"
+
+            # Create temp directory for extraction
+            TEMP_DIR=$(mktemp -d)
+
+            # Determine compression type and extract
+            if [[ "$archive" == *.tar.gz ]]; then
+              tar -xzf "$archive" -C "$TEMP_DIR"
+            else
+              tar -xJf "$archive" -C "$TEMP_DIR"
+            fi
+
+            # Find the r2x binary in the extracted files
+            R2X_BIN=$(find "$TEMP_DIR" -name "r2x" -type f -perm -u+x 2>/dev/null | head -1)
+
+            if [ -n "$R2X_BIN" ]; then
+              echo "Found r2x binary: $R2X_BIN"
+
+              # Run the fix script
+              ./scripts/fix_python_dylib.sh "$R2X_BIN" || true
+
+              # Repack the archive
+              ARCHIVE_NAME=$(basename "$archive")
+              ARCHIVE_DIR=$(dirname "$archive")
+
+              # Get the top-level directory name in the archive
+              TOP_DIR=$(ls "$TEMP_DIR" | head -1)
+
+              # Remove old archive and create new one
+              rm "$archive"
+
+              if [[ "$archive" == *.tar.gz ]]; then
+                tar -czf "$ARCHIVE_DIR/$ARCHIVE_NAME" -C "$TEMP_DIR" "$TOP_DIR"
+              else
+                tar -cJf "$ARCHIVE_DIR/$ARCHIVE_NAME" -C "$TEMP_DIR" "$TOP_DIR"
+              fi
+
+              echo "Repacked archive: $archive"
+            else
+              echo "No r2x binary found in archive, skipping"
+            fi
+
+            # Cleanup
+            rm -rf "$TEMP_DIR"
+          done
+
+          echo "Python library path fix complete"
 
       - id: cargo-dist
         name: Post-build
