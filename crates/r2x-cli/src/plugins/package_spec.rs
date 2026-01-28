@@ -1,3 +1,5 @@
+use crate::plugins::error::PluginError;
+
 /// Expand tilde (~) to home directory path (cross-platform)
 /// Works on Windows, macOS, and Linux
 fn expand_tilde(path: &str) -> String {
@@ -64,7 +66,7 @@ fn extract_name_from_pyproject(path: &str) -> Option<String> {
 }
 
 /// Extract package name from package specifier
-pub fn extract_package_name(package: &str) -> Result<String, String> {
+pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
     // Remove git+ prefix if present
     let pkg = package.strip_prefix("git+").unwrap_or(package);
 
@@ -82,8 +84,9 @@ pub fn extract_package_name(package: &str) -> Result<String, String> {
             .to_string())
     } else if pkg.contains('/') || pkg.contains('\\') {
         // For local paths, always read from pyproject.toml
-        extract_name_from_pyproject(pkg)
-            .ok_or_else(|| format!("Failed to extract package name from {}", package))
+        extract_name_from_pyproject(pkg).ok_or_else(|| {
+            PluginError::PackageSpec(format!("Failed to extract package name from {}", package))
+        })
     } else {
         // For PyPI packages, use as-is
         Ok(pkg.to_string())
@@ -98,7 +101,7 @@ pub fn build_package_spec(
     branch: Option<String>,
     tag: Option<String>,
     commit: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, PluginError> {
     // Expand tilde to home directory (cross-platform)
     let expanded_package = expand_tilde(package);
     let package = expanded_package.as_str();
@@ -106,7 +109,9 @@ pub fn build_package_spec(
     // 1. If it's a local path (starts with ./ or ../ or / or contains file separators like ./packages/)
     if package.starts_with("./") || package.starts_with("../") || package.starts_with('/') {
         if branch.is_some() || tag.is_some() || commit.is_some() || host.is_some() {
-            return Err("Cannot use git flags with local paths".to_string());
+            return Err(PluginError::PackageSpec(
+                "Cannot use git flags with local paths".to_string(),
+            ));
         }
         return Ok(package.to_string());
     }
@@ -121,10 +126,10 @@ pub fn build_package_spec(
         // Check if URL already has @ref
         if package.contains('@') && !package.starts_with("git@") {
             if branch.is_some() || tag.is_some() || commit.is_some() {
-                return Err(
+                return Err(PluginError::PackageSpec(
                     "Cannot use --branch/--tag/--commit with URL that already contains @ref"
                         .to_string(),
-                );
+                ));
             }
             return Ok(package.to_string());
         }
@@ -151,7 +156,9 @@ pub fn build_package_spec(
 
     // 4. Otherwise, treat as PyPI package name
     if branch.is_some() || tag.is_some() || commit.is_some() || host.is_some() {
-        return Err("Cannot use git flags with PyPI package name".to_string());
+        return Err(PluginError::PackageSpec(
+            "Cannot use git flags with PyPI package name".to_string(),
+        ));
     }
     Ok(package.to_string())
 }
@@ -176,7 +183,7 @@ fn add_git_ref(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plugins::package_spec::*;
 
     #[test]
     fn test_extract_package_name_pypi() {

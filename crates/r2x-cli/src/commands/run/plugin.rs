@@ -1,13 +1,13 @@
-use super::{PluginCommand, RunError};
+use crate::commands::run::{PluginCommand, RunError};
+use crate::common::GlobalOpts;
 use crate::help::show_plugin_help;
-use crate::logger;
 use crate::manifest_lookup::resolve_plugin_ref;
 use crate::package_verification;
-use crate::python_bridge::Bridge;
-use crate::r2x_manifest::Manifest;
-use crate::GlobalOpts;
 use colored::Colorize;
+use r2x_logger as logger;
+use r2x_manifest::types::Manifest;
 use r2x_python::plugin_invoker::PluginInvocationResult;
+use r2x_python::python_bridge::Bridge;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -73,7 +73,9 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
                 crate::manifest_lookup::PluginRefError::NotFound(_) => {
                     RunError::PluginNotFound(plugin_name.to_string())
                 }
-                _ => RunError::Config(err.to_string()),
+                crate::manifest_lookup::PluginRefError::Ambiguous { .. } => {
+                    RunError::Config(err.to_string())
+                }
             })
         }
     };
@@ -120,7 +122,10 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
         timings,
     } = invocation_result;
     let elapsed = start.elapsed();
-    let duration_msg = format!("({})", super::format_duration(elapsed).dimmed());
+    let duration_msg = format!(
+        "({})",
+        crate::commands::run::format_duration(elapsed).dimmed()
+    );
 
     // Clear plugin context after execution
     logger::set_current_plugin(None);
@@ -140,7 +145,7 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
         ));
 
         if let Some(timings) = timings {
-            super::print_plugin_timing_breakdown(&timings);
+            crate::commands::run::print_plugin_timing_breakdown(&timings);
         }
     }
 

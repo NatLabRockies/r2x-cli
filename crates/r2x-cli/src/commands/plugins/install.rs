@@ -1,13 +1,13 @@
-use super::setup_config;
-use crate::logger;
+use crate::commands::plugins::context::PluginContext;
 use crate::plugins::{
     discovery::{discover_and_register_entry_points_with_deps, DiscoveryOptions},
+    error::PluginError,
     install::get_package_info,
     package_spec::{build_package_spec, extract_package_name},
 };
-use crate::r2x_manifest::Manifest;
-use crate::GlobalOpts;
 use colored::Colorize;
+use r2x_logger as logger;
+use r2x_manifest::package_discovery::PackageDiscoverer;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -26,12 +26,9 @@ pub fn install_plugin(
     editable: bool,
     no_cache: bool,
     git_opts: GitOptions,
-    _opts: &GlobalOpts,
-) -> Result<(), String> {
+    ctx: &mut PluginContext,
+) -> Result<(), PluginError> {
     logger::debug("Loading configuration for plugin installation");
-
-    let (uv_path, venv_path, python_path) = setup_config()?;
-    logger::debug(&format!("Using venv: {}", venv_path));
 
     let total_start = std::time::Instant::now();
     let package_spec = build_package_spec(
@@ -46,11 +43,17 @@ pub fn install_plugin(
     if is_workspace_package(&package_spec)? {
         logger::info("Detected workspace repository, installing all members...");
         // Just install the workspace - uv will handle all members
-        run_pip_install(&uv_path, &python_path, &package_spec, editable, no_cache)?;
+        run_pip_install(
+            &ctx.uv_path,
+            &ctx.python_path,
+            &package_spec,
+            editable,
+            no_cache,
+        )?;
 
         // Now discover all packages with entry points (like sync command)
         logger::info("Discovering plugins from installed packages...");
-        return discover_all_installed_packages(&uv_path, &python_path, no_cache, total_start);
+        return discover_all_installed_packages(ctx, no_cache, total_start);
     }
 
     let package_name_for_query = extract_package_name(package)?;
@@ -59,10 +62,9 @@ pub fn install_plugin(
     let is_already_installed = if no_cache {
         None
     } else {
-        match get_package_info(&uv_path, &python_path, &package_name_for_query) {
+        match get_package_info(&ctx.uv_path, &ctx.python_path, &package_name_for_query) {
             Ok((version, _deps)) => {
-                let manifest = Manifest::load().unwrap_or_default();
-                let has_plugins = manifest.packages.iter().any(|pkg| {
+                let has_plugins = ctx.manifest.packages.iter().any(|pkg| {
                     pkg.name.as_ref() == package_name_for_query && !pkg.plugins.is_empty()
                 });
 
@@ -95,8 +97,14 @@ pub fn install_plugin(
     // Print status without spinner since we need interactive terminal for SSH prompts
     logger::info(&format!("Installing: {}", package));
     let start = std::time::Instant::now();
-    match run_pip_install(&uv_path, &python_path, &package_spec, editable, no_cache) {
-        Ok(_) => {
+    match run_pip_install(
+        &ctx.uv_path,
+        &ctx.python_path,
+        &package_spec,
+        editable,
+        no_cache,
+    ) {
+        Ok(()) => {
             logger::debug(&format!("pip install took: {:?}", start.elapsed()));
         }
         Err(e) => {
@@ -107,7 +115,7 @@ pub fn install_plugin(
 
     let start = std::time::Instant::now();
     let (package_version, dependencies) =
-        match get_package_info(&uv_path, &python_path, &package_name_for_query) {
+        match get_package_info(&ctx.uv_path, &ctx.python_path, &package_name_for_query) {
             Ok((version, deps)) => (version, deps),
             Err(e) => {
                 logger::debug(&format!("Failed to get package info: {}", e));
@@ -132,11 +140,12 @@ pub fn install_plugin(
 
     let start = std::time::Instant::now();
     let entry_count = discover_and_register_entry_points_with_deps(
-        &uv_path,
-        &python_path,
+        &ctx.locator,
+        Some(&ctx.venv_path),
+        &mut ctx.manifest,
         DiscoveryOptions {
             package: package.to_string(),
-            package_name_full: package_name_for_query.to_string(),
+            package_name_full: package_name_for_query.clone(),
             dependencies,
             package_version: package_version.clone(),
             no_cache,
@@ -159,7 +168,7 @@ pub fn install_plugin(
     Ok(())
 }
 
-pub fn show_install_help() -> Result<(), String> {
+pub fn show_install_help() -> Result<(), PluginError> {
     println!();
     println!("{}", "Install a plugin package".bold());
     println!();
@@ -203,7 +212,7 @@ fn run_pip_install(
     package: &str,
     editable: bool,
     no_cache: bool,
-) -> Result<(), String> {
+) -> Result<(), PluginError> {
     let mut install_args: Vec<String> = vec![
         "pip".to_string(),
         "install".to_string(),
@@ -247,16 +256,15 @@ fn run_pip_install(
         .status()
         .map_err(|e| {
             logger::error(&format!("Failed to run pip install: {}", e));
-            format!("Failed to run pip install: {}", e)
+            PluginError::Io(e)
         })?;
 
     if !status.success() {
         logger::error(&format!("pip install failed for package '{}'", package));
-        return Err(format!(
-            "pip install failed for package '{}': exit code {}",
-            package,
-            status.code().unwrap_or(-1)
-        ));
+        return Err(PluginError::CommandFailed {
+            command: format!("{} pip install {}", uv_path, package),
+            status: status.code(),
+        });
     }
 
     Ok(())
@@ -277,7 +285,7 @@ fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::t
 }
 
 /// Check if a package is a workspace (by detecting [tool.uv.workspace] in pyproject.toml)
-fn is_workspace_package(package_spec: &str) -> Result<bool, String> {
+fn is_workspace_package(package_spec: &str) -> Result<bool, PluginError> {
     // Only check for local paths or git URLs
     let is_local_path = package_spec.starts_with("./")
         || package_spec.starts_with("../")
@@ -296,8 +304,9 @@ fn is_workspace_package(package_spec: &str) -> Result<bool, String> {
             return Ok(false);
         }
 
-        let content = fs::read_to_string(&pyproject_path)
-            .map_err(|e| format!("Failed to read pyproject.toml: {}", e))?;
+        let content = fs::read_to_string(&pyproject_path).map_err(|e| {
+            PluginError::PackageSpec(format!("Failed to read pyproject.toml: {}", e))
+        })?;
 
         return Ok(content.contains("[tool.uv.workspace]"));
     }
@@ -312,54 +321,17 @@ fn is_workspace_package(package_spec: &str) -> Result<bool, String> {
 
 /// Discover all installed packages with r2x_plugin entry points
 fn discover_all_installed_packages(
-    uv_path: &str,
-    python_path: &str,
+    ctx: &mut PluginContext,
     no_cache: bool,
     total_start: std::time::Instant,
-) -> Result<(), String> {
-    // Use Python to query only packages with r2x_plugin entry points
-    let python_script = r#"
-import sys
-try:
-    from importlib.metadata import entry_points
-    eps = entry_points()
-    # Handle both dict and SelectableGroups API
-    if hasattr(eps, 'select'):
-        r2x_eps = eps.select(group='r2x_plugin')
-    else:
-        r2x_eps = eps.get('r2x_plugin', [])
-
-    # Get unique package names
-    packages = set()
-    for ep in r2x_eps:
-        # entry point value is like "module.submodule:function"
-        # we need to get the distribution/package name
-        if hasattr(ep, 'dist') and ep.dist:
-            packages.add(ep.dist.name)
-
-    for pkg in sorted(packages):
-        print(pkg)
-except Exception as e:
-    print(f"Error: {e}", file=sys.stderr)
-    sys.exit(1)
-"#;
-
-    let output = Command::new(python_path)
-        .arg("-c")
-        .arg(python_script)
-        .output()
-        .map_err(|e| format!("Failed to query r2x_plugin entry points: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to query entry points: {}", stderr));
-    }
-
-    let packages: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+) -> Result<(), PluginError> {
+    let discoverer =
+        PackageDiscoverer::new(ctx.locator.site_packages().to_path_buf()).map_err(|e| {
+            PluginError::Discovery(format!("Failed to initialize package discovery: {e}"))
+        })?;
+    let packages = discoverer
+        .discover_packages()
+        .map_err(|e| PluginError::Discovery(format!("Failed to discover packages: {e}")))?;
 
     if packages.is_empty() {
         logger::warn("No packages with r2x_plugin entry points found");
@@ -374,46 +346,57 @@ except Exception as e:
     let mut discovered_count = 0;
     let mut total_entry_points = 0;
 
-    for package_name in packages {
+    for package in packages {
+        let package_name = package.name.clone();
         logger::debug(&format!("Checking for plugins in: {}", package_name));
 
         // Get package info
         let (package_version, dependencies) =
-            match get_package_info(uv_path, python_path, &package_name) {
+            match get_package_info(&ctx.uv_path, &ctx.python_path, &package_name) {
                 Ok((version, deps)) => (version, deps),
                 Err(_) => continue,
             };
 
+        let source_path = package
+            .resolved_source_path
+            .as_ref()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .or_else(|| {
+                if package.is_editable {
+                    Some(package.location.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            });
+
         // Try to discover entry points
-        match discover_and_register_entry_points_with_deps(
-            uv_path,
-            python_path,
+        if let Ok(entry_count) = discover_and_register_entry_points_with_deps(
+            &ctx.locator,
+            Some(&ctx.venv_path),
+            &mut ctx.manifest,
             DiscoveryOptions {
                 package: package_name.clone(),
                 package_name_full: package_name.clone(),
                 dependencies,
                 package_version: package_version.clone(),
                 no_cache,
-                editable: false,
-                source_path: None,
+                editable: package.is_editable,
+                source_path,
             },
         ) {
-            Ok(entry_count) => {
-                if entry_count > 0 {
-                    let version_str = package_version.as_deref().unwrap_or("");
-                    let disp = if version_str.is_empty() {
-                        format!("{}", package_name.bold())
-                    } else {
-                        format!("{}=={}", package_name.bold(), version_str)
-                    };
-                    println!(" {} {}", "+".bold().green(), disp);
-                    discovered_count += 1;
-                    total_entry_points += entry_count;
-                }
+            if entry_count > 0 {
+                let version_str = package_version.as_deref().unwrap_or("");
+                let disp = if version_str.is_empty() {
+                    format!("{}", package_name.bold())
+                } else {
+                    format!("{}=={}", package_name.bold(), version_str)
+                };
+                println!(" {} {}", "+".bold().green(), disp);
+                discovered_count += 1;
+                total_entry_points += entry_count;
             }
-            Err(_) => {
-                // Not every package has r2x_plugin entry points, skip silently
-            }
+        } else {
+            // Not every package has r2x_plugin entry points, skip silently
         }
     }
 

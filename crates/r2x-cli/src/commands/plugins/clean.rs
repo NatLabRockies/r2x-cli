@@ -2,14 +2,13 @@ use std::process::Command;
 
 use colored::Colorize;
 
-use crate::logger;
-use crate::r2x_manifest::Manifest;
-use crate::GlobalOpts;
+use crate::plugins::error::PluginError;
+use r2x_logger as logger;
 
-use super::setup_config;
+use crate::commands::plugins::context::PluginContext;
 
-pub fn clean_manifest(yes: bool, _opts: &GlobalOpts) -> Result<(), String> {
-    let mut manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {e}"))?;
+pub fn clean_manifest(yes: bool, ctx: &mut PluginContext) -> Result<(), PluginError> {
+    let manifest = &mut ctx.manifest;
 
     if manifest.is_empty() {
         logger::warn("Manifest is empty.");
@@ -30,28 +29,23 @@ pub fn clean_manifest(yes: bool, _opts: &GlobalOpts) -> Result<(), String> {
         .map(|p| p.name.to_string())
         .collect();
 
-    let (uv_path, venv_path, _python_path) = setup_config()?;
-
     for package_name in &package_names {
-        uninstall_package(&uv_path, &venv_path, package_name);
+        uninstall_package(&ctx.uv_path, &ctx.python_path, package_name);
     }
 
-    manifest.packages.clear();
-    manifest
-        .save()
-        .map_err(|e| format!("Failed to save manifest: {e}"))?;
+    manifest.clear()?;
 
     println!("{}", format!("Removed {total} plugin(s)").dimmed());
     Ok(())
 }
 
-fn uninstall_package(uv_path: &str, venv_path: &str, package_name: &str) {
+fn uninstall_package(uv_path: &str, python_path: &str, package_name: &str) {
     logger::debug(&format!(
-        "Running: {uv_path} pip uninstall --python {venv_path} {package_name}"
+        "Running: {uv_path} pip uninstall --python {python_path} {package_name}"
     ));
 
     let output = Command::new(uv_path)
-        .args(["pip", "uninstall", "--python", venv_path, package_name])
+        .args(["pip", "uninstall", "--python", python_path, package_name])
         .output();
 
     match output {

@@ -1,9 +1,8 @@
-use crate::config_manager::Config;
-use crate::logger;
-use crate::plugins::AstDiscovery;
-use crate::r2x_manifest::Manifest;
-use crate::GlobalOpts;
+use crate::commands::plugins::context::PluginContext;
+use crate::plugins::error::PluginError;
 use colored::Colorize;
+use r2x_ast::AstDiscovery;
+use r2x_logger as logger;
 use std::path::PathBuf;
 
 /// Fast sync that re-discovers plugins using AST parsing
@@ -12,18 +11,10 @@ use std::path::PathBuf;
 /// 1. Uses source_uri from manifest directly (no directory scanning)
 /// 2. Loads config/manifest only once
 /// 3. Pure Rust AST parsing via ast-grep
-pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
+pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
     let total_start = std::time::Instant::now();
-
-    // Load config once
-    let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
-    let venv_path = config.get_venv_path();
-
-    // Load manifest once
-    let mut manifest = Manifest::load().map_err(|e| {
-        logger::error(&format!("Failed to load manifest: {}", e));
-        format!("Failed to load manifest: {}", e)
-    })?;
+    let venv_path = &ctx.venv_path;
+    let manifest = &mut ctx.manifest;
 
     if manifest.is_empty() {
         logger::warn("No plugins installed. Nothing to sync.");
@@ -64,7 +55,7 @@ pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
         let (ast_plugins, _decorators) = match AstDiscovery::discover_plugins(
             &package_path,
             &package_name,
-            Some(&venv_path),
+            Some(venv_path),
             Some(&version),
         ) {
             Ok(result) => result,
@@ -83,11 +74,8 @@ pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
             continue;
         }
 
-        // Convert and update manifest
-        let plugins: Vec<_> = ast_plugins
-            .into_iter()
-            .map(|p| p.to_manifest_plugin())
-            .collect();
+        // ast_plugins are already in manifest Plugin format
+        let plugins = ast_plugins;
 
         {
             let pkg = manifest.get_or_create_package(&package_name);
@@ -104,9 +92,7 @@ pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
     }
 
     // Save manifest once at the end
-    manifest
-        .save()
-        .map_err(|e| format!("Failed to save manifest: {}", e))?;
+    manifest.save()?;
 
     let elapsed_ms = total_start.elapsed().as_millis();
     println!(

@@ -3,20 +3,21 @@
 use crate::errors::BridgeError;
 use crate::plugin_invoker::PluginInvocationResult;
 use crate::plugin_regular::StdoutGuard;
-use crate::Bridge;
+use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
 use r2x_logger as logger;
 use r2x_manifest::runtime::RuntimeBindings;
-use r2x_manifest::PluginSpec;
+use r2x_manifest::types::Plugin;
 use std::path::{Path, PathBuf};
 
 impl Bridge {
+    #[allow(clippy::unused_self)] // kept for API consistency with other invoke methods
     pub(crate) fn invoke_upgrader_plugin(
         &self,
         target: &str,
         config_json: &str,
         runtime_bindings: Option<&RuntimeBindings>,
-        plugin_metadata: Option<&PluginSpec>,
+        plugin_metadata: Option<&Plugin>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
             let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
@@ -40,7 +41,7 @@ impl Bridge {
                 .map_err(|e| BridgeError::Python(format!("Config must be a JSON object: {}", e)))?
                 .clone();
 
-            let kwargs = self.build_kwargs(py, &config_dict, None, runtime_bindings)?;
+            let kwargs = Self::build_kwargs(py, &config_dict, None, runtime_bindings)?;
             let upgrader_class = module.getattr(callable_path).map_err(|e| {
                 BridgeError::Python(format!(
                     "Failed to get upgrader class '{}': {}",
@@ -93,19 +94,15 @@ impl Bridge {
     }
 }
 
-fn find_arg_value<'a>(plugin: &'a PluginSpec, name: &str) -> Option<&'a str> {
-    let upgrade = plugin.upgrade.as_ref()?;
-    match name {
-        "version_strategy" => upgrade.version_strategy_json.as_deref(),
-        "version_reader" => upgrade.version_reader_json.as_deref(),
-        "upgrade_steps" => upgrade.upgrade_steps_json.as_deref(),
-        _ => None,
-    }
+fn find_arg_value(_plugin: &Plugin, _name: &str) -> Option<&'static str> {
+    // Upgrade-specific metadata was removed in the manifest cleanup.
+    // Upgrader plugins now rely on their runtime configuration.
+    None
 }
 
 impl Bridge {
-    fn invoke_registered_steps<'py>(
-        instance: &pyo3::Bound<'py, pyo3::PyAny>,
+    fn invoke_registered_steps(
+        instance: &pyo3::Bound<'_, pyo3::PyAny>,
     ) -> Result<String, BridgeError> {
         let steps = instance
             .getattr("steps")
@@ -213,8 +210,7 @@ impl Bridge {
                     .map_err(|e| BridgeError::Python(format!("Failed to fetch error: {}", e)))?;
                 let err_text = err_obj
                     .str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|_| "<unknown error>".to_string());
+                    .map_or_else(|_| "<unknown error>".to_string(), |s| s.to_string());
                 return Err(BridgeError::Python(format!(
                     "Upgrade step execution failed: {}",
                     err_text
@@ -294,11 +290,7 @@ fn resolve_system_json_path(path: &Path) -> Result<PathBuf, String> {
         if let Ok(mut entries) = std::fs::read_dir(path) {
             while let Some(Ok(entry)) = entries.next() {
                 let entry_path = entry.path();
-                if entry_path
-                    .extension()
-                    .map(|ext| ext == "json")
-                    .unwrap_or(false)
-                {
+                if entry_path.extension().is_some_and(|ext| ext == "json") {
                     return Ok(entry_path);
                 }
             }

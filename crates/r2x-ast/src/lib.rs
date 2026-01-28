@@ -12,40 +12,40 @@
 pub mod decorator_scanner;
 pub mod discovery_types;
 pub mod entry_points;
-pub mod extractor;
 pub mod naming;
 pub mod package_cache;
 pub mod schema_extractor;
 
-use crate::entry_points::{
-    find_pyproject_toml_path, parse_all_entry_points, parse_pyproject_entry_points,
-};
+use crate::discovery_types::{ConfigField, ConfigSpec, DecoratorRegistration, EntryPointInfo};
+use crate::entry_points::{parser as entry_parser, pyproject as entry_pyproject};
 // Re-export for tests
 #[cfg(test)]
-use crate::entry_points::is_r2x_section;
+use crate::entry_points::parser::is_r2x_section;
 use crate::naming::{camel_to_kebab, find_matching_paren, snake_to_kebab};
 use crate::package_cache::PackageAstCache;
 use anyhow::{anyhow, Result};
 use ast_grep_language::Python;
 use r2x_logger as logger;
-use std::collections::HashMap;
+use r2x_manifest::types::{Parameter, Plugin, PluginType};
+use smallvec::SmallVec;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-
-// Re-export commonly used types (also used internally)
-pub use discovery_types::{
-    ArgumentSpec, ConfigField, ConfigSpec, DecoratorRegistration, DiscoveredPlugin, EntryPointInfo,
-    IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind, ResourceSpec, StoreMode,
-    StoreSpec, UpgradeSpec,
-};
-pub use schema_extractor::SchemaExtractor;
 
 type PythonAst = ast_grep_core::AstGrep<ast_grep_core::source::StrDoc<Python>>;
 
 struct CachedFile {
     content: String,
     ast: PythonAst,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedArgument {
+    name: String,
+    annotation: Option<String>,
+    default: Option<String>,
+    required: bool,
 }
 
 /// AST-based plugin discovery orchestrator
@@ -75,31 +75,29 @@ impl AstDiscovery {
         package_name_full: &str,
         venv_path: Option<&str>,
         _package_version: Option<&str>,
-    ) -> Result<(Vec<DiscoveredPlugin>, Vec<DecoratorRegistration>)> {
+    ) -> Result<(Vec<Plugin>, Vec<DecoratorRegistration>)> {
         let total_start = Instant::now();
         logger::debug(&format!("AST discovery started for: {}", package_name_full));
 
         let discovery_root = Self::resolve_discovery_root(package_path, package_name_full);
-        logger::debug(&format!("AST discovery root: {:?}", discovery_root));
+        logger::debug(&format!("AST discovery root: {}", discovery_root.display()));
 
         // Step 1: Check explicit entry points (entry_points.txt or pyproject.toml)
         let entry_start = Instant::now();
         let pyproject_entries =
             Self::find_pyproject_entry_points(package_path, &discovery_root, package_name_full);
-        let entry_point_entries = if !pyproject_entries.is_empty() {
-            pyproject_entries
-        } else {
+        let entry_point_entries = if pyproject_entries.is_empty() {
             match Self::find_entry_points_txt(package_path, package_name_full, venv_path) {
                 Ok(entry_points_path) => {
                     logger::debug(&format!(
-                        "Found entry_points.txt at: {:?}",
-                        entry_points_path
+                        "Found entry_points.txt at: {}",
+                        entry_points_path.display()
                     ));
 
                     let content = std::fs::read_to_string(&entry_points_path)
                         .map_err(|e| anyhow!("Failed to read entry_points.txt: {}", e))?;
 
-                    parse_all_entry_points(&content)
+                    entry_parser::parse_all_entry_points(&content)
                 }
                 Err(e) => {
                     logger::debug(&format!(
@@ -109,6 +107,8 @@ impl AstDiscovery {
                     Vec::new()
                 }
             }
+        } else {
+            pyproject_entries
         };
 
         logger::debug(&format!(
@@ -178,7 +178,7 @@ impl AstDiscovery {
                 Ok(plugin) => {
                     logger::debug(&format!(
                         "Discovered plugin: {} ({:?})",
-                        plugin.name, plugin.kind
+                        plugin.name, plugin.plugin_type
                     ));
                     plugins.push(plugin);
                 }
@@ -232,8 +232,7 @@ impl AstDiscovery {
         let path_name_matches = package_path
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name == normalized_name)
-            .unwrap_or(false);
+            .is_some_and(|name| name == normalized_name);
 
         if path_name_matches || package_path.join("__init__.py").exists() {
             return package_path.to_path_buf();
@@ -293,23 +292,25 @@ impl AstDiscovery {
         discovery_root: &Path,
         package_name_full: &str,
     ) -> Vec<EntryPointInfo> {
-        let pyproject_path = match find_pyproject_toml_path(package_path, discovery_root) {
-            Some(path) => path,
-            None => return Vec::new(),
-        };
+        let pyproject_path =
+            match entry_pyproject::find_pyproject_toml_path(package_path, discovery_root) {
+                Some(path) => path,
+                None => return Vec::new(),
+            };
 
         let content = match std::fs::read_to_string(&pyproject_path) {
             Ok(content) => content,
             Err(e) => {
                 logger::debug(&format!(
-                    "Failed to read pyproject.toml at {:?}: {}",
-                    pyproject_path, e
+                    "Failed to read pyproject.toml at {}: {}",
+                    pyproject_path.display(),
+                    e
                 ));
                 return Vec::new();
             }
         };
 
-        let entries = parse_pyproject_entry_points(&content);
+        let entries = entry_pyproject::parse_pyproject_entry_points(&content);
         if !entries.is_empty() {
             logger::debug(&format!(
                 "Parsed {} entry points from pyproject.toml for '{}'",
@@ -393,8 +394,9 @@ impl AstDiscovery {
         for candidate in &candidates {
             if candidate.exists() {
                 logger::debug(&format!(
-                    "Resolved source file for module '{}': {:?}",
-                    module, candidate
+                    "Resolved source file for module '{}': {}",
+                    module,
+                    candidate.display()
                 ));
                 return Some(candidate.clone());
             }
@@ -415,8 +417,9 @@ impl AstDiscovery {
         for candidate in &init_candidates {
             if candidate.exists() {
                 logger::debug(&format!(
-                    "Resolved source file for module '{}' (as package): {:?}",
-                    module, candidate
+                    "Resolved source file for module '{}' (as package): {}",
+                    module,
+                    candidate.display()
                 ));
                 return Some(candidate.clone());
             }
@@ -630,7 +633,7 @@ impl AstDiscovery {
         package_name: &str,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
         package_cache: &mut Option<PackageAstCache>,
-    ) -> Result<DiscoveredPlugin> {
+    ) -> Result<Plugin> {
         logger::debug(&format!(
             "Discovering direct entry point: {} = {}:{}",
             entry.name, entry.module, entry.symbol
@@ -642,24 +645,17 @@ impl AstDiscovery {
             .as_ref()
             .and_then(|source_path| Self::read_file_cached(file_cache, source_path));
 
-        // Determine implementation type based on symbol naming convention
-        let implementation = if entry.is_class() {
-            ImplementationType::Class
+        // Determine plugin type based on symbol naming convention
+        let plugin_type = if entry.is_class() {
+            PluginType::Class
         } else {
-            ImplementationType::Function
+            PluginType::Function
         };
 
-        // Infer plugin kind from section and symbol
-        let kind = entry.infer_kind();
-
-        // Build the fully qualified entry point
-        let full_entry = format!("{}.{}", entry.module, entry.symbol);
-
-        if matches!(implementation, ImplementationType::Class) {
+        if matches!(plugin_type, PluginType::Class) {
             let mut has_class = cached
                 .as_ref()
-                .map(|cached| Self::ast_has_class(&cached.ast, &entry.symbol))
-                .unwrap_or(false);
+                .is_some_and(|cached| Self::ast_has_class(&cached.ast, &entry.symbol));
 
             if !has_class {
                 if let Some(cached_file) = cached.as_ref() {
@@ -673,10 +669,9 @@ impl AstDiscovery {
                         {
                             source_file = Some(path.clone());
                             cached = Self::read_file_cached(file_cache, &path);
-                            has_class = cached
-                                .as_ref()
-                                .map(|cached| Self::ast_has_class(&cached.ast, &entry.symbol))
-                                .unwrap_or(false);
+                            has_class = cached.as_ref().is_some_and(|cached| {
+                                Self::ast_has_class(&cached.ast, &entry.symbol)
+                            });
                         }
                     }
                 }
@@ -698,8 +693,7 @@ impl AstDiscovery {
             // For functions, also check if it's re-exported and follow the import
             let has_function = cached
                 .as_ref()
-                .map(|cached| Self::ast_has_function(&cached.ast, &entry.symbol))
-                .unwrap_or(false);
+                .is_some_and(|cached| Self::ast_has_function(&cached.ast, &entry.symbol));
 
             if !has_function {
                 // Function not defined here, try to resolve from imports
@@ -721,51 +715,28 @@ impl AstDiscovery {
         }
 
         // Extract constructor/call arguments and config using direct file parsing
-        let (constructor_args, call_args, resources) =
+        let (call_args, config) =
             if let (Some(source_path), Some(cached)) = (source_file.as_ref(), cached.as_ref()) {
                 Self::extract_entry_metadata(
                     discovery_root,
                     source_path,
                     cached.as_ref(),
                     entry,
-                    &implementation,
+                    plugin_type,
                     file_cache,
                     package_cache,
                     package_name,
                 )
             } else {
-                (Vec::new(), Vec::new(), None)
+                (Vec::new(), None)
             };
 
-        // Determine the method to call based on plugin kind
-        let method = match (&kind, &implementation) {
-            (PluginKind::Parser, ImplementationType::Class) => Some("build_system".to_string()),
-            (PluginKind::Exporter, ImplementationType::Class) => Some("export".to_string()),
-            (PluginKind::Translation, ImplementationType::Class) => Some("run".to_string()),
-            _ => None,
-        };
-
-        // Build IO contract based on plugin kind
-        let io = Self::io_contract_for_kind(&kind);
-
-        let invocation = InvocationSpec {
-            implementation,
-            method,
-            constructor: constructor_args,
-            call: call_args,
-        };
-
-        Ok(DiscoveredPlugin {
-            name: entry.name.clone(),
-            kind,
-            entry: full_entry,
-            invocation,
-            io,
-            resources,
-            upgrade: None,
-            description: None,
-            tags: vec![entry.section.clone()],
-        })
+        Ok(Self::build_manifest_plugin(
+            entry,
+            plugin_type,
+            config.as_ref(),
+            &call_args,
+        ))
     }
 
     /// Read file content with caching to avoid re-reading the same file
@@ -791,60 +762,132 @@ impl AstDiscovery {
         source_path: &Path,
         cached: &CachedFile,
         entry: &EntryPointInfo,
-        implementation: &ImplementationType,
+        plugin_type: PluginType,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
         package_cache: &mut Option<PackageAstCache>,
         package_name: &str,
-    ) -> (Vec<ArgumentSpec>, Vec<ArgumentSpec>, Option<ResourceSpec>) {
-        let (constructor_args, call_args) = match implementation {
-            ImplementationType::Class => {
-                let args = Self::extract_class_init_params(&cached.ast, &entry.symbol);
-                (args, Vec::new())
-            }
-            ImplementationType::Function => {
-                let args = Self::extract_function_params(&cached.content, &entry.symbol);
-                (Vec::new(), args)
-            }
+    ) -> (Vec<ParsedArgument>, Option<ConfigSpec>) {
+        let call_args = if matches!(plugin_type, PluginType::Function) {
+            Self::extract_function_params(&cached.content, &entry.symbol)
+        } else {
+            Vec::new()
         };
 
         // Try to extract config class from type hints or class generic
-        let config = Self::extract_config_with_fields(
+        let mut config = Self::extract_config_with_fields(
             discovery_root,
             source_path,
             cached,
             entry,
-            implementation,
+            plugin_type,
             file_cache,
             package_cache,
             package_name,
         );
 
         // For functions without a config class, convert call_args to ConfigField format
-        let resources = if let Some(c) = config {
-            Some(ResourceSpec {
-                store: None,
-                config: Some(c),
-            })
-        } else if matches!(implementation, ImplementationType::Function) && !call_args.is_empty() {
+        if config.is_none() && matches!(plugin_type, PluginType::Function) && !call_args.is_empty()
+        {
             // For functions without config, use function parameters as config fields
             let fields = call_args
                 .iter()
                 .map(Self::argument_to_config_field)
                 .collect();
 
-            Some(ResourceSpec {
-                store: None,
-                config: Some(ConfigSpec {
-                    module: entry.module.to_string(),
-                    name: format!("{}Params", entry.symbol),
-                    fields,
-                }),
-            })
-        } else {
-            None
+            config = Some(ConfigSpec {
+                module: entry.module.clone(),
+                name: format!("{}Params", entry.symbol),
+                fields,
+            });
+        }
+
+        (call_args, config)
+    }
+
+    fn build_manifest_plugin(
+        entry: &EntryPointInfo,
+        plugin_type: PluginType,
+        config: Option<&ConfigSpec>,
+        call_args: &[ParsedArgument],
+    ) -> Plugin {
+        use crate::schema_extractor::parse_union_types_from_annotation;
+
+        let module = Arc::from(entry.module.as_str());
+        let (class_name, function_name) = match plugin_type {
+            PluginType::Class => (Some(Arc::from(entry.symbol.as_str())), None),
+            PluginType::Function => (None, Some(Arc::from(entry.symbol.as_str()))),
         };
 
-        (constructor_args, call_args, resources)
+        let (config_class, config_module, config_fields) = config.map_or_else(
+            || (None, None, &[] as &[ConfigField]),
+            |spec| {
+                (
+                    Some(Arc::from(spec.name.as_str())),
+                    Some(Arc::from(spec.module.as_str())),
+                    spec.fields.as_slice(),
+                )
+            },
+        );
+
+        let mut parameters: SmallVec<[Parameter; 4]> = config_fields
+            .iter()
+            .map(|field| Parameter {
+                name: Arc::from(field.name.as_str()),
+                types: field.types.iter().map(|t| Arc::from(t.as_str())).collect(),
+                module: None,
+                required: field.required,
+                default: field.default.as_ref().map(|d| Arc::from(d.as_str())),
+                description: field.description.as_ref().map(|d| Arc::from(d.as_str())),
+            })
+            .collect();
+
+        let existing_names: HashSet<String> =
+            parameters.iter().map(|p| p.name.to_string()).collect();
+
+        // Runtime-injected params that shouldn't appear in user-facing config
+        const RUNTIME_PARAMS: &[&str] = &[
+            "self", "system", "config", "store", "stdin", "ctx", "context",
+        ];
+
+        for arg in call_args {
+            let name = arg.name.as_str();
+            if RUNTIME_PARAMS.contains(&name) || existing_names.contains(name) {
+                continue;
+            }
+
+            let types: SmallVec<[Arc<str>; 2]> = arg.annotation.as_deref().map_or_else(
+                || SmallVec::from_elem(Arc::from("Any"), 1),
+                |ann| {
+                    parse_union_types_from_annotation(ann)
+                        .into_iter()
+                        .map(|t| Arc::from(t.as_str()))
+                        .collect()
+                },
+            );
+
+            parameters.push(Parameter {
+                name: Arc::from(name),
+                types,
+                module: None,
+                required: arg.required,
+                default: arg.default.as_ref().map(|d| Arc::from(d.as_str())),
+                description: None,
+            });
+        }
+
+        Plugin {
+            name: Arc::from(entry.name.as_str()),
+            plugin_type,
+            module,
+            class_name,
+            function_name,
+            config_class,
+            config_module,
+            hooks: SmallVec::new(),
+            parameters,
+            config_schema: Default::default(),
+            content_hash: 0,
+        }
     }
 
     /// Extract config class and fields using direct file parsing
@@ -854,18 +897,14 @@ impl AstDiscovery {
         source_path: &Path,
         cached: &CachedFile,
         entry: &EntryPointInfo,
-        implementation: &ImplementationType,
+        plugin_type: PluginType,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
         package_cache: &mut Option<PackageAstCache>,
         package_name: &str,
     ) -> Option<ConfigSpec> {
         // First, find the config class name from the current file
-        let config_name = Self::find_config_class_name(
-            &cached.ast,
-            &cached.content,
-            &entry.symbol,
-            implementation,
-        )?;
+        let config_name =
+            Self::find_config_class_name(&cached.ast, &cached.content, &entry.symbol, plugin_type)?;
 
         // Track where we found the config class to determine the correct module
         let mut config_file_path: Option<PathBuf> = None;
@@ -916,7 +955,7 @@ impl AstDiscovery {
         } else {
             // Fallback: try to resolve from imports in the source file
             Self::resolve_config_module_from_imports(&cached.content, &config_name, &entry.module)
-                .unwrap_or_else(|| entry.module.to_string())
+                .unwrap_or_else(|| entry.module.clone())
         };
 
         Some(ConfigSpec {
@@ -1014,9 +1053,9 @@ impl AstDiscovery {
         ast: &PythonAst,
         content: &str,
         symbol: &str,
-        implementation: &ImplementationType,
+        plugin_type: PluginType,
     ) -> Option<String> {
-        if matches!(implementation, ImplementationType::Function) {
+        if matches!(plugin_type, PluginType::Function) {
             return Self::extract_config_type_from_function_text(content, symbol);
         }
 
@@ -1153,29 +1192,8 @@ impl AstDiscovery {
         None
     }
 
-    /// Extract __init__ parameters from a class definition
-    fn extract_class_init_params(ast: &PythonAst, class_name: &str) -> Vec<ArgumentSpec> {
-        let root = ast.root();
-
-        // Find class definition - early return if not found
-        let pattern = format!("class {}($$$BASES): $$$BODY", class_name);
-        if root.find_all(pattern.as_str()).next().is_none() {
-            return Vec::new();
-        }
-
-        // Look for __init__ method within the class
-        let init_pattern = "def __init__(self, $$$PARAMS): $$$BODY";
-        for init_match in root.find_all(init_pattern) {
-            if let Some(params) = Self::extract_params_from_match(&init_match) {
-                return params;
-            }
-        }
-
-        Vec::new()
-    }
-
     /// Extract parameters from a function definition using text-based parsing
-    fn extract_function_params(content: &str, function_name: &str) -> Vec<ArgumentSpec> {
+    fn extract_function_params(content: &str, function_name: &str) -> Vec<ParsedArgument> {
         // Find "def function_name(" in content
         let search = format!("def {}(", function_name);
         let Some(start) = content.find(&search) else {
@@ -1228,8 +1246,8 @@ impl AstDiscovery {
             || name.starts_with('_')
     }
 
-    /// Parse a single function parameter string into ArgumentSpec
-    fn parse_function_param(param_str: &str) -> Option<ArgumentSpec> {
+    /// Parse a single function parameter string into ParsedArgument
+    fn parse_function_param(param_str: &str) -> Option<ParsedArgument> {
         let param_str = param_str.trim();
 
         // Skip empty, self, *args, **kwargs
@@ -1243,47 +1261,12 @@ impl AstDiscovery {
             return None;
         }
 
-        Some(ArgumentSpec {
+        Some(ParsedArgument {
             name,
             annotation,
             required: default.is_none(),
             default,
         })
-    }
-
-    /// Extract parameters from an AST match
-    fn extract_params_from_match(
-        func_match: &ast_grep_core::matcher::NodeMatch<'_, ast_grep_core::source::StrDoc<Python>>,
-    ) -> Option<Vec<ArgumentSpec>> {
-        let env = func_match.get_env();
-        let params_nodes = env.get_multiple_matches("$$$PARAMS");
-
-        let params = params_nodes
-            .into_iter()
-            .filter_map(|param_node| {
-                let param_text = param_node.text();
-
-                // Skip self, *args, **kwargs
-                if param_text == "self" || param_text.starts_with('*') {
-                    return None;
-                }
-
-                let (name, annotation, default) = Self::parse_param_text(&param_text);
-
-                if Self::is_skipped_param(&name) {
-                    return None;
-                }
-
-                Some(ArgumentSpec {
-                    name,
-                    annotation,
-                    required: default.is_none(),
-                    default,
-                })
-            })
-            .collect();
-
-        Some(params)
     }
 
     /// Parse a parameter text into name, annotation, and default
@@ -1299,9 +1282,8 @@ impl AstDiscovery {
                 let name = before_eq[..colon_idx].trim().to_string();
                 let annotation = before_eq[colon_idx + 1..].trim().to_string();
                 return (name, Some(annotation), Some(default));
-            } else {
-                return (before_eq.to_string(), None, Some(default));
             }
+            return (before_eq.to_string(), None, Some(default));
         }
 
         // Handle: name: type
@@ -1355,13 +1337,7 @@ impl AstDiscovery {
             let name = full_text[..colon_pos].trim().to_string();
 
             // Skip private/magic attributes and non-identifier names
-            if name.starts_with('_')
-                || !name
-                    .chars()
-                    .next()
-                    .map(|c| c.is_alphabetic())
-                    .unwrap_or(false)
-            {
+            if name.starts_with('_') || !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
                 continue;
             }
 
@@ -1460,15 +1436,14 @@ impl AstDiscovery {
         }
     }
 
-    /// Convert an ArgumentSpec to a ConfigField for function parameter extraction
-    fn argument_to_config_field(arg: &ArgumentSpec) -> ConfigField {
+    /// Convert a parsed argument to a ConfigField for function parameter extraction
+    fn argument_to_config_field(arg: &ParsedArgument) -> ConfigField {
         use schema_extractor::parse_union_types_from_annotation;
 
-        let types = arg
-            .annotation
-            .as_deref()
-            .map(parse_union_types_from_annotation)
-            .unwrap_or_else(|| vec!["Any".to_string()]);
+        let types = arg.annotation.as_deref().map_or_else(
+            || vec!["Any".to_string()],
+            parse_union_types_from_annotation,
+        );
 
         let default = arg.default.as_deref().map(Self::clean_default_value);
         let required = arg.required && !types.iter().any(|t| t == "None");
@@ -1481,40 +1456,18 @@ impl AstDiscovery {
             description: None,
         }
     }
-
-    /// Build IO contract based on plugin kind
-    fn io_contract_for_kind(kind: &PluginKind) -> IOContract {
-        match kind {
-            PluginKind::Parser => IOContract {
-                consumes: vec![IOSlot::StoreFolder, IOSlot::ConfigFile],
-                produces: vec![IOSlot::System],
-            },
-            PluginKind::Exporter => IOContract {
-                consumes: vec![IOSlot::System, IOSlot::ConfigFile],
-                produces: vec![IOSlot::Folder],
-            },
-            PluginKind::Modifier | PluginKind::Translation => IOContract {
-                consumes: vec![IOSlot::System],
-                produces: vec![IOSlot::System],
-            },
-            PluginKind::Upgrader | PluginKind::Utility => IOContract {
-                consumes: Vec::new(),
-                produces: Vec::new(),
-            },
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_parse_all_entry_points_r2x_plugin() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
-"#;
-        let entries = parse_all_entry_points(content);
+";
+        let entries = entry_parser::parse_all_entry_points(content);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "reeds");
         assert_eq!(entries[0].module, "r2x_reeds");
@@ -1524,7 +1477,7 @@ reeds = r2x_reeds:ReEDSParser
 
     #[test]
     fn test_parse_all_entry_points_multiple_sections() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
 
 [r2x.transforms]
@@ -1533,8 +1486,8 @@ add-emission-cap = r2x_reeds.sysmod.emission_cap:add_emission_cap
 
 [console_scripts]
 some-cli = some_module:main
-"#;
-        let entries = parse_all_entry_points(content);
+";
+        let entries = entry_parser::parse_all_entry_points(content);
         assert_eq!(entries.len(), 3);
 
         // Check r2x_plugin entry
@@ -1553,13 +1506,13 @@ some-cli = some_module:main
 
     #[test]
     fn test_parse_all_entry_points_ignores_non_r2x_sections() {
-        let content = r#"[console_scripts]
+        let content = r"[console_scripts]
 some-cli = some_module:main
 
 [gui_scripts]
 some-gui = some_module:gui_main
-"#;
-        let entries = parse_all_entry_points(content);
+";
+        let entries = entry_parser::parse_all_entry_points(content);
         assert!(entries.is_empty());
     }
 
@@ -1593,59 +1546,13 @@ some-gui = some_module:gui_main
     }
 
     #[test]
-    fn test_entry_point_info_infer_kind() {
-        let parser_entry = EntryPointInfo {
-            name: "reeds".to_string(),
-            module: "r2x_reeds".to_string(),
-            symbol: "ReEDSParser".to_string(),
-            section: "r2x_plugin".to_string(),
-        };
-        assert_eq!(parser_entry.infer_kind(), PluginKind::Parser);
-
-        let modifier_entry = EntryPointInfo {
-            name: "add-pcm-defaults".to_string(),
-            module: "r2x_reeds.sysmod".to_string(),
-            symbol: "add_pcm_defaults".to_string(),
-            section: "r2x.transforms".to_string(),
-        };
-        assert_eq!(modifier_entry.infer_kind(), PluginKind::Modifier);
-    }
-
-    #[test]
     fn test_resolve_reexported_symbol() {
-        let content = r#"
+        let content = r"
 from .parser import ReEDSParser
 from .plugin_config import ReEDSConfig
-"#;
+";
         let resolved = AstDiscovery::resolve_reexported_symbol(content, "r2x_reeds", "ReEDSParser");
         assert_eq!(resolved, Some("r2x_reeds.parser".to_string()));
-    }
-
-    #[test]
-    fn test_plugin_extraction() {
-        let plugin = DiscoveredPlugin {
-            name: "test-parser".to_string(),
-            kind: PluginKind::Parser,
-            entry: "TestParser".to_string(),
-            invocation: InvocationSpec {
-                implementation: ImplementationType::Class,
-                method: Some("build_system".to_string()),
-                constructor: vec![],
-                call: vec![],
-            },
-            io: IOContract {
-                consumes: vec![IOSlot::StoreFolder, IOSlot::ConfigFile],
-                produces: vec![IOSlot::System],
-            },
-            resources: None,
-            upgrade: None,
-            description: None,
-            tags: vec![],
-        };
-
-        assert_eq!(plugin.name, "test-parser");
-        assert_eq!(plugin.kind, PluginKind::Parser);
-        assert_eq!(plugin.entry, "TestParser");
     }
 
     #[test]
@@ -1672,31 +1579,31 @@ from .plugin_config import ReEDSConfig
     #[test]
     fn test_find_config_class_name_from_function() {
         // Test single-line function with return type
-        let source_single = r#"
+        let source_single = r"
 def add_pcm_defaults(system: System, config: PCMDefaultsConfig) -> Result[System, str]:
     pass
-"#;
+";
         let config_name =
             AstDiscovery::extract_config_type_from_function_text(source_single, "add_pcm_defaults");
         assert_eq!(config_name, Some("PCMDefaultsConfig".to_string()));
 
         // Test multi-line function with return type
-        let source_multi = r#"
+        let source_multi = r"
 def add_pcm_defaults(
     system: System,
     config: PCMDefaultsConfig,
 ) -> Result[System, str]:
     pass
-"#;
+";
         let config_name_multi =
             AstDiscovery::extract_config_type_from_function_text(source_multi, "add_pcm_defaults");
         assert_eq!(config_name_multi, Some("PCMDefaultsConfig".to_string()));
 
         // Test function without return type
-        let source_no_ret = r#"
+        let source_no_ret = r"
 def add_pcm_defaults(system: System, config: PCMDefaultsConfig):
     pass
-"#;
+";
         let config_name_no_ret =
             AstDiscovery::extract_config_type_from_function_text(source_no_ret, "add_pcm_defaults");
         assert_eq!(config_name_no_ret, Some("PCMDefaultsConfig".to_string()));
@@ -1704,7 +1611,7 @@ def add_pcm_defaults(system: System, config: PCMDefaultsConfig):
 
     #[test]
     fn test_extract_function_params_direct() {
-        let source = r#"
+        let source = r"
 def add_pcm_defaults(
     system: System,
     pcm_defaults_fpath: str | None = None,
@@ -1712,7 +1619,7 @@ def add_pcm_defaults(
     pcm_defaults_override: bool = False,
 ) -> System:
     pass
-"#;
+";
         let params = AstDiscovery::extract_function_params(source, "add_pcm_defaults");
         // system should be filtered out
         assert!(!params.iter().any(|p| p.name == "system"));
@@ -1720,18 +1627,21 @@ def add_pcm_defaults(
         assert_eq!(params.len(), 3);
 
         let fpath = params.iter().find(|p| p.name == "pcm_defaults_fpath");
-        assert!(fpath.is_some_and(|f| f.annotation.as_deref() == Some("str | None")
-            && f.default.as_deref() == Some("None")
-            && !f.required));
+        assert!(
+            fpath.is_some_and(|f| f.annotation.as_deref() == Some("str | None")
+                && f.default.as_deref() == Some("None")
+                && !f.required)
+        );
 
         let override_param = params.iter().find(|p| p.name == "pcm_defaults_override");
-        assert!(override_param.is_some_and(|p| p.annotation.as_deref() == Some("bool")
-            && p.default.as_deref() == Some("False")));
+        assert!(override_param
+            .is_some_and(|p| p.annotation.as_deref() == Some("bool")
+                && p.default.as_deref() == Some("False")));
     }
 
     #[test]
     fn test_argument_to_config_field() {
-        let arg = discovery_types::ArgumentSpec {
+        let arg = ParsedArgument {
             name: "pcm_defaults_fpath".to_string(),
             annotation: Some("str | None".to_string()),
             default: Some("None".to_string()),
@@ -1814,12 +1724,12 @@ def add_pcm_defaults(
         );
 
         // Multi-line function
-        let text_multi = r#"@expose_plugin
+        let text_multi = r"@expose_plugin
 def break_gens(
     system: System,
     config: BreakGensConfig,
 ) -> System:
-    pass"#;
+    pass";
         assert_eq!(
             AstDiscovery::extract_function_name_from_text(text_multi),
             Some("break_gens".to_string())
@@ -1854,15 +1764,15 @@ def break_gens(
     #[test]
     fn test_find_config_class_name_from_class() {
         // Test class with generic Plugin[Config] - simple single line
-        let source_simple = r#"class MyParser(Plugin[MyConfig]):
+        let source_simple = r"class MyParser(Plugin[MyConfig]):
     pass
-"#;
+";
         let ast = PythonAst::new(source_simple, Python);
         let config_name = AstDiscovery::find_config_class_name(
             &ast,
             source_simple,
             "MyParser",
-            &ImplementationType::Class,
+            PluginType::Class,
         );
         assert_eq!(config_name, Some("MyConfig".to_string()));
 
@@ -1880,33 +1790,33 @@ class ReEDSParser(Plugin[ReEDSConfig]):
             &ast_reeds,
             source_reeds,
             "ReEDSParser",
-            &ImplementationType::Class,
+            PluginType::Class,
         );
         assert_eq!(config_name_reeds, Some("ReEDSConfig".to_string()));
 
         // Test class with multiple bases - Plugin[Config] should still be found
-        let source_multi_base = r#"class MyExporter(SomeMixin, Plugin[ExporterConfig], AnotherMixin):
+        let source_multi_base = r"class MyExporter(SomeMixin, Plugin[ExporterConfig], AnotherMixin):
     pass
-"#;
+";
         let ast_multi = PythonAst::new(source_multi_base, Python);
         let config_name_multi = AstDiscovery::find_config_class_name(
             &ast_multi,
             source_multi_base,
             "MyExporter",
-            &ImplementationType::Class,
+            PluginType::Class,
         );
         assert_eq!(config_name_multi, Some("ExporterConfig".to_string()));
 
         // Test class without Plugin generic - should return None
-        let source_no_plugin = r#"class RegularClass(BaseClass):
+        let source_no_plugin = r"class RegularClass(BaseClass):
     pass
-"#;
+";
         let ast_no_plugin = PythonAst::new(source_no_plugin, Python);
         let config_name_none = AstDiscovery::find_config_class_name(
             &ast_no_plugin,
             source_no_plugin,
             "RegularClass",
-            &ImplementationType::Class,
+            PluginType::Class,
         );
         assert_eq!(config_name_none, None);
     }

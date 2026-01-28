@@ -1,138 +1,44 @@
-use super::setup_config;
-use crate::logger;
-use crate::r2x_manifest::Manifest;
-use crate::GlobalOpts;
+use crate::commands::plugins::context::PluginContext;
+use crate::plugins::error::PluginError;
 use colored::Colorize;
+use r2x_logger as logger;
 use std::process::Command;
 
-pub fn remove_plugin(package: &str, _opts: &GlobalOpts) -> Result<(), String> {
-    let mut removed_count = 0usize;
-    let mut orphaned_dependencies = Vec::new();
+pub fn remove_plugin(package: &str, ctx: &mut PluginContext) -> Result<(), PluginError> {
+    let removed = ctx.manifest.remove_package_with_deps_summary(package);
+    let removed_plugin_count: usize = removed.iter().map(|pkg| pkg.plugin_count).sum();
+    let orphaned_dependencies: Vec<String> = removed
+        .iter()
+        .filter(|pkg| pkg.name != package)
+        .map(|pkg| pkg.name.clone())
+        .collect();
 
-    match Manifest::load() {
-        Ok(mut manifest) => {
-            orphaned_dependencies = find_orphaned_dependencies(&manifest, package);
-            removed_count = manifest.remove_plugins_by_package(package);
-
-            if removed_count > 0 {
-                // Remove the package entirely from the manifest
-                manifest.remove_package(package);
-
-                for dep in &orphaned_dependencies {
-                    let count = manifest.remove_plugins_by_package(dep);
-                    if count > 0 {
-                        logger::info(&format!("Removing orphaned dependency package '{}'", dep));
-                        manifest.remove_package(dep);
-                        removed_count += count;
-                    }
-                }
-
-                if let Err(e) = manifest.save() {
-                    logger::warn(&format!("Failed to update manifest: {}", e));
-                }
-            } else {
-                logger::info(&format!(
-                    "No plugins found for package '{}' in manifest",
-                    package
-                ));
-            }
-        }
-        Err(e) => {
-            logger::warn(&format!(
-                "Failed to load manifest: {}. Continuing with uninstall...",
-                e
-            ));
-        }
+    if removed.is_empty() {
+        logger::info(&format!(
+            "No plugins found for package '{}' in manifest",
+            package
+        ));
+    } else {
+        ctx.manifest.save()?;
     }
 
-    let (uv_path, venv_path, _python_path) = setup_config()?;
-    logger::info(&format!("Using venv: {}", venv_path));
+    logger::info(&format!("Using venv: {}", ctx.venv_path));
 
-    let check_output = Command::new(&uv_path)
-        .args(["pip", "show", "--python", &venv_path, package])
-        .output()
-        .map_err(|e| format!("Failed to check package status: {}", e))?;
-
-    if !check_output.status.success() {
+    if is_package_installed(&ctx.uv_path, &ctx.python_path, package)? {
+        uninstall_package(&ctx.uv_path, &ctx.python_path, package)?;
+    } else {
         logger::warn(&format!("Package '{}' is not installed", package));
-        return Ok(());
     }
-
-    logger::debug(&format!(
-        "Running: {} pip uninstall --python {} {}",
-        uv_path, venv_path, package
-    ));
-
-    let output = Command::new(&uv_path)
-        .args(["pip", "uninstall", "--python", &venv_path, package])
-        .output()
-        .map_err(|e| {
-            logger::error(&format!("Failed to run pip uninstall: {}", e));
-            format!("Failed to run pip uninstall: {}", e)
-        })?;
-
-    logger::capture_output(&format!("uv pip uninstall {}", package), &output);
-
-    if !output.status.success() {
-        logger::error(&format!("pip uninstall failed for package '{}'", package));
-        return Err(format!("pip uninstall failed for package '{}'", package));
-    }
-
-    logger::info(&format!("Package '{}' uninstalled successfully", package));
 
     for orphan_pkg in &orphaned_dependencies {
-        let check_orphan = Command::new(&uv_path)
-            .args(["pip", "show", "--python", &venv_path, orphan_pkg])
-            .output()
-            .map_err(|e| {
-                format!(
-                    "Failed to check orphaned package '{}' status: {}",
-                    orphan_pkg, e
-                )
-            })?;
-
-        if check_orphan.status.success() {
-            logger::debug(&format!(
-                "Running: {} pip uninstall --python {} {}",
-                uv_path, venv_path, orphan_pkg
-            ));
-
-            let orphan_output = Command::new(&uv_path)
-                .args(["pip", "uninstall", "--python", &venv_path, orphan_pkg])
-                .output()
-                .map_err(|e| {
-                    logger::error(&format!(
-                        "Failed to run pip uninstall for orphaned package '{}': {}",
-                        orphan_pkg, e
-                    ));
-                    format!(
-                        "Failed to run pip uninstall for orphaned package '{}': {}",
-                        orphan_pkg, e
-                    )
-                })?;
-
-            logger::capture_output(
-                &format!("uv pip uninstall {} (orphaned dependency)", orphan_pkg),
-                &orphan_output,
-            );
-
-            if orphan_output.status.success() {
-                logger::info(&format!(
-                    "Orphaned dependency package '{}' uninstalled successfully",
-                    orphan_pkg
-                ));
-            } else {
-                logger::warn(&format!(
-                    "Failed to uninstall orphaned dependency package '{}'",
-                    orphan_pkg
-                ));
-            }
+        if is_package_installed(&ctx.uv_path, &ctx.python_path, orphan_pkg)? {
+            uninstall_package(&ctx.uv_path, &ctx.python_path, orphan_pkg)?;
         }
     }
 
     println!(
         "{}",
-        format!("Uninstalled {} plugins(s)", removed_count).dimmed()
+        format!("Uninstalled {} plugin(s)", removed_plugin_count).dimmed()
     );
     println!(" {} {}", "-".bold().red(), package.bold());
 
@@ -148,6 +54,42 @@ pub fn remove_plugin(package: &str, _opts: &GlobalOpts) -> Result<(), String> {
     Ok(())
 }
 
-fn find_orphaned_dependencies(_manifest: &Manifest, _package: &str) -> Vec<String> {
-    Vec::new()
+fn is_package_installed(
+    uv_path: &str,
+    python_path: &str,
+    package: &str,
+) -> Result<bool, PluginError> {
+    let output = Command::new(uv_path)
+        .args(["pip", "show", "--python", python_path, package])
+        .output()
+        .map_err(PluginError::Io)?;
+    Ok(output.status.success())
+}
+
+fn uninstall_package(uv_path: &str, python_path: &str, package: &str) -> Result<(), PluginError> {
+    logger::debug(&format!(
+        "Running: {} pip uninstall --python {} {}",
+        uv_path, python_path, package
+    ));
+
+    let output = Command::new(uv_path)
+        .args(["pip", "uninstall", "--python", python_path, package])
+        .output()
+        .map_err(|e| {
+            logger::error(&format!("Failed to run pip uninstall: {}", e));
+            PluginError::Io(e)
+        })?;
+
+    logger::capture_output(&format!("uv pip uninstall {}", package), &output);
+
+    if !output.status.success() {
+        logger::error(&format!("pip uninstall failed for package '{}'", package));
+        return Err(PluginError::CommandFailed {
+            command: format!("{} pip uninstall {}", uv_path, package),
+            status: output.status.code(),
+        });
+    }
+
+    logger::info(&format!("Package '{}' uninstalled successfully", package));
+    Ok(())
 }

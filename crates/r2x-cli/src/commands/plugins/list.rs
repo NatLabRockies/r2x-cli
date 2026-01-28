@@ -1,16 +1,18 @@
-use crate::config_manager::Config;
-use crate::plugins::get_package_info;
-use crate::r2x_manifest::{Manifest, Plugin};
-use crate::GlobalOpts;
+use crate::commands::plugins::context::PluginContext;
+use crate::common::GlobalOpts;
+use crate::plugins::error::PluginError;
+use crate::plugins::install::get_package_info;
 use colored::Colorize;
+use r2x_manifest::types::{Manifest, Plugin};
 use std::collections::BTreeMap;
 
 pub fn list_plugins(
     opts: &GlobalOpts,
     plugin_filter: Option<String>,
     module_filter: Option<String>,
-) -> Result<(), String> {
-    let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
+    ctx: &PluginContext,
+) -> Result<(), PluginError> {
+    let manifest = &ctx.manifest;
 
     let has_plugins = !manifest.is_empty();
 
@@ -26,10 +28,11 @@ pub fn list_plugins(
     // If a plugin filter is provided, show detailed information
     if let Some(ref plugin_name) = plugin_filter {
         return show_plugin_details(
-            &manifest,
+            manifest,
             plugin_name,
             module_filter.as_deref(),
             opts.verbose,
+            ctx,
         );
     }
 
@@ -45,12 +48,8 @@ pub fn list_plugins(
         println!("{}", "Plugins:".bold().green());
 
         // Get package version info
-        let config = Config::load().ok();
-        let python_path = config.as_ref().map(|c| c.get_venv_python_path());
-        let uv_path = config
-            .as_ref()
-            .and_then(|c| c.uv_path.as_deref())
-            .unwrap_or("uv");
+        let python_path = &ctx.python_path;
+        let uv_path = &ctx.uv_path;
 
         for (package_name, plugin_names) in &packages {
             // Get package metadata
@@ -58,16 +57,12 @@ pub fn list_plugins(
                 .packages
                 .iter()
                 .find(|p| p.name.as_ref() == package_name);
-            let is_editable = pkg.map(|p| p.editable_install).unwrap_or(false);
+            let is_editable = pkg.is_some_and(|p| p.editable_install);
 
             // Get version info
-            let version_info = if let Some(ref py_path) = python_path {
-                get_package_info(uv_path, py_path, package_name)
-                    .ok()
-                    .and_then(|(v, _)| v)
-            } else {
-                None
-            };
+            let version_info = get_package_info(uv_path, python_path, package_name)
+                .ok()
+                .and_then(|(v, _)| v);
 
             // Build package header with version and editable status
             let mut package_header = format!(" {}:", package_name.bold().blue());
@@ -100,29 +95,21 @@ fn show_plugin_details(
     plugin_filter: &str,
     module_filter: Option<&str>,
     verbose_level: u8,
-) -> Result<(), String> {
+    ctx: &PluginContext,
+) -> Result<(), PluginError> {
     // Find the package containing this plugin
     let package = manifest
         .packages
         .iter()
         .find(|pkg| pkg.name.as_ref() == plugin_filter)
-        .ok_or_else(|| format!("Plugin package '{}' not found", plugin_filter))?;
+        .ok_or_else(|| {
+            PluginError::InvalidArgs(format!("Plugin package '{}' not found", plugin_filter))
+        })?;
 
     // Build package header with version and editable info
-    let config = Config::load().ok();
-    let python_path = config.as_ref().map(|c| c.get_venv_python_path());
-    let uv_path = config
-        .as_ref()
-        .and_then(|c| c.uv_path.as_deref())
-        .unwrap_or("uv");
-
-    let version_info = if let Some(ref py_path) = python_path {
-        get_package_info(uv_path, py_path, package.name.as_ref())
-            .ok()
-            .and_then(|(v, _)| v)
-    } else {
-        None
-    };
+    let version_info = get_package_info(&ctx.uv_path, &ctx.python_path, package.name.as_ref())
+        .ok()
+        .and_then(|(v, _)| v);
 
     print!(
         "{} {}",
@@ -152,10 +139,7 @@ fn show_plugin_details(
                 // e.g., "r2x_reeds.break_gens" matches module "break_gens"
                 let name_str = p.name.as_ref();
                 let parts: Vec<&str> = name_str.split('.').collect();
-                parts
-                    .last()
-                    .map(|&last| last == module_name)
-                    .unwrap_or(false)
+                parts.last().is_some_and(|&last| last == module_name)
             })
             .collect()
     } else {
@@ -163,10 +147,10 @@ fn show_plugin_details(
     };
 
     if plugins_to_show.is_empty() {
-        return Err(format!(
+        return Err(PluginError::InvalidArgs(format!(
             "No plugins found matching the filter criteria in package '{}'",
             plugin_filter
-        ));
+        )));
     }
 
     for plugin in plugins_to_show {

@@ -2,10 +2,8 @@
 
 use crate::errors::BridgeError;
 use r2x_logger as logger;
-use r2x_manifest::{
-    runtime::{build_runtime_bindings, RuntimeBindings},
-    PluginKind, PluginSpec,
-};
+use r2x_manifest::runtime::{build_runtime_bindings, PluginRole, RuntimeBindings};
+use r2x_manifest::types::Plugin;
 use std::time::Duration;
 
 /// Timings for a plugin invocation phase
@@ -22,23 +20,23 @@ pub struct PluginInvocationResult {
     pub timings: Option<PluginInvocationTimings>,
 }
 
-impl super::Bridge {
+impl crate::python_bridge::Bridge {
     pub fn invoke_plugin(
         &self,
         target: &str,
         config_json: &str,
         stdin_json: Option<&str>,
-        plugin_metadata: Option<&PluginSpec>,
+        plugin_metadata: Option<&Plugin>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         let runtime_bindings = plugin_metadata.map(build_runtime_bindings);
 
-        if let Some(plugin) = plugin_metadata {
-            if plugin.kind == PluginKind::Upgrader {
+        if let Some(bindings) = runtime_bindings.as_ref() {
+            if bindings.role == PluginRole::Upgrader {
                 logger::debug("Routing to upgrader plugin handler");
                 return self.invoke_upgrader_plugin(
                     target,
                     config_json,
-                    runtime_bindings.as_ref(),
+                    Some(bindings),
                     plugin_metadata,
                 );
             }
@@ -55,7 +53,7 @@ impl super::Bridge {
         runtime_bindings: Option<&RuntimeBindings>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         if let Some(bindings) = runtime_bindings {
-            if bindings.plugin_kind == PluginKind::Upgrader {
+            if bindings.role == PluginRole::Upgrader {
                 logger::debug("Routing to upgrader plugin handler (runtime bindings)");
                 return self.invoke_upgrader_plugin(target, config_json, Some(bindings), None);
             }
@@ -67,7 +65,7 @@ impl super::Bridge {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plugin_invoker::*;
 
     #[test]
     fn plugin_invocation_result_basics() {

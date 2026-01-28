@@ -7,6 +7,8 @@ members = ["cargo:."]
 cargo-dist-version = "0.30.2"
 # CI backends to support
 ci = "github"
+# Build and upload artifacts on PRs so release PRs fail before merge
+pr-run-mode = "upload"
 # Additional setup steps for GitHub builds
 github-build-setup = "../build-setup.yml"
 # The installers to generate for each app

@@ -11,7 +11,7 @@ use pyo3::types::PyModule;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-impl super::Bridge {
+impl crate::python_bridge::Bridge {
     /// Load plugin package metadata from the entry point
     ///
     /// Each plugin package exposes an r2x_plugin entry point that returns a Package object.
@@ -214,7 +214,7 @@ impl super::Bridge {
         ));
 
         // Find site-packages directory using centralized resolver
-        let site_packages_path = match super::resolve_site_package_path(&venv_path) {
+        let site_packages_path = match crate::utils::resolve_site_package_path(&venv_path) {
             Ok(path) => {
                 logger::debug(&format!(
                     "Found site-packages at: {}",

@@ -2,11 +2,11 @@
 
 use crate::errors::BridgeError;
 use crate::plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
-use crate::Bridge;
+use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use pyo3::PyResult;
 use r2x_logger as logger;
-use r2x_manifest::runtime::RuntimeBindings;
+use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use std::time::{Duration, Instant};
 
 /// Guard that suppresses Python stdout and restores it on drop.
@@ -97,7 +97,7 @@ impl Bridge {
             } else {
                 logger::debug("Building kwargs for function invocation");
                 let kwargs =
-                    self.build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
+                    Self::build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
                 Self::invoke_function_callable(
                     py,
                     &module,
@@ -117,9 +117,7 @@ impl Bridge {
 
             // For exporters, skip serialization - they write their own output
             // and return PluginContext which we don't need to pass downstream
-            let is_exporter = runtime_bindings
-                .map(|b| b.plugin_kind == r2x_manifest::PluginKind::Exporter)
-                .unwrap_or(false);
+            let is_exporter = runtime_bindings.is_some_and(|b| b.role == PluginRole::Exporter);
 
             if is_exporter {
                 logger::debug("Exporter plugin completed, skipping result serialization");
@@ -210,7 +208,7 @@ impl Bridge {
     }
 
     fn invoke_class_callable<'py>(
-        bridge: &Bridge,
+        _bridge: &Bridge,
         module: &pyo3::Bound<'py, PyModule>,
         callable_path: &str,
         config_dict: &pyo3::Bound<'py, PyDict>,
@@ -257,7 +255,7 @@ impl Bridge {
         };
 
         let config_instance = if bindings.config.is_some() {
-            bridge.instantiate_config_class(py, &config_params, bindings.config.as_ref())?
+            Bridge::instantiate_config_class(py, &config_params, bindings.config.as_ref())?
         } else {
             logger::debug(&format!(
                 "Config metadata missing for '{}', discovering from plugin class",
@@ -274,7 +272,7 @@ impl Bridge {
 
         let store_instance = if let Some(value) = store_value {
             logger::debug("Creating DataStore from path for PluginContext");
-            Some(bridge.instantiate_data_store(
+            Some(Bridge::instantiate_data_store(
                 py,
                 &value,
                 Some(&config_instance),
@@ -285,8 +283,7 @@ impl Bridge {
         };
 
         let system_instance = if let Some(stdin) = stdin_obj {
-            use r2x_manifest::PluginKind;
-            if bindings.plugin_kind == PluginKind::Exporter {
+            if bindings.role == PluginRole::Exporter {
                 logger::step("Deserializing system from stdin for PluginContext");
 
                 let system_module = PyModule::import(py, "infrasys")?;
@@ -309,7 +306,7 @@ impl Bridge {
             None
         };
 
-        let ctx = bridge.instantiate_plugin_context(
+        let ctx = Bridge::instantiate_plugin_context(
             py,
             &config_instance,
             store_instance.as_ref(),
@@ -383,7 +380,9 @@ impl Bridge {
         if accepts_stdin {
             // accepts_stdin can only be true when stdin_obj.is_some() (see above)
             let Some(stdin) = stdin_obj else {
-                return Err(BridgeError::Python("stdin expected but not provided".to_string()));
+                return Err(BridgeError::Python(
+                    "stdin expected but not provided".to_string(),
+                ));
             };
             method.call1((stdin,)).map_err(|e| {
                 BridgeError::Python(format_python_error(

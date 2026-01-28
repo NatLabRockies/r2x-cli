@@ -1,7 +1,7 @@
-use crate::logger;
 use crate::manifest_lookup::resolve_plugin_ref;
-use crate::r2x_manifest::Manifest;
 use colored::Colorize;
+use r2x_logger as logger;
+use r2x_manifest::types::Manifest;
 
 /// Show help for the run command when invoked with no arguments
 pub fn show_run_help() -> Result<(), String> {
@@ -12,7 +12,11 @@ pub fn show_run_help() -> Result<(), String> {
     println!();
 
     // Show installed plugins
-    if !manifest.is_empty() {
+    if manifest.is_empty() {
+        println!("{}", "No plugins installed.".yellow());
+        println!("Install plugins with: r2x install <package>");
+        println!();
+    } else {
         println!("{}", "Installed plugins:".bold());
         for pkg in &manifest.packages {
             for plugin in &pkg.plugins {
@@ -25,10 +29,6 @@ pub fn show_run_help() -> Result<(), String> {
                 );
             }
         }
-        println!();
-    } else {
-        println!("{}", "No plugins installed.".yellow());
-        println!("Install plugins with: r2x install <package>");
         println!();
     }
 
@@ -124,17 +124,4 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     println!("  r2x run --plugin {} <args>", plugin_name);
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_show_run_help() {
-        // Test run help display
-    }
-
-    #[test]
-    fn test_show_plugin_help() {
-        // Test plugin help display
-    }
 }

@@ -11,7 +11,9 @@
 use anyhow::{anyhow, Result};
 use ast_grep_core::AstGrep;
 use ast_grep_language::Python;
-use r2x_manifest::{Constraint, DefaultValue, FieldType, NestedInfo, SchemaField, SchemaFields};
+use r2x_manifest::types::{
+    Constraint, DefaultValue, FieldType, NestedInfo, SchemaField, SchemaFields,
+};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,13 +90,7 @@ impl SchemaExtractor {
             let name = full_text[..colon_pos].trim().to_string();
 
             // Skip private/magic attributes and non-identifier names
-            if name.starts_with('_')
-                || !name
-                    .chars()
-                    .next()
-                    .map(|c| c.is_alphabetic())
-                    .unwrap_or(false)
-            {
+            if name.starts_with('_') || !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
                 continue;
             }
 
@@ -118,14 +114,14 @@ impl SchemaExtractor {
 
             // Try to extract default value
             let default = if has_default {
-                self.extract_default_from_text(&full_text)
+                Self::extract_default_from_text(&full_text)
             } else {
                 None
             };
 
             // Parse Field() constraints if present
             let constraints = if full_text.contains("Field(") {
-                self.parse_field_constraints(&full_text)
+                Self::parse_field_constraints(&full_text)
             } else {
                 SmallVec::new()
             };
@@ -148,13 +144,13 @@ impl SchemaExtractor {
     }
 
     /// Extract default value from field definition text
-    fn extract_default_from_text(&self, text: &str) -> Option<DefaultValue> {
+    fn extract_default_from_text(text: &str) -> Option<DefaultValue> {
         // Look for = value after the type annotation
         if let Some(eq_pos) = text.rfind(" = ") {
             let value_part = text[eq_pos + 3..].trim();
             // Skip if it's a Field() call - we handle that separately
             if !value_part.starts_with("Field(") {
-                return self.parse_literal_value(value_part);
+                return Self::parse_literal_value(value_part);
             }
         }
 
@@ -183,7 +179,7 @@ impl SchemaExtractor {
             }
             if end > 0 {
                 let default_str = rest[..end].trim();
-                return self.parse_literal_value(default_str);
+                return Self::parse_literal_value(default_str);
             }
         }
 
@@ -262,7 +258,7 @@ impl SchemaExtractor {
     }
 
     /// Parse Field() constraints
-    fn parse_field_constraints(&self, field_call: &str) -> SmallVec<[Constraint; 2]> {
+    fn parse_field_constraints(field_call: &str) -> SmallVec<[Constraint; 2]> {
         let mut constraints = SmallVec::new();
 
         // Extract keyword arguments from Field(...)
@@ -333,7 +329,7 @@ impl SchemaExtractor {
     }
 
     /// Parse a literal value
-    fn parse_literal_value(&self, value: &str) -> Option<DefaultValue> {
+    fn parse_literal_value(value: &str) -> Option<DefaultValue> {
         let value = value.trim();
 
         // Boolean
@@ -449,8 +445,9 @@ pub fn parse_union_types_from_annotation(annotation: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
-    use super::*;
+    use crate::schema_extractor::*;
 
     #[test]
     fn test_extract_simple_fields() {
@@ -513,11 +510,12 @@ class MyConfig(BaseModel):
         assert!(fields.is_ok());
         let fields = fields.unwrap_or_default();
 
-        let mode = fields.get("mode");
-        assert!(mode.is_some_and(|m| m.enum_values.as_ref().is_some_and(|values| values.len() == 3
-            && values.iter().any(|v| v.as_ref() == "fast")
-            && values.iter().any(|v| v.as_ref() == "slow")
-            && values.iter().any(|v| v.as_ref() == "balanced"))));
+        let mode = fields.get("mode").expect("mode field missing");
+        let values = mode.enum_values.as_ref().expect("mode enum values missing");
+        assert_eq!(values.len(), 3);
+        assert!(values.iter().any(|v| v.as_ref() == "fast"));
+        assert!(values.iter().any(|v| v.as_ref() == "slow"));
+        assert!(values.iter().any(|v| v.as_ref() == "balanced"));
     }
 
     #[test]
@@ -532,9 +530,9 @@ class MyConfig(BaseModel):
         assert!(fields.is_ok());
         let fields = fields.unwrap_or_default();
 
-        let items = fields.get("items");
-        assert!(items.is_some_and(|i| i.field_type == FieldType::Array
-            && i.items.as_ref().map(|s| s.as_ref()) == Some("str")));
+        let items = fields.get("items").expect("items field missing");
+        assert_eq!(items.field_type, FieldType::Array);
+        assert_eq!(items.items.as_ref().map(|s| s.as_ref()), Some("str"));
     }
 
     #[test]
@@ -565,10 +563,14 @@ class MyConfig(BaseModel):
         assert!(fields.is_ok());
         let fields = fields.unwrap_or_default();
 
-        let database = fields.get("database");
-        assert!(database.is_some_and(|d| d.field_type == FieldType::Object
-            && d.nested.as_ref().is_some_and(|n| n.class.as_ref().map(|s| s.as_ref())
-                == Some("DatabaseConfig"))));
+        let database = fields.get("database").expect("database field missing");
+        assert_eq!(database.field_type, FieldType::Object);
+        let nested = database
+            .nested
+            .as_ref()
+            .expect("database nested info missing");
+        let class_name = nested.class.as_ref().map(|s| s.as_ref());
+        assert_eq!(class_name, Some("DatabaseConfig"));
     }
 
     #[test]

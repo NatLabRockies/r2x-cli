@@ -1,8 +1,8 @@
-use crate::config_manager::Config;
-use crate::logger;
-use crate::GlobalOpts;
+use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
+use r2x_config::Config;
+use r2x_logger as logger;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -53,42 +53,37 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
     let is_stdin = cmd.file.is_none();
 
     // Load JSON input
-    let json_file_path = match cmd.file {
-        Some(file_path) => {
-            logger::debug(&format!("Reading JSON from file: {}", file_path.display()));
-            file_path
+    let json_file_path = if let Some(file_path) = cmd.file {
+        logger::debug(&format!("Reading JSON from file: {}", file_path.display()));
+        file_path
+    } else {
+        if atty::is(Stream::Stdin) {
+            logger::info("No JSON input detected; please provide --file or pipe JSON via stdin.");
+            return Err(
+                "No JSON input provided; either use --file or pipe data into `r2x read`".into(),
+            );
         }
-        None => {
-            if atty::is(Stream::Stdin) {
-                logger::info(
-                    "No JSON input detected; please provide --file or pipe JSON via stdin.",
-                );
-                return Err(
-                    "No JSON input provided; either use --file or pipe data into `r2x read`".into(),
-                );
-            }
 
-            logger::debug("Reading JSON from stdin");
-            let mut json_data = String::new();
-            std::io::stdin()
-                .read_to_string(&mut json_data)
-                .map_err(|e| format!("Failed to read from stdin: {}", e))?;
+        logger::debug("Reading JSON from stdin");
+        let mut json_data = String::new();
+        std::io::stdin()
+            .read_to_string(&mut json_data)
+            .map_err(|e| format!("Failed to read from stdin: {}", e))?;
 
-            let cache_dir = config.ensure_cache_path()?;
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            let temp_json = PathBuf::from(cache_dir).join(format!("stdin_input_{}.json", unique));
-            fs::write(&temp_json, &json_data)
-                .map_err(|e| format!("Failed to write temporary JSON file: {}", e))?;
+        let cache_dir = config.ensure_cache_path()?;
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let temp_json = PathBuf::from(cache_dir).join(format!("stdin_input_{}.json", unique));
+        fs::write(&temp_json, &json_data)
+            .map_err(|e| format!("Failed to write temporary JSON file: {}", e))?;
 
-            logger::debug(&format!(
-                "Saved stdin to temporary file: {}",
-                temp_json.display()
-            ));
-            temp_json
-        }
+        logger::debug(&format!(
+            "Saved stdin to temporary file: {}",
+            temp_json.display()
+        ));
+        temp_json
     };
 
     // Determine the display source for the banner
@@ -1597,7 +1592,7 @@ fn ensure_ipython_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::commands::read::*;
 
     #[test]
     fn test_read_command_creation() {
@@ -1643,7 +1638,10 @@ mod tests {
             exec: Some(PathBuf::from("script.py")),
             interactive: false,
         };
-        assert!(cmd.exec.is_some_and(|e| e == PathBuf::from("script.py")));
+        assert!(cmd
+            .exec
+            .as_deref()
+            .is_some_and(|e| e == Path::new("script.py")));
         assert!(!cmd.interactive);
     }
 

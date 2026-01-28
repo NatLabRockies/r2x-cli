@@ -3,7 +3,7 @@
 //! This module provides compile-time constants for directories and files that differ
 //! between Windows and Unix-like systems in Python virtual environments.
 
-use super::errors::BridgeError;
+use crate::errors::BridgeError;
 use r2x_logger as logger;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -161,8 +161,7 @@ pub fn resolve_python_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
         if let Some(candidate) = entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|name| name.contains("python"))
-                .unwrap_or(false)
+                .is_some_and(|name| name.contains("python"))
                 && p.is_file()
         }) {
             return Ok(candidate);
@@ -177,7 +176,7 @@ pub fn resolve_python_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::utils::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -266,12 +265,10 @@ mod tests {
         let result = resolve_site_package_path(&non_existent_path);
         assert!(result.is_err());
 
-        match result {
-            Err(BridgeError::VenvNotFound(path)) => {
-                assert_eq!(path, non_existent_path);
-            }
-            _ => panic!("Expected VenvNotFound error"),
-        }
+        assert!(matches!(
+            result,
+            Err(BridgeError::VenvNotFound(path)) if path == non_existent_path
+        ));
     }
 
     #[test]
@@ -370,7 +367,8 @@ mod tests {
         let result = resolve_site_package_path(venv_path);
         assert!(result.is_ok());
         // Should find one of them (implementation finds first match)
-        assert!(result.is_ok_and(|sp| sp.to_string_lossy().contains("python3.1")
-            && sp.ends_with("site-packages")));
+        assert!(result.is_ok_and(
+            |sp| sp.to_string_lossy().contains("python3.1") && sp.ends_with("site-packages")
+        ));
     }
 }

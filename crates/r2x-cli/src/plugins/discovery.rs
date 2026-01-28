@@ -3,9 +3,12 @@
 //! Manages the discovery and registration of plugins from packages,
 //! handling caching, dependencies, and manifest updates.
 
-use crate::logger;
-use crate::plugins::{find_package_path, utils, AstDiscovery};
-use r2x_manifest::{InstallType, Manifest, Plugin};
+use crate::plugins::error::PluginError;
+use crate::plugins::utils;
+use r2x_ast::AstDiscovery;
+use r2x_logger as logger;
+use r2x_manifest::package_discovery::PackageLocator;
+use r2x_manifest::types::{InstallType, Manifest, Plugin};
 use std::sync::Arc;
 
 /// Options for plugin discovery and registration
@@ -21,35 +24,21 @@ pub struct DiscoveryOptions {
 
 /// Discover and register plugins from a package and its dependencies
 pub fn discover_and_register_entry_points_with_deps(
-    _uv_path: &str,
-    _python_path: &str,
+    locator: &PackageLocator,
+    venv_path: Option<&str>,
+    manifest: &mut Manifest,
     opts: DiscoveryOptions,
-) -> Result<usize, String> {
+) -> Result<usize, PluginError> {
     let package = &opts.package;
     let package_name_full = &opts.package_name_full;
     let dependencies = &opts.dependencies;
     let no_cache = opts.no_cache;
     let package_version = opts.package_version.as_deref().unwrap_or("unknown");
 
-    // Get venv path from config for entry_points.txt lookup
-    let venv_path = crate::config_manager::Config::load()
-        .ok()
-        .map(|c| c.get_venv_path());
-
-    // Load manifest
-    let mut manifest = match Manifest::load() {
-        Ok(m) => m,
-        Err(e) => {
-            logger::warn(&format!("Failed to load manifest: {}", e));
-            Manifest::default()
-        }
-    };
-
     // Check if we already have this package in the manifest with plugins
     let has_cached_plugins = manifest
         .get_package(package_name_full)
-        .map(|pkg| !pkg.plugins.is_empty())
-        .unwrap_or(false);
+        .is_some_and(|pkg| !pkg.plugins.is_empty());
 
     // Discover or use cached plugins
     let discovered_plugins: Vec<Plugin> = if has_cached_plugins && !no_cache {
@@ -60,27 +49,34 @@ pub fn discover_and_register_entry_points_with_deps(
             .unwrap_or_default()
     } else {
         // Discover from source
-        let package_path = find_package_path(package_name_full)
-            .map_err(|e| format!("Failed to locate package '{}': {}", package_name_full, e))?;
+        let package_path = locator.find_package_path(package_name_full).map_err(|e| {
+            PluginError::Locator(format!(
+                "Failed to locate package '{}': {}",
+                package_name_full, e
+            ))
+        })?;
 
         logger::debug(&format!(
-            "Found package path for '{}': {:?}",
-            package_name_full, package_path
+            "Found package path for '{}': {}",
+            package_name_full,
+            package_path.display()
         ));
 
         let (ast_plugins, _decorator_regs) = AstDiscovery::discover_plugins(
             &package_path,
             package_name_full,
-            venv_path.as_deref(),
+            venv_path,
             Some(package_version),
         )
-        .map_err(|e| format!("Failed to discover plugins for '{}': {}", package, e))?;
+        .map_err(|e| {
+            PluginError::Discovery(format!(
+                "Failed to discover plugins for '{}': {}",
+                package, e
+            ))
+        })?;
 
-        // Convert discovered plugins to manifest plugins
+        // ast_plugins are already in manifest Plugin format
         ast_plugins
-            .into_iter()
-            .map(|p| p.to_manifest_plugin())
-            .collect()
     };
 
     for plugin in &discovered_plugins {
@@ -138,8 +134,7 @@ pub fn discover_and_register_entry_points_with_deps(
 
         let has_dep_cached = manifest
             .get_package(&dep)
-            .map(|pkg| !pkg.plugins.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|pkg| !pkg.plugins.is_empty());
 
         let dep_plugins: Vec<Plugin> = if has_dep_cached && !no_cache {
             manifest
@@ -147,25 +142,19 @@ pub fn discover_and_register_entry_points_with_deps(
                 .map(|pkg| pkg.plugins.clone())
                 .unwrap_or_default()
         } else {
-            match find_package_path(&dep) {
-                Ok(dep_path) => match AstDiscovery::discover_plugins(
-                    &dep_path,
-                    &dep,
-                    venv_path.as_deref(),
-                    None,
-                ) {
-                    Ok((ast_plugins, _decorators)) => ast_plugins
-                        .into_iter()
-                        .map(|p| p.to_manifest_plugin())
-                        .collect(),
-                    Err(e) => {
-                        logger::warn(&format!(
-                            "Failed to discover plugins from dependency '{}': {}",
-                            &dep, e
-                        ));
-                        Vec::new()
+            match locator.find_package_path(&dep) {
+                Ok(dep_path) => {
+                    match AstDiscovery::discover_plugins(&dep_path, &dep, venv_path, None) {
+                        Ok((ast_plugins, _decorators)) => ast_plugins,
+                        Err(e) => {
+                            logger::warn(&format!(
+                                "Failed to discover plugins from dependency '{}': {}",
+                                &dep, e
+                            ));
+                            Vec::new()
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     logger::warn(&format!(
                         "Failed to locate dependency package '{}': {}",
@@ -190,16 +179,14 @@ pub fn discover_and_register_entry_points_with_deps(
     }
 
     // Save the updated manifest with all plugins (explicit + dependencies)
-    manifest
-        .save()
-        .map_err(|e| format!("Failed to save manifest: {}", e))?;
+    manifest.save()?;
 
     Ok(total_plugins)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plugins::discovery::*;
 
     #[test]
     fn test_looks_like_r2x_plugin() {

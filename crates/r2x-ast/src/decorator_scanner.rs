@@ -112,10 +112,10 @@ impl DecoratorScanner {
     }
 
     /// Extract decorator and function information directly from ast-grep match meta-variables
-    fn extract_from_decorated_match<'a>(
+    fn extract_from_decorated_match(
         &self,
         decorated_match: &ast_grep_core::matcher::NodeMatch<
-            'a,
+            '_,
             ast_grep_core::source::StrDoc<Python>,
         >,
         file_path: &Path,
@@ -356,7 +356,7 @@ impl DecoratorScanner {
         // Check for *args or **kwargs
         let is_var_arg = if param_str.starts_with("**") {
             Some(VarArgType::Kwargs)
-        } else if param_str.starts_with("*") {
+        } else if param_str.starts_with('*') {
             Some(VarArgType::Args)
         } else {
             None
@@ -434,19 +434,17 @@ impl DecoratorScanner {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::decorator_scanner::*;
 
     #[test]
     fn test_parse_decorator_args_from_text() {
         let args_str = "target_version=LATEST_COMMIT, upgrade_type=FILE, priority=30";
         let table = DecoratorScanner::parse_decorator_args_from_text(args_str);
 
-        assert!(table.get("priority").is_some());
-        if let Some(toml::Value::Integer(30)) = table.get("priority") {
-            // Good
-        } else {
-            panic!("priority should be 30");
-        }
+        assert!(matches!(
+            table.get("priority"),
+            Some(toml::Value::Integer(30))
+        ));
     }
 
     #[test]
@@ -464,9 +462,8 @@ mod tests {
     fn test_parse_single_parameter_from_text() {
         let param = DecoratorScanner::parse_single_parameter_from_text("folder: Path");
         assert!(param.is_ok());
-        assert!(param.is_ok_and(|p| p.name == "folder"
-            && p.param_type == "Path"
-            && p.default.is_none()));
+        assert!(param
+            .is_ok_and(|p| p.name == "folder" && p.param_type == "Path" && p.default.is_none()));
 
         let param_with_default =
             DecoratorScanner::parse_single_parameter_from_text("timeout: int = 30");

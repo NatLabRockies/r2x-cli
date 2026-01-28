@@ -91,7 +91,7 @@ pub fn parse_pyproject_entry_points(content: &str) -> Vec<EntryPointInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::entry_points::pyproject::*;
 
     #[test]
     fn test_parse_pyproject_entry_points() {

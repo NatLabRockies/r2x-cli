@@ -235,12 +235,10 @@ def _r2x_cache_path_override():
             let code_cstr = std::ffi::CString::new(patch_code).map_err(|e| {
                 BridgeError::Python(format!("Failed to prepare cache override script: {}", e))
             })?;
-            let filename = std::ffi::CString::new("r2x_cache_patch.py").map_err(|e| {
-                BridgeError::Python(format!("Failed to create filename: {}", e))
-            })?;
-            let module_name = std::ffi::CString::new("r2x_cache_patch").map_err(|e| {
-                BridgeError::Python(format!("Failed to create module name: {}", e))
-            })?;
+            let filename = std::ffi::CString::new("r2x_cache_patch.py")
+                .map_err(|e| BridgeError::Python(format!("Failed to create filename: {}", e)))?;
+            let module_name = std::ffi::CString::new("r2x_cache_patch")
+                .map_err(|e| BridgeError::Python(format!("Failed to create module name: {}", e)))?;
             let patch_module = PyModule::from_code(
                 py,
                 code_cstr.as_c_str(),
@@ -610,7 +608,7 @@ pub struct PythonEnvCompat {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::python_bridge::*;
 
     #[test]
     fn test_bridge_struct() {

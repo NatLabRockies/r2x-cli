@@ -83,13 +83,13 @@ pub fn parse_entry_point_line(line: &str, section: &str) -> Option<EntryPointInf
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::entry_points::parser::*;
 
     #[test]
     fn test_parse_all_entry_points_r2x_plugin() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
-"#;
+";
         let entries = parse_all_entry_points(content);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "reeds");
@@ -100,7 +100,7 @@ reeds = r2x_reeds:ReEDSParser
 
     #[test]
     fn test_parse_all_entry_points_multiple_sections() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
 
 [r2x.transforms]
@@ -109,7 +109,7 @@ add-emission-cap = r2x_reeds.sysmod.emission_cap:add_emission_cap
 
 [console_scripts]
 some-cli = some_module:main
-"#;
+";
         let entries = parse_all_entry_points(content);
         assert_eq!(entries.len(), 3);
 
@@ -129,12 +129,12 @@ some-cli = some_module:main
 
     #[test]
     fn test_parse_all_entry_points_ignores_non_r2x_sections() {
-        let content = r#"[console_scripts]
+        let content = r"[console_scripts]
 some-cli = some_module:main
 
 [gui_scripts]
 some-gui = some_module:gui_main
-"#;
+";
         let entries = parse_all_entry_points(content);
         assert!(entries.is_empty());
     }

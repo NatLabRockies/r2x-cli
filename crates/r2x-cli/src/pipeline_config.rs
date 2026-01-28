@@ -64,7 +64,7 @@ impl PipelineConfig {
             if let Some(end) = result[start..].find('}') {
                 let var_name = &result[start + 2..start + end];
                 let value = self.get_variable_string(var_name)?;
-                result.replace_range(start..start + end + 1, &value);
+                result.replace_range(start..=(start + end), &value);
             } else {
                 return Err(PipelineError::InvalidConfig(
                     "Unclosed variable substitution ${".to_string(),
@@ -77,7 +77,7 @@ impl PipelineConfig {
             if let Some(end) = result[start..].find(')') {
                 let var_name = &result[start + 2..start + end];
                 let value = self.get_variable_string(var_name)?;
-                result.replace_range(start..start + end + 1, &value);
+                result.replace_range(start..=(start + end), &value);
             } else {
                 return Err(PipelineError::InvalidConfig(
                     "Unclosed variable substitution $(".to_string(),
@@ -119,7 +119,7 @@ impl PipelineConfig {
             }
             serde_yaml::Value::Mapping(map) => {
                 let mut new_map = serde_yaml::Mapping::new();
-                for (k, v) in map.iter() {
+                for (k, v) in map {
                     let new_key = self.substitute_value(k)?;
                     let new_value = self.substitute_value(v)?;
                     new_map.insert(new_key, new_value);
@@ -128,7 +128,7 @@ impl PipelineConfig {
             }
             serde_yaml::Value::Sequence(seq) => {
                 let mut new_seq = Vec::new();
-                for item in seq.iter() {
+                for item in seq {
                     new_seq.push(self.substitute_value(item)?);
                 }
                 Ok(serde_yaml::Value::Sequence(new_seq))
@@ -215,7 +215,7 @@ impl PipelineConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::pipeline_config::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -273,6 +273,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::panic)] // panic is acceptable in test code for unreachable branches
     fn test_substitute_yaml_value() {
         let mut vars = HashMap::new();
         vars.insert("year".to_string(), serde_yaml::Value::Number(2032.into()));
@@ -304,16 +305,13 @@ mod tests {
         let result = config.substitute_value(&input);
         assert!(result.is_ok());
         let Ok(serde_yaml::Value::Mapping(map)) = result else {
-            assert!(false, "Expected mapping");
-            return;
+            panic!("Expected mapping");
         };
         let year = map.get(serde_yaml::Value::String("solve_year".to_string()));
         assert!(year.is_some_and(|y| y == &serde_yaml::Value::String("2032".to_string())));
 
         let folder = map.get(serde_yaml::Value::String("folder_path".to_string()));
-        assert!(
-            folder.is_some_and(|f| f == &serde_yaml::Value::String("/data/inputs".to_string()))
-        );
+        assert!(folder.is_some_and(|f| f == &serde_yaml::Value::String("/data/inputs".to_string())));
     }
 
     #[test]

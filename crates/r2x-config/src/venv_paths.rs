@@ -171,7 +171,7 @@ pub fn resolve_python_exe(venv_path: &Path) -> Result<PathBuf, VenvPathError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::venv_paths::*;
     use std::fs;
     use tempfile::TempDir;
 

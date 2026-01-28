@@ -3,6 +3,164 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
+/// Resolve installed package paths from site-packages (optionally using UV cache).
+#[derive(Debug, Clone)]
+pub struct PackageLocator {
+    site_packages: PathBuf,
+    uv_cache_dir: Option<PathBuf>,
+}
+
+impl PackageLocator {
+    /// Create a new locator for the given site-packages root.
+    pub fn new(site_packages: PathBuf, uv_cache_dir: Option<PathBuf>) -> Result<Self> {
+        debug!("Initializing package locator for: {:?}", site_packages);
+
+        if !site_packages.exists() {
+            return Err(anyhow!(
+                "Site-packages directory not found: {}",
+                site_packages.display()
+            ));
+        }
+
+        Ok(PackageLocator {
+            site_packages,
+            uv_cache_dir,
+        })
+    }
+
+    /// Return the site-packages root used by this locator.
+    pub fn site_packages(&self) -> &Path {
+        &self.site_packages
+    }
+
+    /// Locate a package root suitable for AST discovery.
+    pub fn find_package_path(&self, package_name_full: &str) -> Result<PathBuf> {
+        let normalized = package_name_full.replace('-', "_");
+
+        if let Some(path) = self.find_package_path_via_pth(&normalized) {
+            return Ok(path);
+        }
+
+        let direct = self.site_packages.join(&normalized);
+        if direct.is_dir() {
+            return Ok(direct);
+        }
+
+        let mut dist_info_path: Option<PathBuf> = None;
+        let dist_prefix = format!("{}-", normalized);
+
+        let entries = fs::read_dir(&self.site_packages)?;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str == normalized {
+                return Ok(entry.path());
+            }
+            if name_str.starts_with(&dist_prefix) && name_str.ends_with(".dist-info") {
+                dist_info_path = Some(entry.path());
+            }
+        }
+
+        if let Some(dist_info) = dist_info_path {
+            if let Some(resolved) = self.resolve_from_dist_info(&dist_info) {
+                return Ok(resolved);
+            }
+            debug!(
+                "Found dist-info for '{}' but could not resolve top-level module",
+                package_name_full
+            );
+            return Ok(self.site_packages.clone());
+        }
+
+        Err(anyhow!(
+            "Package '{}' not found in site-packages: {}",
+            package_name_full,
+            self.site_packages.display()
+        ))
+    }
+
+    fn find_package_path_via_pth(&self, normalized_package_name: &str) -> Option<PathBuf> {
+        let cache_dir = self.uv_cache_dir.as_ref()?;
+        if !cache_dir.exists() {
+            return None;
+        }
+
+        let hash_dirs = fs::read_dir(cache_dir).ok()?;
+        for hash_entry in hash_dirs {
+            let hash_entry = match hash_entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+
+            let hash_path = hash_entry.path();
+            if !hash_path.is_dir() {
+                continue;
+            }
+
+            let pth_entries = match fs::read_dir(&hash_path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            for pth_entry in pth_entries {
+                let pth_entry = match pth_entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+
+                let pth_file_name = pth_entry.file_name().to_string_lossy().to_string();
+                let matches = pth_file_name == format!("{}.pth", normalized_package_name)
+                    || (pth_file_name.starts_with("__editable__.")
+                        && pth_file_name.contains(&format!("{}-", normalized_package_name))
+                        && pth_file_name.ends_with(".pth"));
+
+                if !matches {
+                    continue;
+                }
+
+                if let Ok(content) = fs::read_to_string(pth_entry.path()) {
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') {
+                            continue;
+                        }
+                        let candidate = PathBuf::from(line);
+                        if candidate.exists() {
+                            return Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn resolve_from_dist_info(&self, dist_info_path: &Path) -> Option<PathBuf> {
+        let top_level = dist_info_path.join("top_level.txt");
+        let content = fs::read_to_string(&top_level).ok()?;
+        for line in content.lines() {
+            let module = line.trim();
+            if module.is_empty() {
+                continue;
+            }
+            let module_dir = self.site_packages.join(module);
+            if module_dir.is_dir() {
+                return Some(module_dir);
+            }
+            let module_file = self.site_packages.join(format!("{}.py", module));
+            if module_file.is_file() {
+                return Some(self.site_packages.clone());
+            }
+        }
+        None
+    }
+}
+
 /// Information about a discovered r2x package
 #[derive(Debug, Clone)]
 pub struct DiscoveredPackage {
@@ -35,8 +193,8 @@ impl PackageDiscoverer {
 
         if !site_packages.exists() {
             return Err(anyhow!(
-                "Site-packages directory not found: {:?}",
-                site_packages
+                "Site-packages directory not found: {}",
+                site_packages.display()
             ));
         }
 
@@ -95,8 +253,8 @@ impl PackageDiscoverer {
         let entry_points_file = dist_info_path.join("entry_points.txt");
         if !entry_points_file.exists() {
             return Err(anyhow!(
-                "No entry_points.txt found in: {:?}",
-                dist_info_path
+                "No entry_points.txt found in: {}",
+                dist_info_path.display()
             ));
         }
 
@@ -152,7 +310,7 @@ impl PackageDiscoverer {
             {
                 // Try to read the .pth file and resolve the actual source path
                 if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(resolved_path) = self.resolve_pth_path(&content) {
+                    if let Ok(resolved_path) = Self::resolve_pth_path(&content) {
                         debug!(
                             "Found editable install for {} at: {:?}",
                             package_name, resolved_path
@@ -168,7 +326,7 @@ impl PackageDiscoverer {
 
     /// Parse .pth file content and resolve the actual source path
     #[allow(dead_code)]
-    fn resolve_pth_path(&self, content: &str) -> Result<PathBuf> {
+    fn resolve_pth_path(content: &str) -> Result<PathBuf> {
         // .pth files can contain multiple lines, typically with import statements
         // For editable installs, usually just contains a path
         for line in content.lines() {
@@ -227,8 +385,8 @@ pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> 
 
     if module.is_empty() || function.is_empty() {
         return Err(anyhow!(
-            "No valid r2x_plugin entry point found in: {:?}",
-            entry_points_path
+            "No valid r2x_plugin entry point found in: {}",
+            entry_points_path.display()
         ));
     }
 
@@ -238,16 +396,16 @@ pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::package_discovery::*;
 
     #[test]
     fn test_parse_entry_points() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds.plugins:register_plugin
 
 [other]
 something = some.module:function
-"#;
+";
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join("test_entry_points.txt");
@@ -264,10 +422,10 @@ something = some.module:function
 
     #[test]
     fn test_parse_entry_points_multiple_entries() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds.plugins:register_plugin
 other = other.module:func
-"#;
+";
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join("test_entry_points2.txt");
