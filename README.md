@@ -1,374 +1,344 @@
 # r2x-cli
 
-A comprehensive framework plugin manager for the r2x power systems modeling ecosystem. Simplifies discovery, installation, and management of r2x framework plugins.
+A framework plugin manager for the r2x power systems modeling ecosystem. The r2x-cli simplifies discovery, installation, and management of r2x framework plugins, providing a unified interface for running data processing pipelines.
 
-## Features
+## Installation
 
-- Easy plugin management
-- Built-in package resolution
-- Python integration support
+Download the latest pre-built binary for your platform from the [releases page](https://github.com/NatLabRockies/r2x-cli/releases/latest).
 
 ## Building from Source
 
 ### Prerequisites
 
-Before building r2x-cli, you need:
+Building r2x-cli requires the Rust toolchain, the uv package manager, and Python 3.11, 3.12, or 3.13.
 
-1. **Rust toolchain** - Install via rustup:
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-   Follow the prompts and choose the default installation method.
+Install the Rust toolchain via rustup:
 
-2. **UV package manager** - Install via:
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
-3. **Python 3.11, 3.12, or 3.13** - Install via uv:
-   ```bash
-   uv python install 3.12
-   ```
+Install the uv package manager:
 
-After installation, restart your shell to ensure the tools are in your PATH.
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-### Build Steps
+Install Python via uv:
 
-#### Step 1: Clone and Build
+```bash
+uv python install 3.12
+```
+
+Restart your shell after installation to ensure the tools are available in your PATH.
+
+### Build and Install
 
 Clone the repository:
-```bash
-# For users (HTTPS)
-git clone https://github.com/NREL/r2x-cli && cd r2x-cli
-
-# For developers (SSH)
-git clone git@github.com:NREL/r2x-cli.git && cd r2x-cli
-```
-
-Set the `PYO3_PYTHON` environment variable to point to your Python installation. This is required for the PyO3 bindings to find the correct Python interpreter:
 
 ```bash
-# Find your Python installation path
-uv python list
-
-# Linux example:
-export PYO3_PYTHON=~/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/bin/python3.12
-
-# macOS example:
-export PYO3_PYTHON=~/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/bin/python3.12
-
-# Windows example (PowerShell):
-$env:PYO3_PYTHON = "$env:USERPROFILE\.local\share\uv\python\cpython-3.12.11-windows-x86_64-none\python.exe"
+git clone https://github.com/NatLabRockies/r2x-cli && cd r2x-cli
 ```
 
-Build in release mode:
-```bash
-cargo build --release
-```
-
-The binary will be available at `target/release/r2x` (or `target/release/r2x.exe` on Windows).
-
-#### Step 2: Install the Binary
-
-Create the r2x binary directory and copy the built binary:
+Build and install using cargo. The `PYO3_PYTHON` environment variable tells PyO3 which Python interpreter to use:
 
 ```bash
-# Linux/macOS
-mkdir -p ~/.r2x/bin
-cp target/release/r2x ~/.r2x/bin/r2x
-
-# Windows (PowerShell)
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.r2x\bin"
-Copy-Item target\release\r2x.exe "$env:USERPROFILE\.r2x\bin\r2x.exe"
+PYO3_PYTHON=$(uv python find 3.12) cargo install --path crates/r2x-cli --force --locked
 ```
 
-#### Step 3: Link Python Dynamic Library
+This installs the `r2x` binary to `~/.cargo/bin/`, which should already be in your PATH if you installed Rust via rustup.
 
-The r2x-cli binary needs to find the Python shared library at runtime. Create a symbolic link in the binary directory:
+Verify the installation:
 
-**Linux:**
-```bash
-# Link libpython3.12.so.1.0
-ln -s ~/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/libpython3.12.so.1.0 \
-      ~/.r2x/bin/libpython3.12.so.1.0
-
-# If the file doesn't exist, check the exact path with:
-find ~/.local/share/uv/python -name "libpython*.so*"
-```
-
-**macOS:**
-```bash
-# Link libpython3.12.dylib
-ln -s ~/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/libpython3.12.dylib \
-      ~/.r2x/bin/libpython3.12.dylib
-
-# For Intel Macs, the path may be different:
-find ~/.local/share/uv/python -name "libpython*.dylib"
-```
-
-**Windows:**
-```powershell
-# Copy python312.dll (Windows uses DLL instead of symlinks)
-Copy-Item "$env:USERPROFILE\.local\share\uv\python\cpython-3.12.11-windows-x86_64-none\python312.dll" `
-          "$env:USERPROFILE\.r2x\bin\python312.dll"
-```
-
-#### Step 4: Update PATH
-
-Add the r2x binary directory to your PATH:
-
-**Linux/macOS (bash):**
-```bash
-echo 'export PATH="$HOME/.r2x/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Linux/macOS (zsh):**
-```bash
-echo 'export PATH="$HOME/.r2x/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-**Windows (PowerShell):**
-```powershell
-# Add to user PATH permanently
-[Environment]::SetEnvironmentVariable(
-    "Path",
-    [Environment]::GetEnvironmentVariable("Path", "User") + ";$env:USERPROFILE\.r2x\bin",
-    "User"
-)
-
-# For current session only:
-$env:PATH = "$env:USERPROFILE\.r2x\bin;$env:PATH"
-```
-
-#### Step 5: Verify Installation
-
-Test that r2x is working:
 ```bash
 r2x --version
 r2x --help
 ```
 
-You should see the version information and list of available commands.
+### Alternative: Manual Build
+
+For more control over the build process, you can build manually and place the binary in a custom location:
+
+```bash
+PYO3_PYTHON=$(uv python find 3.12) cargo build --release
+```
+
+The binary will be at `target/release/r2x`. Copy it to your preferred location and ensure that location is in your PATH.
 
 ### Troubleshooting Build Issues
 
-**Problem: "libpython not found" error**
-- Verify the symbolic link or DLL copy was created correctly
-- Check that the Python library exists at the source path using `find` (Linux/macOS) or `Get-ChildItem` (Windows)
-- Ensure the Python version in the library filename matches your PYO3_PYTHON version
+If the build fails with a Python-related error, verify that `uv python find 3.12` returns a valid path. You may need to run `uv python install 3.12` first.
 
-**Problem: Build fails with "PYO3_PYTHON not set"**
-- Make sure you exported PYO3_PYTHON before running `cargo build`
-- Verify the path points to a valid Python executable: `$PYO3_PYTHON --version`
+If the r2x command is not found after installation, verify `~/.cargo/bin` is in your PATH with `echo $PATH`.
 
-**Problem: r2x command not found**
-- Verify ~/.r2x/bin is in your PATH: `echo $PATH`
-- Try using the full path: `~/.r2x/bin/r2x --version`
-- Make sure you reloaded your shell configuration
+On HPC systems or machines with older glibc versions, building from source is often required because pre-built binaries may be incompatible.
 
-**HPC/Older Systems:**
-On HPC systems or machines with older glibc versions, building from source is often required because pre-built binaries may be incompatible. Follow the steps above, paying special attention to setting the correct PYO3_PYTHON path for your system's Python installation.
+## Getting Started
 
-## Python Package Management
-
-This project uses [uv](https://github.com/astral-sh/uv) for handling Python packages. With uv, you don't need to worry about Python or plugin versioning—uv automatically handles dependency resolution and environment isolation for you.
-
-### Getting Started
+Initialize a new pipeline configuration file:
 
 ```bash
-# Initialize a new pipeline file in the current directory
 r2x init
-
-# Initialize with custom filename
-r2x init my-pipeline.yaml
 ```
 
-The `r2x init` command creates a template pipeline file with:
+This creates a `pipeline.yaml` file containing example variables, pipeline definitions, and plugin configuration templates. Specify a custom filename with `r2x init my-pipeline.yaml`.
 
-- Example variables for substitution
-- Multiple pipeline examples
-- Plugin configuration templates
-- Comments explaining all features
+## Configuration
 
-You can then edit the file to configure your own pipelines.
-
-### Configuration Management
+Display current configuration:
 
 ```bash
-# Show current configuration
 r2x config show
+```
 
-# Set configuration values
+Update configuration values:
+
+```bash
 r2x config set python-version 3.13
 r2x config set cache-path /path/to/cache
+```
 
-# View or set config file path
-r2x config path                    # Show path
-r2x config path /new/config/path   # Set path
+Reset configuration to defaults:
 
-# Reset configuration to defaults
+```bash
 r2x config reset -y
 ```
 
-### Python & Virtual Environment Management
+### Python and Virtual Environment
+
+Install a specific Python version:
 
 ```bash
-# Install or update Python version
 r2x config python install 3.13
-
-# Get the Python executable path (useful for scripting)
-r2x config python path
-
-# Show current Python configuration
-r2x config python show
-
-# Manage virtual environment
-r2x config venv create              # Recreate venv (prompts for confirmation)
-r2x config venv create -y/--yes     # Skip confirmation
-r2x config venv path                # Show venv path
-
-# Get or set custom venv path
-r2x config venv path /path/to/custom/venv
-
-# Automated venv recreation
-R2X_VENV_YES=1 r2x config venv create  # Skip confirmation with environment variable
 ```
 
-**Install packages in your managed venv:**
+Get the Python executable path:
+
+```bash
+r2x config python path
+```
+
+Create or recreate the virtual environment:
+
+```bash
+r2x config venv create -y
+```
+
+Install packages into the managed virtual environment:
 
 ```bash
 uv pip install <package> --python $(r2x config python path)
 ```
 
-### Cache Management
+### Cache
+
+Clean the cache directory:
 
 ```bash
-# Clean the cache directory
 r2x config cache clean
-
-# View or set cache path
-r2x config cache path                    # Show path
-r2x config cache path /new/cache/path    # Set path
 ```
 
-### Pipeline Management
+## Plugin Management
+
+List all installed plugins:
 
 ```bash
-# List available pipelines in a file
+r2x list
+```
+
+Filter by package or module name:
+
+```bash
+r2x list r2x-reeds
+r2x list r2x-reeds break_gens
+```
+
+Install a plugin from PyPI:
+
+```bash
+r2x install r2x-reeds
+```
+
+Install from a git repository:
+
+```bash
+r2x install NREL/r2x-reeds
+r2x install --branch develop NREL/r2x-reeds
+r2x install --tag v1.0.0 NREL/r2x-reeds
+```
+
+Install in editable mode for development:
+
+```bash
+r2x install -e /path/to/local/plugin
+```
+
+Remove a plugin:
+
+```bash
+r2x remove r2x-reeds
+```
+
+Re-run plugin discovery:
+
+```bash
+r2x sync
+```
+
+Clean the plugin manifest:
+
+```bash
+r2x clean -y
+```
+
+## Running Plugins
+
+Run a plugin with arguments:
+
+```bash
+r2x run plugin r2x_reeds.parser store-path=/path/to/data solve_year=2030
+```
+
+Show plugin help:
+
+```bash
+r2x run plugin r2x_reeds.parser --show-help
+```
+
+List available plugins:
+
+```bash
+r2x run plugin
+```
+
+## Pipeline Management
+
+List all pipelines in a configuration file:
+
+```bash
 r2x run pipeline.yaml --list
+```
 
-# Execute a pipeline (explicit path and name)
-r2x run pipeline.yaml my-pipeline
+Preview pipeline execution without running:
 
-# Execute from default pipeline.yaml
-r2x run my-pipeline
-
-# Show pipeline structure
-r2x run pipeline.yaml my-pipeline --print
-
-# Show pipeline flow without executing (--dry-run)
+```bash
 r2x run pipeline.yaml my-pipeline --dry-run
+```
 
-# Save pipeline output to file
+Execute a pipeline:
+
+```bash
+r2x run pipeline.yaml my-pipeline
+```
+
+Execute and save output:
+
+```bash
 r2x run pipeline.yaml my-pipeline -o output.json
 ```
 
-The `--dry-run` flag displays which plugins produce/consume stdout, helping you understand data flow between pipeline stages before execution.
+### Pipeline Configuration Format
 
-### Plugin Management
+Pipeline configuration files use YAML with three sections: `variables` for substitution values, `pipelines` for named plugin sequences, and `config` for plugin-specific settings.
 
-```bash
-# List all installed plugins
-r2x list
+```yaml
+variables:
+  output_dir: "output"
+  reeds_run: /path/to/reeds/run
+  solve_year: 2032
 
-# Filter by plugin package name
-r2x list r2x-reeds
+pipelines:
+  reeds-test:
+    - r2x-reeds.parser
+    - r2x-reeds.break-gens
 
-# Filter by module/function name
-r2x list r2x-reeds break_gens
+  reeds-to-plexos:
+    - r2x-reeds.upgrader
+    - r2x-reeds.parser
+    - r2x-reeds-to-plexos.translation
+    - r2x-plexos.exporter
 
-# Install a plugin from PyPI
-r2x install r2x-reeds
+config:
+  r2x-reeds.upgrader:
+    path: ${reeds_run}
 
-# Install from git repository
-r2x install NREL/r2x-reeds
+  r2x-reeds.parser:
+    weather_year: 2012
+    solve_year: ${solve_year}
+    path: ${reeds_run}
 
-# Install from git with custom host
-r2x install --host github.com NREL/r2x-reeds
+  r2x-reeds.break-gens:
+    drop_capacity_threshold: 5
 
-# Install from specific branch, tag, or commit
-r2x install --branch develop NREL/r2x-reeds
-r2x install --tag v1.0.0 NREL/r2x-reeds
-r2x install --commit abc123 NREL/r2x-reeds
+  r2x-plexos.exporter:
+    output: ${output_dir}
 
-# Install in editable mode (for development)
-r2x install -e /path/to/plugin
-
-# Install with cache disabled (force rebuild)
-r2x install --no-cache r2x-reeds
-
-# Remove a plugin
-r2x remove r2x-reeds
-
-# Sync plugin manifest (refresh plugin discovery)
-r2x sync
-
-# Clean plugin manifest (remove all plugins)
-r2x clean
-r2x clean -y  # Skip confirmation
+output_folder: ${output_dir}
 ```
 
-### Running Plugins Directly
+Run a pipeline with:
 
 ```bash
-# Run a plugin with arguments (key=value format)
-r2x run plugin my-plugin key1=value1 key2=value2
-
-# Show plugin help and parameters
-r2x run plugin my-plugin --show-help
-
-# Example: Run ReEDS parser
-r2x run plugin r2x_reeds.parser \
-  store-path=/path/to/reeds/run \
-  solve_year=2030 \
-  weather_year=2012 \
-  case_name=my_scenario
-
-# Pass additional arguments after plugin args
-r2x run plugin my-plugin arg1=value1 -- --extra-flag
+r2x run pipeline.yaml reeds-test
 ```
 
-### System Integration
+## Interactive System Shell
+
+Load a system from JSON and open an interactive IPython session:
 
 ```bash
-# Load and inspect a JSON system file
 r2x read system.json
-
-# Load from stdin and open IPython with system available
-cat system.json | r2x read
-
-# Pipe plugin output to read command
-r2x run plugin r2x_reeds.parser store-path=/data | r2x read
 ```
 
-### Verbosity Control
+Load from stdin:
 
 ```bash
-# Quiet mode (suppress info logs)
+cat system.json | r2x read
+```
+
+Execute a script against the loaded system:
+
+```bash
+r2x read system.json --exec script.py
+```
+
+Execute a script then drop into interactive mode:
+
+```bash
+r2x read system.json --exec script.py -i
+```
+
+The interactive session provides the loaded system as `sys`, access to plugins via `plugins`, and lazy-loaded `pd`, `np`, and `plt` for pandas, numpy, and matplotlib. Type `%r2x_help` in the session to see available commands.
+
+## Verbosity Control
+
+Suppress informational logs:
+
+```bash
 r2x -q run plugin my-plugin
+```
 
-# Very quiet mode (suppress info and plugin stdout)
-r2x -q -q run plugin my-plugin
+Suppress logs and plugin stdout:
 
-# Verbose mode (show debug logs)
+```bash
+r2x -qq run plugin my-plugin
+```
+
+Enable debug logging:
+
+```bash
 r2x -v run plugin my-plugin
+```
 
-# Very verbose mode (show trace logs)
+Enable trace logging:
+
+```bash
 r2x -vv run plugin my-plugin
+```
 
-# Enable Python logging
+Show Python logs on console:
+
+```bash
 r2x --log-python run plugin my-plugin
 ```
 
