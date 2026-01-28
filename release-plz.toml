@@ -10,7 +10,7 @@ changelog_update = true
 dependencies_update = true
 
 # create tags for the releases
-git_tag_enable = true
+git_tag_enable = false
 
 # disable GitHub releases
 git_release_enable = false
@@ -26,3 +26,9 @@ publish_allow_dirty = false
 
 # disable running `cargo-semver-checks`
 semver_check = false
+
+[[package]]
+name = "r2x"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = false
