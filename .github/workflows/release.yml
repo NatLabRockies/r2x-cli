@@ -119,7 +119,7 @@ jobs:
         if: ${{ matrix.container }}
         shell: bash
         run: |
-          dnf install -y git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel epel-release coreutils
+          dnf install -y --allowerasing git tar xz curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel epel-release coreutils
           dnf install -y patchelf
       - name: enable windows longpaths
         if: runner.os == 'Windows'
