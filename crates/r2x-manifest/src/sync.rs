@@ -74,7 +74,8 @@ impl SyncEngine {
 
     /// Take ownership of the manifest
     pub fn into_manifest(self) -> Manifest {
-        Arc::try_unwrap(self.manifest).map_or_else(|arc| arc.read().clone(), |lock| lock.into_inner())
+        Arc::try_unwrap(self.manifest)
+            .map_or_else(|arc| arc.read().clone(), |lock| lock.into_inner())
     }
 
     /// Sync packages - HOT PATH

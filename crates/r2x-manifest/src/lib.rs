@@ -17,15 +17,20 @@
 pub mod errors;
 pub mod execution_types;
 pub mod manifest;
+pub mod package_discovery;
 pub mod runtime;
 pub mod sync;
 pub mod types;
 
 // Re-export core types
+pub use manifest::RemovedPackage;
 pub use types::{
     ConfigClass, ConfigField, Constraint, DefaultValue, FieldType, InstallType, Manifest,
     NestedInfo, Package, Parameter, Plugin, PluginType, SchemaField, SchemaFields,
 };
+
+// Re-export package discovery helpers
+pub use package_discovery::{DiscoveredPackage, PackageDiscoverer, PackageLocator};
 
 // Re-export sync utilities
 pub use sync::{Change, StringInterner, SyncEngine, SyncResult};

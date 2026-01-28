@@ -370,7 +370,8 @@ mod tests {
         let result = resolve_site_package_path(venv_path);
         assert!(result.is_ok());
         // Should find one of them (implementation finds first match)
-        assert!(result.is_ok_and(|sp| sp.to_string_lossy().contains("python3.1")
-            && sp.ends_with("site-packages")));
+        assert!(result.is_ok_and(
+            |sp| sp.to_string_lossy().contains("python3.1") && sp.ends_with("site-packages")
+        ));
     }
 }

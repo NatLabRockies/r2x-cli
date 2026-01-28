@@ -15,6 +15,9 @@ git_tag_enable = false
 # disable GitHub releases
 git_release_enable = false
 
+# only run release when a release PR was merged
+release_always = false
+
 # labels for the release PR
 pr_labels = ["release"]
 

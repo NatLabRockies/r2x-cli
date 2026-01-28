@@ -311,9 +311,7 @@ mod tests {
         assert!(year.is_some_and(|y| y == &serde_yaml::Value::String("2032".to_string())));
 
         let folder = map.get(serde_yaml::Value::String("folder_path".to_string()));
-        assert!(
-            folder.is_some_and(|f| f == &serde_yaml::Value::String("/data/inputs".to_string()))
-        );
+        assert!(folder.is_some_and(|f| f == &serde_yaml::Value::String("/data/inputs".to_string())));
     }
 
     #[test]

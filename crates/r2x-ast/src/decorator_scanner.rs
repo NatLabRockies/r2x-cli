@@ -464,9 +464,8 @@ mod tests {
     fn test_parse_single_parameter_from_text() {
         let param = DecoratorScanner::parse_single_parameter_from_text("folder: Path");
         assert!(param.is_ok());
-        assert!(param.is_ok_and(|p| p.name == "folder"
-            && p.param_type == "Path"
-            && p.default.is_none()));
+        assert!(param
+            .is_ok_and(|p| p.name == "folder" && p.param_type == "Path" && p.default.is_none()));
 
         let param_with_default =
             DecoratorScanner::parse_single_parameter_from_text("timeout: int = 30");

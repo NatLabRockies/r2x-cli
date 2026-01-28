@@ -33,7 +33,8 @@ impl Config {
 
         // Default config file path (platform-appropriate).
         #[cfg(not(target_os = "windows"))]
-        let Some(default) = dirs::home_dir().map(|h| h.join(".config").join("r2x").join("r2x.toml"))
+        let Some(default) =
+            dirs::home_dir().map(|h| h.join(".config").join("r2x").join("r2x.toml"))
         else {
             return PathBuf::from(".r2x.toml");
         };
@@ -173,7 +174,8 @@ impl Config {
         #[cfg(not(target_os = "windows"))]
         {
             // New preferred default: ~/.config/r2x/.venv (hidden folder, avoids spaces on macOS)
-            let Some(default) = dirs::home_dir().map(|h| h.join(".config").join("r2x").join(".venv"))
+            let Some(default) =
+                dirs::home_dir().map(|h| h.join(".config").join("r2x").join(".venv"))
             else {
                 return ".config/r2x/.venv".to_string();
             };

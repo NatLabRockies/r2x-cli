@@ -1,8 +1,7 @@
-use crate::config_manager::Config;
+use super::PluginContext;
 use crate::logger;
 use crate::plugins::AstDiscovery;
-use crate::r2x_manifest::Manifest;
-use crate::GlobalOpts;
+use crate::plugins::PluginError;
 use colored::Colorize;
 use std::path::PathBuf;
 
@@ -12,18 +11,10 @@ use std::path::PathBuf;
 /// 1. Uses source_uri from manifest directly (no directory scanning)
 /// 2. Loads config/manifest only once
 /// 3. Pure Rust AST parsing via ast-grep
-pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
+pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
     let total_start = std::time::Instant::now();
-
-    // Load config once
-    let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
-    let venv_path = config.get_venv_path();
-
-    // Load manifest once
-    let mut manifest = Manifest::load().map_err(|e| {
-        logger::error(&format!("Failed to load manifest: {}", e));
-        format!("Failed to load manifest: {}", e)
-    })?;
+    let venv_path = &ctx.venv_path;
+    let manifest = &mut ctx.manifest;
 
     if manifest.is_empty() {
         logger::warn("No plugins installed. Nothing to sync.");
@@ -104,9 +95,7 @@ pub fn sync_manifest(_opts: &GlobalOpts) -> Result<(), String> {
     }
 
     // Save manifest once at the end
-    manifest
-        .save()
-        .map_err(|e| format!("Failed to save manifest: {}", e))?;
+    manifest.save()?;
 
     let elapsed_ms = total_start.elapsed().as_millis();
     println!(

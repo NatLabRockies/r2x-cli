@@ -514,10 +514,15 @@ class MyConfig(BaseModel):
         let fields = fields.unwrap_or_default();
 
         let mode = fields.get("mode");
-        assert!(mode.is_some_and(|m| m.enum_values.as_ref().is_some_and(|values| values.len() == 3
-            && values.iter().any(|v| v.as_ref() == "fast")
-            && values.iter().any(|v| v.as_ref() == "slow")
-            && values.iter().any(|v| v.as_ref() == "balanced"))));
+        assert!(
+            mode.is_some_and(|m| m
+                .enum_values
+                .as_ref()
+                .is_some_and(|values| values.len() == 3
+                    && values.iter().any(|v| v.as_ref() == "fast")
+                    && values.iter().any(|v| v.as_ref() == "slow")
+                    && values.iter().any(|v| v.as_ref() == "balanced")))
+        );
     }
 
     #[test]
@@ -567,8 +572,9 @@ class MyConfig(BaseModel):
 
         let database = fields.get("database");
         assert!(database.is_some_and(|d| d.field_type == FieldType::Object
-            && d.nested.as_ref().is_some_and(|n| n.class.as_ref().map(|s| s.as_ref())
-                == Some("DatabaseConfig"))));
+            && d.nested
+                .as_ref()
+                .is_some_and(|n| n.class.as_ref().map(|s| s.as_ref()) == Some("DatabaseConfig"))));
     }
 
     #[test]

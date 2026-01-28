@@ -1720,13 +1720,16 @@ def add_pcm_defaults(
         assert_eq!(params.len(), 3);
 
         let fpath = params.iter().find(|p| p.name == "pcm_defaults_fpath");
-        assert!(fpath.is_some_and(|f| f.annotation.as_deref() == Some("str | None")
-            && f.default.as_deref() == Some("None")
-            && !f.required));
+        assert!(
+            fpath.is_some_and(|f| f.annotation.as_deref() == Some("str | None")
+                && f.default.as_deref() == Some("None")
+                && !f.required)
+        );
 
         let override_param = params.iter().find(|p| p.name == "pcm_defaults_override");
-        assert!(override_param.is_some_and(|p| p.annotation.as_deref() == Some("bool")
-            && p.default.as_deref() == Some("False")));
+        assert!(override_param
+            .is_some_and(|p| p.annotation.as_deref() == Some("bool")
+                && p.default.as_deref() == Some("False")));
     }
 
     #[test]

@@ -383,7 +383,9 @@ impl Bridge {
         if accepts_stdin {
             // accepts_stdin can only be true when stdin_obj.is_some() (see above)
             let Some(stdin) = stdin_obj else {
-                return Err(BridgeError::Python("stdin expected but not provided".to_string()));
+                return Err(BridgeError::Python(
+                    "stdin expected but not provided".to_string(),
+                ));
             };
             method.call1((stdin,)).map_err(|e| {
                 BridgeError::Python(format_python_error(

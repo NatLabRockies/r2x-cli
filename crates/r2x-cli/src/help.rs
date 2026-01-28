@@ -125,16 +125,3 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_show_run_help() {
-        // Test run help display
-    }
-
-    #[test]
-    fn test_show_plugin_help() {
-        // Test plugin help display
-    }
-}

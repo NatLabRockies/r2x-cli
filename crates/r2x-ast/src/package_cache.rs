@@ -621,8 +621,10 @@ def my_transform(system):
         // Check class extraction
         let class = cache.find_class("MyParser");
         assert!(class.is_some());
-        assert!(class.is_some_and(|c| c.generic_param == Some("MyConfig".to_string())
-            && c.methods.contains(&"on_build".to_string())));
+        assert!(
+            class.is_some_and(|c| c.generic_param == Some("MyConfig".to_string())
+                && c.methods.contains(&"on_build".to_string()))
+        );
 
         // Check Plugin class lookup
         let plugin = cache.find_plugin_class("MyParser");

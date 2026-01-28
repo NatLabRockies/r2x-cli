@@ -10,6 +10,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedPackage {
+    pub name: String,
+    pub plugin_count: usize,
+}
+
 impl Manifest {
     /// Get the default path to the manifest file
     pub fn path() -> PathBuf {
@@ -207,8 +213,8 @@ impl Manifest {
     }
 
     /// Remove a package and its dependencies if no other packages depend on them
-    /// Returns list of packages removed
-    pub fn remove_package_with_deps(&mut self, package_name: &str) -> Vec<String> {
+    /// Returns a summary of removed packages and their plugin counts
+    pub fn remove_package_with_deps_summary(&mut self, package_name: &str) -> Vec<RemovedPackage> {
         let mut removed = Vec::new();
 
         // Find the package and its dependencies
@@ -219,31 +225,52 @@ impl Manifest {
         };
 
         // Remove the main package
-        if self.remove_package(package_name) {
-            removed.push(package_name.to_string());
+        if let Some(pkg) = self.get_package(package_name) {
+            let plugin_count = pkg.plugins.len();
+            if self.remove_package(package_name) {
+                removed.push(RemovedPackage {
+                    name: package_name.to_string(),
+                    plugin_count,
+                });
+            }
         }
 
         // Check each dependency
         for dep in dependencies {
             // Remove this package from the dependency's installed_by list
-            if let Some(dep_pkg) = self.get_package_mut(&dep) {
+            let should_remove = if let Some(dep_pkg) = self.get_package_mut(&dep) {
                 dep_pkg
                     .installed_by
                     .retain(|pkg| pkg.as_ref() != package_name);
+                dep_pkg.installed_by.is_empty() && dep_pkg.install_type == InstallType::Dependency
+            } else {
+                false
+            };
 
-                // If no other packages depend on it, remove it
-                if dep_pkg.installed_by.is_empty()
-                    && dep_pkg.install_type == InstallType::Dependency
-                {
-                    let dep_name = dep.to_string();
-                    if self.remove_package(&dep_name) {
-                        removed.push(dep_name);
-                    }
+            if should_remove {
+                let dep_name = dep.to_string();
+                let plugin_count = self
+                    .get_package(&dep_name)
+                    .map_or(0, |pkg| pkg.plugins.len());
+                if self.remove_package(&dep_name) {
+                    removed.push(RemovedPackage {
+                        name: dep_name,
+                        plugin_count,
+                    });
                 }
             }
         }
 
         removed
+    }
+
+    /// Remove a package and its dependencies if no other packages depend on them
+    /// Returns list of packages removed
+    pub fn remove_package_with_deps(&mut self, package_name: &str) -> Vec<String> {
+        self.remove_package_with_deps_summary(package_name)
+            .into_iter()
+            .map(|removed| removed.name)
+            .collect()
     }
 
     /// Check if a package can be safely removed (has no dependents)
@@ -380,10 +407,11 @@ mod tests {
         );
 
         assert!(
-            manifest.get_package("r2x-dep").is_some_and(|dep_pkg| dep_pkg.install_type
-                == InstallType::Dependency
-                && dep_pkg.installed_by.len() == 1
-                && dep_pkg.installed_by[0].as_ref() == "r2x-main"),
+            manifest
+                .get_package("r2x-dep")
+                .is_some_and(|dep_pkg| dep_pkg.install_type == InstallType::Dependency
+                    && dep_pkg.installed_by.len() == 1
+                    && dep_pkg.installed_by[0].as_ref() == "r2x-main"),
             "Expected r2x-dep as dependency of r2x-main"
         );
     }
@@ -433,8 +461,10 @@ mod tests {
         assert_eq!(manifest.packages.len(), 2);
 
         assert!(
-            manifest.get_package("r2x-shared").is_some_and(|shared| shared.installed_by.len() == 1
-                && shared.installed_by[0].as_ref() == "r2x-main2"),
+            manifest
+                .get_package("r2x-shared")
+                .is_some_and(|shared| shared.installed_by.len() == 1
+                    && shared.installed_by[0].as_ref() == "r2x-main2"),
             "Expected r2x-shared with r2x-main2 as installer"
         );
     }

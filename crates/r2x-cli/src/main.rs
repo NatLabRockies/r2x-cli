@@ -81,40 +81,21 @@ enum Commands {
     Read(read::ReadCommand),
 }
 
-#[derive(Subcommand)]
-enum PluginsAction {
-    /// List current plugins.
-    List,
-    /// Install a package with plugins
-    Install {
-        plugin: String,
-        /// Install in editable mode (-e)
-        #[arg(short, long)]
-        editable: bool,
-        /// Skip metadata cache and force rebuild
-        #[arg(long)]
-        no_cache: bool,
-        /// Git host (default: github.com). Use with org/repo format or full URLs.
-        #[arg(long)]
-        host: Option<String>,
-        /// Install from a git branch
-        #[arg(long, conflicts_with_all = ["tag", "commit"])]
-        branch: Option<String>,
-        /// Install from a git tag
-        #[arg(long, conflicts_with_all = ["branch", "commit"])]
-        tag: Option<String>,
-        /// Install from a git commit hash
-        #[arg(long, conflicts_with_all = ["branch", "tag"])]
-        commit: Option<String>,
-    },
-    /// Remove a plugin
-    Remove { plugin: String },
-    /// Clean the plugin manifest (removes all installed plugins)
-    Clean {
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
+fn with_plugin_context<F>(action: F)
+where
+    F: FnOnce(&mut plugins::PluginContext) -> Result<(), plugins::PluginError>,
+{
+    let mut ctx = match plugins::PluginContext::load() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            logger::error(&e.to_string());
+            return;
+        }
+    };
+
+    if let Err(e) = action(&mut ctx) {
+        logger::error(&e.to_string());
+    }
 }
 
 fn main() {
@@ -142,9 +123,7 @@ fn main() {
             config::handle_config(action, cli.global);
         }
         Commands::List { plugin, module } => {
-            if let Err(e) = plugins::list_plugins(&cli.global, plugin, module) {
-                logger::error(&e);
-            }
+            with_plugin_context(|ctx| plugins::list_plugins(&cli.global, plugin, module, ctx));
         }
         Commands::Install {
             plugin,
@@ -156,41 +135,35 @@ fn main() {
             commit,
         } => match plugin {
             Some(pkg) => {
-                if let Err(e) = plugins::install_plugin(
-                    &pkg,
-                    editable,
-                    no_cache,
-                    plugins::GitOptions {
-                        host,
-                        branch,
-                        tag,
-                        commit,
-                    },
-                    &cli.global,
-                ) {
-                    logger::error(&e);
-                }
+                with_plugin_context(|ctx| {
+                    plugins::install_plugin(
+                        &pkg,
+                        editable,
+                        no_cache,
+                        plugins::GitOptions {
+                            host,
+                            branch,
+                            tag,
+                            commit,
+                        },
+                        ctx,
+                    )
+                });
             }
             None => {
                 if let Err(e) = plugins::show_install_help() {
-                    logger::error(&e);
+                    logger::error(&e.to_string());
                 }
             }
         },
         Commands::Remove { plugin } => {
-            if let Err(e) = plugins::remove_plugin(&plugin, &cli.global) {
-                logger::error(&e);
-            }
+            with_plugin_context(|ctx| plugins::remove_plugin(&plugin, ctx));
         }
         Commands::Sync => {
-            if let Err(e) = plugins::sync_manifest(&cli.global) {
-                logger::error(&e);
-            }
+            with_plugin_context(plugins::sync_manifest);
         }
         Commands::Clean { yes } => {
-            if let Err(e) = plugins::clean_manifest(yes, &cli.global) {
-                logger::error(&e);
-            }
+            with_plugin_context(|ctx| plugins::clean_manifest(yes, ctx));
         }
         Commands::Init { file } => {
             init::handle_init(file, cli.global);
