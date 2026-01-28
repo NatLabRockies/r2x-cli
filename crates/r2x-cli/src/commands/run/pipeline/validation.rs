@@ -1,6 +1,6 @@
 use crate::manifest_lookup::resolve_plugin_ref;
 use crate::pipeline_config::PipelineConfig;
-use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use std::collections::HashSet;
 
@@ -22,7 +22,7 @@ pub(super) fn validate_pipeline_configs(
         };
 
         let plugin = resolved.plugin;
-        let bindings = build_runtime_bindings_from_plugin(plugin);
+        let bindings = build_runtime_bindings(plugin);
 
         // Get user-provided config from YAML
         let yaml_config = match resolve_plugin_config_json(config, plugin_name, &resolved) {

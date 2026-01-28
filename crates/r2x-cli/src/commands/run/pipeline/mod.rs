@@ -6,7 +6,7 @@ use crate::package_verification;
 use crate::pipeline_config::PipelineConfig;
 use colored::Colorize;
 use r2x_logger as logger;
-use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_python::python_bridge::Bridge;
 use std::time::Instant;
@@ -182,7 +182,7 @@ fn run_pipeline(
         let pkg = resolved.package;
         let plugin = resolved.plugin;
 
-        let bindings = build_runtime_bindings_from_plugin(plugin);
+        let bindings = build_runtime_bindings(plugin);
 
         let yaml_config = resolve_plugin_config_json(config, plugin_name, &resolved)?;
 

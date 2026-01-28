@@ -237,7 +237,7 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
 ///
 /// ```rust,ignore
 /// use r2x::package_verification::verify_and_ensure_plugin;
-/// use r2x::plugin_manifest::PluginManifest;
+/// use r2x_manifest::types::Manifest;
 ///
 /// let manifest = Manifest::load()?;
 ///

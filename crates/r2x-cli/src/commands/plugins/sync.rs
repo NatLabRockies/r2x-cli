@@ -52,7 +52,7 @@ pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
         let package_path = PathBuf::from(&source_uri);
 
         // Re-discover plugins using AST (fast, pure Rust)
-        let (ast_plugins, _decorators) = match AstDiscovery::discover_plugins(
+        let ast_plugins = match AstDiscovery::discover_plugins(
             &package_path,
             &package_name,
             Some(venv_path),

@@ -34,8 +34,8 @@ pub fn read_from_path(manifest_path: &Path) -> Result<Manifest> {
     let manifest: Manifest = toml::from_str(&content)?;
 
     info!("Manifest loaded successfully");
-    info!("Manifest version: {}", manifest.metadata.version);
-    info!("Generated at: {}", manifest.metadata.generated_at);
+    info!("Manifest version: {}", manifest.version);
+    info!("Generated at: {}", manifest.generated_at);
     info!("Total packages: {}", manifest.packages.len());
 
     Ok(manifest)
@@ -110,6 +110,6 @@ mod tests {
 
         let loaded = read_from_path(&manifest_path);
         assert!(loaded.is_ok(), "Failed to read manifest");
-        assert!(loaded.is_ok_and(|m| m.metadata.version == "3.0"));
+        assert!(loaded.is_ok_and(|m| m.version.as_ref() == "3.0"));
     }
 }

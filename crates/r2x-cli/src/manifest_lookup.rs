@@ -1,4 +1,4 @@
-use r2x_manifest::runtime::{build_runtime_bindings_from_plugin, PluginRole};
+use r2x_manifest::runtime::{build_runtime_bindings, PluginRole};
 use r2x_manifest::types::{Manifest, Package, Plugin};
 use std::collections::HashSet;
 use std::fmt;
@@ -155,7 +155,7 @@ fn alias_role(name: &str) -> Option<PluginRole> {
 }
 
 fn plugin_role(plugin: &Plugin) -> PluginRole {
-    build_runtime_bindings_from_plugin(plugin).role
+    build_runtime_bindings(plugin).role
 }
 
 #[cfg(test)]
