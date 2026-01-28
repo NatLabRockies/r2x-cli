@@ -6,8 +6,7 @@ use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use pyo3::PyResult;
 use r2x_logger as logger;
-use r2x_manifest::execution_types::PluginKind;
-use r2x_manifest::runtime::RuntimeBindings;
+use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use std::time::{Duration, Instant};
 
 /// Guard that suppresses Python stdout and restores it on drop.
@@ -118,8 +117,7 @@ impl Bridge {
 
             // For exporters, skip serialization - they write their own output
             // and return PluginContext which we don't need to pass downstream
-            let is_exporter =
-                runtime_bindings.is_some_and(|b| b.plugin_kind == PluginKind::Exporter);
+            let is_exporter = runtime_bindings.is_some_and(|b| b.role == PluginRole::Exporter);
 
             if is_exporter {
                 logger::debug("Exporter plugin completed, skipping result serialization");
@@ -210,7 +208,7 @@ impl Bridge {
     }
 
     fn invoke_class_callable<'py>(
-        bridge: &Bridge,
+        _bridge: &Bridge,
         module: &pyo3::Bound<'py, PyModule>,
         callable_path: &str,
         config_dict: &pyo3::Bound<'py, PyDict>,
@@ -285,7 +283,7 @@ impl Bridge {
         };
 
         let system_instance = if let Some(stdin) = stdin_obj {
-            if bindings.plugin_kind == PluginKind::Exporter {
+            if bindings.role == PluginRole::Exporter {
                 logger::step("Deserializing system from stdin for PluginContext");
 
                 let system_module = PyModule::import(py, "infrasys")?;

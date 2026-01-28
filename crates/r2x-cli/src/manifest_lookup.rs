@@ -1,5 +1,4 @@
-use r2x_manifest::execution_types::PluginKind;
-use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::runtime::{build_runtime_bindings_from_plugin, PluginRole};
 use r2x_manifest::types::{Manifest, Package, Plugin};
 use std::collections::HashSet;
 use std::fmt;
@@ -62,11 +61,11 @@ pub fn resolve_plugin_ref<'a>(
                 return Ok(ResolvedPlugin { package, plugin });
             }
 
-            if let Some(kind) = alias_kind(plugin_part) {
+            if let Some(role) = alias_role(plugin_part) {
                 let matches: Vec<&Plugin> = package
                     .plugins
                     .iter()
-                    .filter(|plugin| plugin_kind(plugin) == kind)
+                    .filter(|plugin| plugin_role(plugin) == role)
                     .collect();
 
                 match matches.len() {
@@ -142,21 +141,21 @@ fn name_variants(name: &str) -> Vec<String> {
     variants
 }
 
-fn alias_kind(name: &str) -> Option<PluginKind> {
+fn alias_role(name: &str) -> Option<PluginRole> {
     let normalized = name.replace('-', "_").to_lowercase();
     match normalized.as_str() {
-        "parser" => Some(PluginKind::Parser),
-        "exporter" => Some(PluginKind::Exporter),
-        "upgrader" => Some(PluginKind::Upgrader),
-        "modifier" | "transform" | "transformer" => Some(PluginKind::Modifier),
-        "translation" | "translator" => Some(PluginKind::Translation),
-        "utility" => Some(PluginKind::Utility),
+        "parser" => Some(PluginRole::Parser),
+        "exporter" => Some(PluginRole::Exporter),
+        "upgrader" => Some(PluginRole::Upgrader),
+        "modifier" | "transform" | "transformer" => Some(PluginRole::Modifier),
+        "translation" | "translator" => Some(PluginRole::Translation),
+        "utility" => Some(PluginRole::Utility),
         _ => None,
     }
 }
 
-fn plugin_kind(plugin: &Plugin) -> PluginKind {
-    build_runtime_bindings_from_plugin(plugin).plugin_kind
+fn plugin_role(plugin: &Plugin) -> PluginRole {
+    build_runtime_bindings_from_plugin(plugin).role
 }
 
 #[cfg(test)]

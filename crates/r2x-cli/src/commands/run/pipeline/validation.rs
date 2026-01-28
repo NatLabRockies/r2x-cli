@@ -36,32 +36,17 @@ pub(super) fn validate_pipeline_configs(
                 _ => HashSet::new(),
             };
 
-        // Check config fields for required ones
-        if let Some(ref config_spec) = bindings.config {
-            for field in &config_spec.fields {
-                if field.required
-                    && field.default.is_none()
-                    && !provided_keys.contains(&field.name)
-                    && !is_auto_provided_param(&field.name)
-                {
-                    errors.push(format!(
-                        "{}: missing required config field '{}'",
-                        plugin_name, field.name
-                    ));
-                }
-            }
-        }
-
-        // Check entry parameters for required ones
-        for param in &bindings.entry_parameters {
+        // Check parameters for required ones
+        for param in &bindings.parameters {
+            let param_name = param.name.as_ref();
             if param.required
                 && param.default.is_none()
-                && !provided_keys.contains(&param.name)
-                && !is_auto_provided_param(&param.name)
+                && !provided_keys.contains(param_name)
+                && !is_auto_provided_param(param_name)
             {
                 errors.push(format!(
                     "{}: missing required parameter '{}'",
-                    plugin_name, param.name
+                    plugin_name, param_name
                 ));
             }
         }

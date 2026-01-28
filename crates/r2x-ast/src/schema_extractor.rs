@@ -451,6 +451,7 @@ pub fn parse_union_types_from_annotation(annotation: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use crate::schema_extractor::*;
 

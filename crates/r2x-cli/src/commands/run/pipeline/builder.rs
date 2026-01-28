@@ -1,6 +1,5 @@
-use r2x_manifest::execution_types::ImplementationType;
 use r2x_manifest::runtime::RuntimeBindings;
-use std::collections::HashSet;
+use r2x_manifest::types::PluginType;
 
 use crate::commands::run::pipeline::constants::{
     DEFAULT_OUTPUT_ROOT, FOLDER_FIELD_KEYS, PATH_FALLBACK_KEYS, STORE_FIELD_KEYS,
@@ -26,20 +25,14 @@ pub(super) fn build_plugin_config(
 
     let mut final_config = serde_json::Map::new();
     let mut store_value_for_folder: Option<serde_json::Value> = None;
-    if bindings.implementation_type == ImplementationType::Class {
+    if bindings.plugin_type == PluginType::Class {
         let mut config_class_params = serde_json::Map::new();
         let mut constructor_params = serde_json::Map::new();
-        let config_param_names: HashSet<String> = bindings
-            .config
-            .as_ref()
-            .map(|config_meta| config_meta.fields.iter().map(|f| f.name.clone()).collect())
-            .unwrap_or_default();
 
         if let serde_json::Value::Object(ref yaml_map) = yaml_config {
             for (key, value) in yaml_map {
-                if config_param_names.contains(key) {
-                    config_class_params.insert(key.clone(), value.clone());
-                } else if bindings.entry_parameters.iter().any(|p| p.name == *key) {
+                // Check if key is a parameter of the plugin
+                if bindings.parameters.iter().any(|p| p.name.as_ref() == key) {
                     constructor_params.insert(key.clone(), value.clone());
                 } else {
                     config_class_params.insert(key.clone(), value.clone());
@@ -54,7 +47,10 @@ pub(super) fn build_plugin_config(
         final_config.extend(config_class_params);
         final_config.extend(constructor_params);
 
-        if bindings.entry_parameters.iter().any(|p| p.name == "path")
+        if bindings
+            .parameters
+            .iter()
+            .any(|p| p.name.as_ref() == "path")
             && !final_config.contains_key("path")
             && matches!(yaml_config, serde_json::Value::Object(_))
         {
@@ -67,8 +63,11 @@ pub(super) fn build_plugin_config(
 
         // Check if plugin requires a DataStore instance.
         // If so, create it from the `path` config value.
-        let needs_store =
-            bindings.requires_store || bindings.entry_parameters.iter().any(|p| p.name == "store");
+        let needs_store = bindings.requires_store
+            || bindings
+                .parameters
+                .iter()
+                .any(|p| p.name.as_ref() == "store");
 
         if needs_store {
             // Use `path` as primary source for store, with fallbacks
@@ -89,9 +88,9 @@ pub(super) fn build_plugin_config(
         }
 
         if bindings
-            .entry_parameters
+            .parameters
             .iter()
-            .any(|p| p.name == "folder_path")
+            .any(|p| p.name.as_ref() == "folder_path")
             && !final_config.contains_key("folder_path")
         {
             let explicit_folder = if let serde_json::Value::Object(ref yaml_map) = yaml_config {

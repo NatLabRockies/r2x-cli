@@ -61,16 +61,13 @@ fn determine_json_path_field(
     bindings: &RuntimeBindings,
     plugin_name: &str,
 ) -> Option<&'static str> {
-    if let Some(config) = &bindings.config {
-        for field in JSON_PATH_FIELDS {
-            if config.fields.iter().any(|f| f.name == *field) {
-                return Some(*field);
-            }
-        }
-    }
-
+    // Check plugin parameters for json_path-like fields
     for field in JSON_PATH_FIELDS {
-        if bindings.entry_parameters.iter().any(|p| p.name == *field) {
+        if bindings
+            .parameters
+            .iter()
+            .any(|p| p.name.as_ref() == *field)
+        {
             return Some(*field);
         }
     }

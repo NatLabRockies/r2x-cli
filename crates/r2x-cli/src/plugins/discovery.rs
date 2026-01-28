@@ -74,11 +74,8 @@ pub fn discover_and_register_entry_points_with_deps(
             ))
         })?;
 
-        // Convert discovered plugins to manifest plugins
+        // ast_plugins are already in manifest Plugin format
         ast_plugins
-            .into_iter()
-            .map(|p| p.to_manifest_plugin())
-            .collect()
     };
 
     for plugin in &discovered_plugins {
@@ -147,10 +144,7 @@ pub fn discover_and_register_entry_points_with_deps(
             match locator.find_package_path(&dep) {
                 Ok(dep_path) => {
                     match AstDiscovery::discover_plugins(&dep_path, &dep, venv_path, None) {
-                        Ok((ast_plugins, _decorators)) => ast_plugins
-                            .into_iter()
-                            .map(|p| p.to_manifest_plugin())
-                            .collect(),
+                        Ok((ast_plugins, _decorators)) => ast_plugins,
                         Err(e) => {
                             logger::warn(&format!(
                                 "Failed to discover plugins from dependency '{}': {}",

@@ -1,7 +1,6 @@
 use crate::manifest_lookup::ResolvedPlugin;
 use crate::pipeline_config::PipelineConfig;
-use r2x_manifest::execution_types::PluginKind;
-use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::runtime::{build_runtime_bindings_from_plugin, PluginRole};
 use std::collections::HashSet;
 
 use crate::commands::run::RunError;
@@ -13,8 +12,8 @@ pub(super) fn resolve_plugin_config_json(
 ) -> Result<String, RunError> {
     let plugin_name = resolved.plugin.name.as_ref();
     let package_name = resolved.package.name.as_ref();
-    let kind = build_runtime_bindings_from_plugin(resolved.plugin).plugin_kind;
-    let kind_alias = plugin_kind_alias(kind);
+    let role = build_runtime_bindings_from_plugin(resolved.plugin).role;
+    let kind_alias = plugin_role_alias(role);
 
     for key in config_key_candidates(plugin_ref, package_name, plugin_name, kind_alias) {
         if config.config.contains_key(&key) {
@@ -78,13 +77,13 @@ fn config_key_candidates(
     candidates
 }
 
-fn plugin_kind_alias(kind: PluginKind) -> Option<&'static str> {
-    match kind {
-        PluginKind::Parser => Some("parser"),
-        PluginKind::Exporter => Some("exporter"),
-        PluginKind::Upgrader => Some("upgrader"),
-        PluginKind::Modifier => Some("modifier"),
-        PluginKind::Translation => Some("translation"),
-        PluginKind::Utility => None,
+fn plugin_role_alias(role: PluginRole) -> Option<&'static str> {
+    match role {
+        PluginRole::Parser => Some("parser"),
+        PluginRole::Exporter => Some("exporter"),
+        PluginRole::Upgrader => Some("upgrader"),
+        PluginRole::Modifier => Some("modifier"),
+        PluginRole::Translation => Some("translation"),
+        PluginRole::Utility => None,
     }
 }

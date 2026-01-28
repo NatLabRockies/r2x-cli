@@ -6,8 +6,7 @@ use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use r2x_logger as logger;
-use r2x_manifest::execution_types::ConfigSpec;
-use r2x_manifest::runtime::RuntimeBindings;
+use r2x_manifest::runtime::{PluginRole, RuntimeBindings, RuntimeConfig};
 use std::path::Path;
 
 impl Bridge {
@@ -32,9 +31,9 @@ impl Bridge {
         // For upgrader plugins without config metadata, pass all config values directly as kwargs.
         // Upgraders typically have simple constructors (path, folder_path, etc.) and don't use
         // the complex config class machinery that parsers/exporters use.
-        if runtime.plugin_kind == r2x_manifest::execution_types::PluginKind::Upgrader
+        if runtime.role == PluginRole::Upgrader
             && runtime.config.is_none()
-            && runtime.entry_parameters.is_empty()
+            && runtime.parameters.is_empty()
         {
             for (k, v) in config_dict {
                 kwargs.set_item(k, v)?;
@@ -55,17 +54,18 @@ impl Bridge {
                 config_class_name
             ));
 
-            // Find the parameter whose annotation matches the config class name
-            for param in &runtime.entry_parameters {
-                let annotation = param.annotation.as_deref().unwrap_or("");
-                if annotation == config_class_name
-                    || annotation.contains(config_class_name.as_str())
-                {
+            // Find the parameter whose type annotation matches the config class name
+            for param in &runtime.parameters {
+                let type_matches = param
+                    .types
+                    .iter()
+                    .any(|t| t.as_ref() == config_class_name || t.contains(config_class_name));
+                if type_matches {
                     needs_config_class = true;
-                    config_param_name.clone_from(&param.name);
+                    config_param_name = param.name.to_string();
                     logger::debug(&format!(
-                        "Config parameter detected: '{}' (annotation '{}' matches config class '{}')",
-                        param.name, annotation, config_class_name
+                        "Config parameter detected: '{}' (type matches config class '{}')",
+                        param.name, config_class_name
                     ));
                     break;
                 }
@@ -73,8 +73,8 @@ impl Bridge {
 
             // Fallback: if no annotation match, look for a param explicitly named after the config
             if !needs_config_class {
-                for param in &runtime.entry_parameters {
-                    if param.name == "config" {
+                for param in &runtime.parameters {
+                    if param.name.as_ref() == "config" {
                         needs_config_class = true;
                         config_param_name = "config".to_string();
                         logger::debug(
@@ -124,22 +124,22 @@ impl Bridge {
             config_instance = Some(config_obj.unbind());
         }
 
-        for param in &runtime.entry_parameters {
+        for param in &runtime.parameters {
             // Skip the config parameter - it was already handled above
-            if needs_config_class && param.name == config_param_name {
+            if needs_config_class && param.name.as_ref() == config_param_name {
                 continue;
             }
 
-            let annotation = param.annotation.as_deref().unwrap_or("");
-            if param.name == "store"
-                || param.name == "data_store"
-                || annotation.contains("DataStore")
+            let has_data_store_type = param.types.iter().any(|t| t.contains("DataStore"));
+            if param.name.as_ref() == "store"
+                || param.name.as_ref() == "data_store"
+                || has_data_store_type
             {
                 logger::step(&format!("Processing store parameter: {}", param.name));
                 // Look for store value: prefer "store" key, then param name, then "path"
                 let value = config_dict
                     .get_item("store")?
-                    .or_else(|| config_dict.get_item(&param.name).ok().flatten())
+                    .or_else(|| config_dict.get_item(param.name.as_ref()).ok().flatten())
                     .or_else(|| config_dict.get_item("store_path").ok().flatten())
                     .or_else(|| config_dict.get_item("path").ok().flatten());
 
@@ -155,7 +155,7 @@ impl Bridge {
                     } else {
                         Self::instantiate_data_store(py, &value, None, runtime.config.as_ref())?
                     };
-                    kwargs.set_item(&param.name, store_instance)?;
+                    kwargs.set_item(param.name.as_ref(), store_instance)?;
                 }
                 continue;
             }
@@ -163,17 +163,12 @@ impl Bridge {
             // Skip parameters that are config fields when we have a config class
             // (those values are already inside the config object)
             let is_config_field = if needs_config_class {
-                // First check config metadata if available
-                let in_metadata = runtime
-                    .config
-                    .as_ref()
-                    .is_some_and(|spec| spec.fields.iter().any(|f| f.name == param.name));
-
-                // If not found in metadata, check the config instance directly
-                if in_metadata {
-                    true
-                } else if let Some(ref config_obj) = config_instance {
-                    config_obj.bind(py).hasattr(&*param.name).unwrap_or(false)
+                // Check the config instance directly for the attribute
+                if let Some(ref config_obj) = config_instance {
+                    config_obj
+                        .bind(py)
+                        .hasattr(param.name.as_ref())
+                        .unwrap_or(false)
                 } else {
                     false
                 }
@@ -189,14 +184,14 @@ impl Bridge {
                 continue;
             }
 
-            if let Some(value) = config_dict.get_item(&param.name).ok().flatten() {
+            if let Some(value) = config_dict.get_item(param.name.as_ref()).ok().flatten() {
                 let path_alias = value.clone();
-                kwargs.set_item(&param.name, value)?;
-                if param.name == "folder_path" && !kwargs.contains("path")? {
+                kwargs.set_item(param.name.as_ref(), value)?;
+                if param.name.as_ref() == "folder_path" && !kwargs.contains("path")? {
                     kwargs.set_item("path", path_alias)?;
                 }
             } else if param.required {
-                let stdin_param = param.name == "stdin" || param.name == "system";
+                let stdin_param = param.name.as_ref() == "stdin" || param.name.as_ref() == "system";
                 if stdin_param && stdin_obj.is_some() {
                     logger::debug(&format!(
                         "Required parameter '{}' will be provided via stdin",
@@ -212,7 +207,11 @@ impl Bridge {
         }
 
         if let Some(stdin) = stdin_obj {
-            if runtime.entry_parameters.iter().any(|p| p.name == "stdin") {
+            if runtime
+                .parameters
+                .iter()
+                .any(|p| p.name.as_ref() == "stdin")
+            {
                 kwargs.set_item("stdin", stdin)?;
             } else {
                 logger::debug(
@@ -227,7 +226,7 @@ impl Bridge {
     pub(crate) fn instantiate_config_class<'py>(
         py: pyo3::Python<'py>,
         config_params: &pyo3::Bound<'py, PyDict>,
-        config_metadata: Option<&ConfigSpec>,
+        config_metadata: Option<&RuntimeConfig>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let config_meta = config_metadata
             .ok_or_else(|| BridgeError::Python("Plugin config metadata missing".to_string()))?;
@@ -257,7 +256,7 @@ impl Bridge {
         py: pyo3::Python<'py>,
         value: &pyo3::Bound<'py, PyAny>,
         config_instance: Option<&pyo3::Bound<'py, PyAny>>,
-        config_metadata: Option<&ConfigSpec>,
+        config_metadata: Option<&RuntimeConfig>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let path = if let Ok(store_dict) = value.cast::<PyDict>() {
             let path = store_dict
@@ -425,7 +424,7 @@ fn detect_missing_data_file_from_mapping(
 
 fn detect_missing_data_file_from_metadata(
     py: pyo3::Python<'_>,
-    metadata: Option<&ConfigSpec>,
+    metadata: Option<&RuntimeConfig>,
     folder_path: &str,
 ) -> Option<String> {
     let class_obj = resolve_config_class(py, None, metadata)?;
@@ -435,15 +434,15 @@ fn detect_missing_data_file_from_metadata(
 pub(crate) fn resolve_config_class<'py>(
     py: pyo3::Python<'py>,
     config_instance: Option<&pyo3::Bound<'py, PyAny>>,
-    metadata: Option<&ConfigSpec>,
+    metadata: Option<&RuntimeConfig>,
 ) -> Option<pyo3::Bound<'py, PyAny>> {
     if let Some(instance) = config_instance {
         return instance.getattr("__class__").ok();
     }
 
     let meta = metadata?;
-    let module = PyModule::import(py, &meta.module).ok()?;
-    module.getattr(&meta.name).ok()
+    let module = PyModule::import(py, meta.module.as_str()).ok()?;
+    module.getattr(meta.name.as_str()).ok()
 }
 
 impl Bridge {

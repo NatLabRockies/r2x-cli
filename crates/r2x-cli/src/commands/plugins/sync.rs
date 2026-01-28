@@ -74,11 +74,8 @@ pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
             continue;
         }
 
-        // Convert and update manifest
-        let plugins: Vec<_> = ast_plugins
-            .into_iter()
-            .map(|p| p.to_manifest_plugin())
-            .collect();
+        // ast_plugins are already in manifest Plugin format
+        let plugins = ast_plugins;
 
         {
             let pkg = manifest.get_or_create_package(&package_name);

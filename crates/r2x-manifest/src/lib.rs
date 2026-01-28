@@ -15,7 +15,6 @@
 //! - Indexed lookups for O(1) package/plugin access
 
 pub mod errors;
-pub mod execution_types;
 pub mod manifest;
 pub mod package_discovery;
 pub mod runtime;

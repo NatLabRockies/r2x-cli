@@ -5,8 +5,8 @@ use pipeline::handle_pipeline_mode;
 use plugin::handle_plugin_command;
 use r2x_logger as logger;
 use r2x_manifest::errors::ManifestError;
-use r2x_manifest::execution_types::{ImplementationType, PluginKind};
-use r2x_manifest::runtime::RuntimeBindings;
+use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
+use r2x_manifest::types::PluginType;
 use r2x_python::errors::BridgeError;
 use r2x_python::plugin_invoker::PluginInvocationTimings;
 use std::time::Duration;
@@ -114,11 +114,11 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
 }
 
 pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, RunError> {
-    let target = match bindings.implementation_type {
-        ImplementationType::Class => {
+    let target = match bindings.plugin_type {
+        PluginType::Class => {
             // Upgrader plugins have their own invoker that already calls .run() internally,
             // so we don't append the call_method to the target string for them.
-            if bindings.plugin_kind == PluginKind::Upgrader {
+            if bindings.role == PluginRole::Upgrader {
                 format!("{}:{}", bindings.entry_module, bindings.entry_name)
             } else if let Some(call_method) = &bindings.call_method {
                 format!(
@@ -129,7 +129,7 @@ pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, Ru
                 format!("{}:{}", bindings.entry_module, bindings.entry_name)
             }
         }
-        ImplementationType::Function => {
+        PluginType::Function => {
             format!("{}:{}", bindings.entry_module, bindings.entry_name)
         }
     };

@@ -6,8 +6,8 @@ use crate::plugin_regular::StdoutGuard;
 use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
 use r2x_logger as logger;
-use r2x_manifest::execution_types::PluginSpec;
 use r2x_manifest::runtime::RuntimeBindings;
+use r2x_manifest::types::Plugin;
 use std::path::{Path, PathBuf};
 
 impl Bridge {
@@ -16,7 +16,7 @@ impl Bridge {
         target: &str,
         config_json: &str,
         runtime_bindings: Option<&RuntimeBindings>,
-        plugin_metadata: Option<&PluginSpec>,
+        plugin_metadata: Option<&Plugin>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
             let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
@@ -93,14 +93,10 @@ impl Bridge {
     }
 }
 
-fn find_arg_value<'a>(plugin: &'a PluginSpec, name: &str) -> Option<&'a str> {
-    let upgrade = plugin.upgrade.as_ref()?;
-    match name {
-        "version_strategy" => upgrade.version_strategy_json.as_deref(),
-        "version_reader" => upgrade.version_reader_json.as_deref(),
-        "upgrade_steps" => upgrade.upgrade_steps_json.as_deref(),
-        _ => None,
-    }
+fn find_arg_value(_plugin: &Plugin, _name: &str) -> Option<&'static str> {
+    // Upgrade-specific metadata was removed in the manifest cleanup.
+    // Upgrader plugins now rely on their runtime configuration.
+    None
 }
 
 impl Bridge {
