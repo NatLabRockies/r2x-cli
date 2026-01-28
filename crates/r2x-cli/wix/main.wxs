@@ -69,7 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='A comprehensive framework plugin manager for the r2x power systems modeling ecosystem. Simplifies discovery, installation, and management of r2x framework plugins.'
+            Description='A framework plugin manager for the r2x power systems modeling ecosystem.'
             Manufacturer='pesap; Micah Webb'
             InstallerVersion='450'
             Languages='1033'
