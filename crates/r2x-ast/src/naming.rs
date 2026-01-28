@@ -21,18 +21,15 @@ pub fn camel_to_kebab(class_name: &str) -> String {
             let prev_upper = class_name
                 .chars()
                 .nth(i - 1)
-                .map(|c| c.is_uppercase())
-                .unwrap_or(false);
+                .is_some_and(|c| c.is_uppercase());
             let next_upper = class_name
                 .chars()
                 .nth(i + 1)
-                .map(|c| c.is_uppercase())
-                .unwrap_or(false);
+                .is_some_and(|c| c.is_uppercase());
             let next_lower = class_name
                 .chars()
                 .nth(i + 1)
-                .map(|c| c.is_lowercase())
-                .unwrap_or(false);
+                .is_some_and(|c| c.is_lowercase());
 
             // Add hyphen when:
             // 1. Starting new word from lowercase, unless entering an acronym

@@ -90,13 +90,7 @@ impl SchemaExtractor {
             let name = full_text[..colon_pos].trim().to_string();
 
             // Skip private/magic attributes and non-identifier names
-            if name.starts_with('_')
-                || !name
-                    .chars()
-                    .next()
-                    .map(|c| c.is_alphabetic())
-                    .unwrap_or(false)
-            {
+            if name.starts_with('_') || !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
                 continue;
             }
 
@@ -120,14 +114,14 @@ impl SchemaExtractor {
 
             // Try to extract default value
             let default = if has_default {
-                self.extract_default_from_text(&full_text)
+                Self::extract_default_from_text(&full_text)
             } else {
                 None
             };
 
             // Parse Field() constraints if present
             let constraints = if full_text.contains("Field(") {
-                self.parse_field_constraints(&full_text)
+                Self::parse_field_constraints(&full_text)
             } else {
                 SmallVec::new()
             };
@@ -150,13 +144,13 @@ impl SchemaExtractor {
     }
 
     /// Extract default value from field definition text
-    fn extract_default_from_text(&self, text: &str) -> Option<DefaultValue> {
+    fn extract_default_from_text(text: &str) -> Option<DefaultValue> {
         // Look for = value after the type annotation
         if let Some(eq_pos) = text.rfind(" = ") {
             let value_part = text[eq_pos + 3..].trim();
             // Skip if it's a Field() call - we handle that separately
             if !value_part.starts_with("Field(") {
-                return self.parse_literal_value(value_part);
+                return Self::parse_literal_value(value_part);
             }
         }
 
@@ -185,7 +179,7 @@ impl SchemaExtractor {
             }
             if end > 0 {
                 let default_str = rest[..end].trim();
-                return self.parse_literal_value(default_str);
+                return Self::parse_literal_value(default_str);
             }
         }
 
@@ -264,7 +258,7 @@ impl SchemaExtractor {
     }
 
     /// Parse Field() constraints
-    fn parse_field_constraints(&self, field_call: &str) -> SmallVec<[Constraint; 2]> {
+    fn parse_field_constraints(field_call: &str) -> SmallVec<[Constraint; 2]> {
         let mut constraints = SmallVec::new();
 
         // Extract keyword arguments from Field(...)
@@ -335,7 +329,7 @@ impl SchemaExtractor {
     }
 
     /// Parse a literal value
-    fn parse_literal_value(&self, value: &str) -> Option<DefaultValue> {
+    fn parse_literal_value(value: &str) -> Option<DefaultValue> {
         let value = value.trim();
 
         // Boolean

@@ -273,6 +273,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::panic)] // panic is acceptable in test code for unreachable branches
     fn test_substitute_yaml_value() {
         let mut vars = HashMap::new();
         vars.insert("year".to_string(), serde_yaml::Value::Number(2032.into()));
@@ -304,8 +305,7 @@ mod tests {
         let result = config.substitute_value(&input);
         assert!(result.is_ok());
         let Ok(serde_yaml::Value::Mapping(map)) = result else {
-            assert!(false, "Expected mapping");
-            return;
+            panic!("Expected mapping");
         };
         let year = map.get(serde_yaml::Value::String("solve_year".to_string()));
         assert!(year.is_some_and(|y| y == &serde_yaml::Value::String("2032".to_string())));

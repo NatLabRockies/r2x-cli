@@ -327,7 +327,7 @@ mod tests {
         let result = VerificationResult::Missing(packages.clone());
         match result {
             VerificationResult::Missing(p) => assert_eq!(p, packages),
-            _ => panic!("Expected Missing variant"),
+            VerificationResult::Valid => unreachable!("Expected Missing variant"),
         }
     }
 

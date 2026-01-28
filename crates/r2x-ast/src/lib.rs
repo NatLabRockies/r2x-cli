@@ -80,20 +80,18 @@ impl AstDiscovery {
         logger::debug(&format!("AST discovery started for: {}", package_name_full));
 
         let discovery_root = Self::resolve_discovery_root(package_path, package_name_full);
-        logger::debug(&format!("AST discovery root: {:?}", discovery_root));
+        logger::debug(&format!("AST discovery root: {}", discovery_root.display()));
 
         // Step 1: Check explicit entry points (entry_points.txt or pyproject.toml)
         let entry_start = Instant::now();
         let pyproject_entries =
             Self::find_pyproject_entry_points(package_path, &discovery_root, package_name_full);
-        let entry_point_entries = if !pyproject_entries.is_empty() {
-            pyproject_entries
-        } else {
+        let entry_point_entries = if pyproject_entries.is_empty() {
             match Self::find_entry_points_txt(package_path, package_name_full, venv_path) {
                 Ok(entry_points_path) => {
                     logger::debug(&format!(
-                        "Found entry_points.txt at: {:?}",
-                        entry_points_path
+                        "Found entry_points.txt at: {}",
+                        entry_points_path.display()
                     ));
 
                     let content = std::fs::read_to_string(&entry_points_path)
@@ -109,6 +107,8 @@ impl AstDiscovery {
                     Vec::new()
                 }
             }
+        } else {
+            pyproject_entries
         };
 
         logger::debug(&format!(
@@ -302,8 +302,9 @@ impl AstDiscovery {
             Ok(content) => content,
             Err(e) => {
                 logger::debug(&format!(
-                    "Failed to read pyproject.toml at {:?}: {}",
-                    pyproject_path, e
+                    "Failed to read pyproject.toml at {}: {}",
+                    pyproject_path.display(),
+                    e
                 ));
                 return Vec::new();
             }
@@ -393,8 +394,9 @@ impl AstDiscovery {
         for candidate in &candidates {
             if candidate.exists() {
                 logger::debug(&format!(
-                    "Resolved source file for module '{}': {:?}",
-                    module, candidate
+                    "Resolved source file for module '{}': {}",
+                    module,
+                    candidate.display()
                 ));
                 return Some(candidate.clone());
             }
@@ -415,8 +417,9 @@ impl AstDiscovery {
         for candidate in &init_candidates {
             if candidate.exists() {
                 logger::debug(&format!(
-                    "Resolved source file for module '{}' (as package): {:?}",
-                    module, candidate
+                    "Resolved source file for module '{}' (as package): {}",
+                    module,
+                    candidate.display()
                 ));
                 return Some(candidate.clone());
             }

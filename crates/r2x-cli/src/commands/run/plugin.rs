@@ -73,7 +73,9 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
                 crate::manifest_lookup::PluginRefError::NotFound(_) => {
                     RunError::PluginNotFound(plugin_name.to_string())
                 }
-                _ => RunError::Config(err.to_string()),
+                crate::manifest_lookup::PluginRefError::Ambiguous { .. } => {
+                    RunError::Config(err.to_string())
+                }
             })
         }
     };

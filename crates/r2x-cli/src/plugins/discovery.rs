@@ -57,8 +57,9 @@ pub fn discover_and_register_entry_points_with_deps(
         })?;
 
         logger::debug(&format!(
-            "Found package path for '{}': {:?}",
-            package_name_full, package_path
+            "Found package path for '{}': {}",
+            package_name_full,
+            package_path.display()
         ));
 
         let (ast_plugins, _decorator_regs) = AstDiscovery::discover_plugins(

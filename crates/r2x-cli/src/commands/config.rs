@@ -606,7 +606,7 @@ fn handle_python_show(_opts: GlobalOpts) {
             let mut version_mismatch = false;
             if venv_exists {
                 if let Some(actual_version) = verify_python_version(&python_path) {
-                    actual_version_str = actual_version.clone();
+                    actual_version_str.clone_from(&actual_version);
 
                     if let Some(version_num) = actual_version.split_whitespace().nth(1) {
                         let configured_short =

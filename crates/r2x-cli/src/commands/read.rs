@@ -1638,7 +1638,10 @@ mod tests {
             exec: Some(PathBuf::from("script.py")),
             interactive: false,
         };
-        assert!(cmd.exec.is_some_and(|e| e == PathBuf::from("script.py")));
+        assert!(cmd
+            .exec
+            .as_deref()
+            .is_some_and(|e| e == Path::new("script.py")));
         assert!(!cmd.interactive);
     }
 

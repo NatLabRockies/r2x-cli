@@ -11,6 +11,7 @@ use r2x_manifest::types::Plugin;
 use std::path::{Path, PathBuf};
 
 impl Bridge {
+    #[allow(clippy::unused_self)] // kept for API consistency with other invoke methods
     pub(crate) fn invoke_upgrader_plugin(
         &self,
         target: &str,
