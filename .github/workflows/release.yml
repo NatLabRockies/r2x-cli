@@ -237,6 +237,34 @@ jobs:
 
           echo "Python library path fix complete"
 
+      - name: Recalculate checksums after binary fix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "Recalculating checksums for modified archives..."
+
+          # Use sha256sum on Linux, shasum on macOS
+          if command -v sha256sum &> /dev/null; then
+            SHA_CMD="sha256sum"
+          else
+            SHA_CMD="shasum -a 256"
+          fi
+          echo "Using: $SHA_CMD"
+
+          for archive in target/distrib/*.tar.gz target/distrib/*.tar.xz; do
+            [ -f "$archive" ] || continue
+            checksum_file="${archive}.sha256"
+
+            if [ -f "$checksum_file" ]; then
+              echo "Recalculating: $(basename "$archive")"
+              new_hash=$($SHA_CMD "$archive" | cut -d' ' -f1)
+              echo "${new_hash}  $(basename "$archive")" > "$checksum_file"
+              echo "  Updated: ${new_hash}"
+            fi
+          done
+
+          echo "Checksum recalculation complete"
+
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
