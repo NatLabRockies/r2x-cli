@@ -94,7 +94,7 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
 
     for (index, plugin_name) in pipeline.iter().enumerate() {
         let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
-            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.to_string()),
+            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.clone()),
             _ => RunError::Config(err.to_string()),
         })?;
         let plugin = resolved.plugin;
@@ -136,7 +136,7 @@ fn run_pipeline(
     let total_steps = pipeline.len();
 
     logger::debug("Verifying packages for pipeline...");
-    for plugin_name in pipeline.iter() {
+    for plugin_name in pipeline {
         package_verification::verify_and_ensure_plugin(&manifest, plugin_name)
             .map_err(|e| RunError::Verification(e.to_string()))?;
     }
@@ -175,7 +175,7 @@ fn run_pipeline(
         let step_start = Instant::now();
 
         let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
-            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.to_string()),
+            PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.clone()),
             _ => RunError::Config(err.to_string()),
         })?;
         let pkg = resolved.package;
@@ -213,7 +213,7 @@ fn run_pipeline(
         logger::debug(&format!("Invoking: {}", target));
 
         // Set current plugin context for logging
-        logger::set_current_plugin(Some(plugin_name.to_string()));
+        logger::set_current_plugin(Some(plugin_name.clone()));
 
         // Reconfigure Python logging with plugin name
         if let Err(e) = Bridge::reconfigure_logging_for_plugin(plugin_name) {
@@ -266,10 +266,10 @@ fn run_pipeline(
         let result = invocation_result.output;
 
         if !result.is_empty() && result != "null" {
-            if !opts.no_stdout {
-                logger::debug(&format!("Plugin produced output ({} bytes)", result.len()));
-            } else {
+            if opts.no_stdout {
                 logger::debug("Plugin produced output (suppressed by --no-stdout)");
+            } else {
+                logger::debug(&format!("Plugin produced output ({} bytes)", result.len()));
             }
             current_stdin = Some(result);
         } else {

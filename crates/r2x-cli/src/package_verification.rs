@@ -113,11 +113,11 @@ fn check_packages_installed(
         let package_exists =
             package_dir.exists() || dist_info_exists(&site_packages, &dist_info_pattern);
 
-        if !package_exists {
-            logger::debug(&format!("Package '{}' not found in site-packages", package));
-            missing.push(package.to_string());
-        } else {
+        if package_exists {
             logger::debug(&format!("Package '{}' found in site-packages", package));
+        } else {
+            logger::debug(&format!("Package '{}' not found in site-packages", package));
+            missing.push((*package).to_string());
         }
     }
 

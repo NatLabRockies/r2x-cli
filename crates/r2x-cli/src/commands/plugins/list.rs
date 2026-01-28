@@ -56,7 +56,7 @@ pub fn list_plugins(
                 .packages
                 .iter()
                 .find(|p| p.name.as_ref() == package_name);
-            let is_editable = pkg.map(|p| p.editable_install).unwrap_or(false);
+            let is_editable = pkg.is_some_and(|p| p.editable_install);
 
             // Get version info
             let version_info = get_package_info(uv_path, python_path, package_name)
@@ -140,8 +140,7 @@ fn show_plugin_details(
                 let parts: Vec<&str> = name_str.split('.').collect();
                 parts
                     .last()
-                    .map(|&last| last == module_name)
-                    .unwrap_or(false)
+                    .is_some_and(|&last| last == module_name)
             })
             .collect()
     } else {

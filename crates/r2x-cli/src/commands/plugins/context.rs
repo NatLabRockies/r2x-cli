@@ -30,8 +30,7 @@ impl PluginContext {
 
         let uv_path = config
             .uv_path
-            .as_ref()
-            .cloned()
+            .clone()
             .ok_or_else(|| PluginError::Config("uv path not configured".to_string()))?;
 
         let venv_path = config.get_venv_path();

@@ -35,8 +35,7 @@ pub fn discover_and_register_entry_points_with_deps(
     // Check if we already have this package in the manifest with plugins
     let has_cached_plugins = manifest
         .get_package(package_name_full)
-        .map(|pkg| !pkg.plugins.is_empty())
-        .unwrap_or(false);
+        .is_some_and(|pkg| !pkg.plugins.is_empty());
 
     // Discover or use cached plugins
     let discovered_plugins: Vec<Plugin> = if has_cached_plugins && !no_cache {
@@ -134,8 +133,7 @@ pub fn discover_and_register_entry_points_with_deps(
 
         let has_dep_cached = manifest
             .get_package(&dep)
-            .map(|pkg| !pkg.plugins.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|pkg| !pkg.plugins.is_empty());
 
         let dep_plugins: Vec<Plugin> = if has_dep_cached && !no_cache {
             manifest

@@ -12,7 +12,11 @@ pub fn show_run_help() -> Result<(), String> {
     println!();
 
     // Show installed plugins
-    if !manifest.is_empty() {
+    if manifest.is_empty() {
+        println!("{}", "No plugins installed.".yellow());
+        println!("Install plugins with: r2x install <package>");
+        println!();
+    } else {
         println!("{}", "Installed plugins:".bold());
         for pkg in &manifest.packages {
             for plugin in &pkg.plugins {
@@ -25,10 +29,6 @@ pub fn show_run_help() -> Result<(), String> {
                 );
             }
         }
-        println!();
-    } else {
-        println!("{}", "No plugins installed.".yellow());
-        println!("Install plugins with: r2x install <package>");
         println!();
     }
 

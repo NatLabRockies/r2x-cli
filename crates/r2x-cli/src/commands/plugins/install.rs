@@ -104,7 +104,7 @@ pub fn install_plugin(
         editable,
         no_cache,
     ) {
-        Ok(_) => {
+        Ok(()) => {
             logger::debug(&format!("pip install took: {:?}", start.elapsed()));
         }
         Err(e) => {
@@ -145,7 +145,7 @@ pub fn install_plugin(
         &mut ctx.manifest,
         DiscoveryOptions {
             package: package.to_string(),
-            package_name_full: package_name_for_query.to_string(),
+            package_name_full: package_name_for_query.clone(),
             dependencies,
             package_version: package_version.clone(),
             no_cache,
@@ -370,7 +370,7 @@ fn discover_all_installed_packages(
             });
 
         // Try to discover entry points
-        match discover_and_register_entry_points_with_deps(
+        if let Ok(entry_count) = discover_and_register_entry_points_with_deps(
             &ctx.locator,
             Some(&ctx.venv_path),
             &mut ctx.manifest,
@@ -384,22 +384,19 @@ fn discover_all_installed_packages(
                 source_path,
             },
         ) {
-            Ok(entry_count) => {
-                if entry_count > 0 {
-                    let version_str = package_version.as_deref().unwrap_or("");
-                    let disp = if version_str.is_empty() {
-                        format!("{}", package_name.bold())
-                    } else {
-                        format!("{}=={}", package_name.bold(), version_str)
-                    };
-                    println!(" {} {}", "+".bold().green(), disp);
-                    discovered_count += 1;
-                    total_entry_points += entry_count;
-                }
+            if entry_count > 0 {
+                let version_str = package_version.as_deref().unwrap_or("");
+                let disp = if version_str.is_empty() {
+                    format!("{}", package_name.bold())
+                } else {
+                    format!("{}=={}", package_name.bold(), version_str)
+                };
+                println!(" {} {}", "+".bold().green(), disp);
+                discovered_count += 1;
+                total_entry_points += entry_count;
             }
-            Err(_) => {
-                // Not every package has r2x_plugin entry points, skip silently
-            }
+        } else {
+            // Not every package has r2x_plugin entry points, skip silently
         }
     }
 

@@ -4,7 +4,7 @@ use crate::plugins::get_package_info;
 use crate::python_bridge::configure_python_venv;
 use crate::GlobalOpts;
 use clap::Subcommand;
-use colored::*;
+use colored::Colorize;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -78,16 +78,13 @@ pub enum CacheAction {
 }
 
 pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
-    let action = match action {
-        Some(action) => action,
-        None => {
-            println!(
-                "{}",
-                "Tip: run `r2x config show` to inspect settings or `r2x config set <key> <value>` to update them."
-                    .dimmed()
-            );
-            return;
-        }
+    let action = if let Some(action) = action { action } else {
+        println!(
+            "{}",
+            "Tip: run `r2x config show` to inspect settings or `r2x config set <key> <value>` to update them."
+                .dimmed()
+        );
+        return;
     };
 
     match action {
@@ -188,7 +185,7 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                 {
                     config.set(&key, value.clone());
                     match config.save() {
-                        Ok(_) => {
+                        Ok(()) => {
                             logger::success(&format!("Set {} = {}", key, value));
                         }
                         Err(e) => {
@@ -217,44 +214,41 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
             let config_path = Config::path();
             logger::debug(&format!("Reading config from: {}", config_path.display()));
 
-            match new_path {
-                Some(p) => {
-                    // Pointer file path: same directory as default config, file named `.r2x_config_path`
-                    let pointer_path = config_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .join(".r2x_config_path");
+            if let Some(p) = new_path {
+                // Pointer file path: same directory as default config, file named `.r2x_config_path`
+                let pointer_path = config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(".r2x_config_path");
 
-                    // Ensure pointer directory exists
-                    if let Some(parent) = pointer_path.parent() {
-                        if let Err(e) = std::fs::create_dir_all(parent) {
-                            logger::error(&format!("Failed to set config path: {}", e));
-                            return;
-                        }
-                    }
-
-                    if let Err(e) = std::fs::write(&pointer_path, p.as_bytes()) {
+                // Ensure pointer directory exists
+                if let Some(parent) = pointer_path.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
                         logger::error(&format!("Failed to set config path: {}", e));
                         return;
                     }
-
-                    logger::success(&format!("Config path set to {}", p));
                 }
-                None => {
-                    // Print the resolved config path
-                    println!("{}", config_path.display());
 
-                    // If pointer file exists, also show the override
-                    let pointer_path = config_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .join(".r2x_config_path");
-                    if pointer_path.exists() {
-                        if let Ok(contents) = std::fs::read_to_string(&pointer_path) {
-                            let trimmed = contents.trim();
-                            if !trimmed.is_empty() {
-                                println!("{} {}", "overridden-by".cyan(), trimmed);
-                            }
+                if let Err(e) = std::fs::write(&pointer_path, p.as_bytes()) {
+                    logger::error(&format!("Failed to set config path: {}", e));
+                    return;
+                }
+
+                logger::success(&format!("Config path set to {}", p));
+            } else {
+                // Print the resolved config path
+                println!("{}", config_path.display());
+
+                // If pointer file exists, also show the override
+                let pointer_path = config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(".r2x_config_path");
+                if pointer_path.exists() {
+                    if let Ok(contents) = std::fs::read_to_string(&pointer_path) {
+                        let trimmed = contents.trim();
+                        if !trimmed.is_empty() {
+                            println!("{} {}", "overridden-by".cyan(), trimmed);
                         }
                     }
                 }
@@ -293,7 +287,7 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                 logger::step("Resetting configuration to defaults");
             }
             match Config::reset() {
-                Ok(_) => {
+                Ok(()) => {
                     println!(
                         "{} configuration {} has been reset to default settings.",
                         "\u{2714}".green().bold(),
@@ -438,7 +432,9 @@ fn handle_venv_create(skip_confirmation: bool) {
             if venv_dir.exists() {
                 let should_skip = skip_confirmation || std::env::var("R2X_VENV_YES").is_ok();
 
-                if !should_skip {
+                if should_skip {
+                    logger::debug("Skipping confirmation (--yes flag or R2X_VENV_YES set)");
+                } else {
                     print!(
                         "{} A virtual environment already exists at `{}`. Do you want to replace it? {} ",
                         "?".bold().cyan(),
@@ -461,8 +457,6 @@ fn handle_venv_create(skip_confirmation: bool) {
                         logger::error("Failed to read input");
                         return;
                     }
-                } else {
-                    logger::debug("Skipping confirmation (--yes flag or R2X_VENV_YES set)");
                 }
 
                 if let Err(e) = remove_existing_venv(&venv_path) {
@@ -660,7 +654,7 @@ fn clean_cache(_opts: GlobalOpts) {
             }
 
             match fs::remove_dir_all(&cache_dir) {
-                Ok(_) => {
+                Ok(()) => {
                     logger::success("Cache folder cleaned");
                 }
                 Err(e) => {

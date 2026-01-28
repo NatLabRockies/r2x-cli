@@ -77,7 +77,7 @@ pub(super) fn validate_pipeline_configs(
 }
 
 fn is_auto_provided_param(name: &str) -> bool {
-    AUTO_PROVIDED_PARAMS.iter().any(|param| *param == name)
+    AUTO_PROVIDED_PARAMS.contains(&name)
 }
 
 #[cfg(test)]

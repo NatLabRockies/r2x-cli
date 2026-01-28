@@ -64,7 +64,7 @@ impl PipelineConfig {
             if let Some(end) = result[start..].find('}') {
                 let var_name = &result[start + 2..start + end];
                 let value = self.get_variable_string(var_name)?;
-                result.replace_range(start..start + end + 1, &value);
+                result.replace_range(start..=(start + end), &value);
             } else {
                 return Err(PipelineError::InvalidConfig(
                     "Unclosed variable substitution ${".to_string(),
@@ -77,7 +77,7 @@ impl PipelineConfig {
             if let Some(end) = result[start..].find(')') {
                 let var_name = &result[start + 2..start + end];
                 let value = self.get_variable_string(var_name)?;
-                result.replace_range(start..start + end + 1, &value);
+                result.replace_range(start..=(start + end), &value);
             } else {
                 return Err(PipelineError::InvalidConfig(
                     "Unclosed variable substitution $(".to_string(),
@@ -119,7 +119,7 @@ impl PipelineConfig {
             }
             serde_yaml::Value::Mapping(map) => {
                 let mut new_map = serde_yaml::Mapping::new();
-                for (k, v) in map.iter() {
+                for (k, v) in map {
                     let new_key = self.substitute_value(k)?;
                     let new_value = self.substitute_value(v)?;
                     new_map.insert(new_key, new_value);
@@ -128,7 +128,7 @@ impl PipelineConfig {
             }
             serde_yaml::Value::Sequence(seq) => {
                 let mut new_seq = Vec::new();
-                for item in seq.iter() {
+                for item in seq {
                     new_seq.push(self.substitute_value(item)?);
                 }
                 Ok(serde_yaml::Value::Sequence(new_seq))

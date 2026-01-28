@@ -55,7 +55,7 @@ pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
         let (ast_plugins, _decorators) = match AstDiscovery::discover_plugins(
             &package_path,
             &package_name,
-            Some(&venv_path),
+            Some(venv_path),
             Some(&version),
         ) {
             Ok(result) => result,
