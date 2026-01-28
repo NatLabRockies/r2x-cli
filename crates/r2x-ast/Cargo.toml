@@ -1,6 +1,6 @@
 [package]
 name = "r2x-ast"
-version = "0.0.9"
+version = "0.0.10"
 edition = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
