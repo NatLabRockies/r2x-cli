@@ -21,29 +21,3 @@ pub mod package_discovery;
 pub mod runtime;
 pub mod sync;
 pub mod types;
-
-// Re-export core types
-pub use manifest::RemovedPackage;
-pub use types::{
-    ConfigClass, ConfigField, Constraint, DefaultValue, FieldType, InstallType, Manifest,
-    NestedInfo, Package, Parameter, Plugin, PluginType, SchemaField, SchemaFields,
-};
-
-// Re-export package discovery helpers
-pub use package_discovery::{DiscoveredPackage, PackageDiscoverer, PackageLocator};
-
-// Re-export sync utilities
-pub use sync::{Change, StringInterner, SyncEngine, SyncResult};
-
-// Re-export error types
-pub use errors::ManifestError;
-
-// Re-export execution types (used by r2x-python)
-pub use execution_types::{
-    ArgumentSpec, ConfigSpec, ExecConfigField, IOContract, IOSlot, ImplementationType,
-    InvocationSpec, Metadata, PluginKind, PluginSpec, ResourceSpec, StoreMode, StoreSpec,
-    UpgradeSpec,
-};
-
-// Re-export runtime utilities
-pub use runtime::{build_runtime_bindings, build_runtime_bindings_from_plugin, RuntimeBindings};

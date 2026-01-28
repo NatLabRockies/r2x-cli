@@ -1,7 +1,8 @@
-use crate::config_manager::Config;
-use crate::plugins::PluginError;
-use r2x_manifest::{Manifest, PackageLocator};
-use r2x_python::resolve_site_package_path;
+use crate::plugins::error::PluginError;
+use r2x_config::Config;
+use r2x_manifest::package_discovery::PackageLocator;
+use r2x_manifest::types::Manifest;
+use r2x_python::utils::resolve_site_package_path;
 use std::path::PathBuf;
 
 pub struct PluginContext {

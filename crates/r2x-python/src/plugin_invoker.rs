@@ -2,10 +2,8 @@
 
 use crate::errors::BridgeError;
 use r2x_logger as logger;
-use r2x_manifest::{
-    runtime::{build_runtime_bindings, RuntimeBindings},
-    PluginKind, PluginSpec,
-};
+use r2x_manifest::execution_types::{PluginKind, PluginSpec};
+use r2x_manifest::runtime::{build_runtime_bindings, RuntimeBindings};
 use std::time::Duration;
 
 /// Timings for a plugin invocation phase
@@ -22,7 +20,7 @@ pub struct PluginInvocationResult {
     pub timings: Option<PluginInvocationTimings>,
 }
 
-impl super::Bridge {
+impl crate::python_bridge::Bridge {
     pub fn invoke_plugin(
         &self,
         target: &str,
@@ -67,7 +65,7 @@ impl super::Bridge {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plugin_invoker::*;
 
     #[test]
     fn plugin_invocation_result_basics() {

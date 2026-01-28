@@ -1,10 +1,10 @@
 //! Package verification and automatic reinstallation
 
-use crate::config_manager::Config;
-use crate::logger;
 use crate::manifest_lookup::resolve_plugin_ref;
-use crate::r2x_manifest::Manifest;
-use r2x_python::resolve_site_package_path;
+use r2x_config::Config;
+use r2x_logger as logger;
+use r2x_manifest::types::Manifest;
+use r2x_python::utils::resolve_site_package_path;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -132,7 +132,9 @@ fn get_site_packages_dir(venv_path: &Path) -> Result<PathBuf, VerificationError>
     ));
 
     resolve_site_package_path(venv_path).map_err(|e| match e {
-        r2x_python::BridgeError::VenvNotFound(path) => VerificationError::VenvNotFound(path),
+        r2x_python::errors::BridgeError::VenvNotFound(path) => {
+            VerificationError::VenvNotFound(path)
+        }
         _ => VerificationError::VerificationFailed(format!("{}", e)),
     })
 }
@@ -311,7 +313,7 @@ pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, Verif
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::package_verification::*;
 
     #[test]
     fn test_verification_result_valid() {

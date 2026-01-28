@@ -3,9 +3,12 @@
 //! Manages the discovery and registration of plugins from packages,
 //! handling caching, dependencies, and manifest updates.
 
-use crate::logger;
-use crate::plugins::{utils, AstDiscovery, PluginError};
-use r2x_manifest::{InstallType, Manifest, PackageLocator, Plugin};
+use crate::plugins::error::PluginError;
+use crate::plugins::utils;
+use r2x_ast::AstDiscovery;
+use r2x_logger as logger;
+use r2x_manifest::package_discovery::PackageLocator;
+use r2x_manifest::types::{InstallType, Manifest, Plugin};
 use std::sync::Arc;
 
 /// Options for plugin discovery and registration
@@ -188,7 +191,7 @@ pub fn discover_and_register_entry_points_with_deps(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plugins::discovery::*;
 
     #[test]
     fn test_looks_like_r2x_plugin() {

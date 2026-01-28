@@ -1,10 +1,10 @@
 use crate::manifest_lookup::ResolvedPlugin;
 use crate::pipeline_config::PipelineConfig;
-use crate::r2x_manifest;
-use crate::r2x_manifest::PluginKind;
+use r2x_manifest::execution_types::PluginKind;
+use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
 use std::collections::HashSet;
 
-use super::super::RunError;
+use crate::commands::run::RunError;
 
 pub(super) fn resolve_plugin_config_json(
     config: &PipelineConfig,
@@ -13,7 +13,7 @@ pub(super) fn resolve_plugin_config_json(
 ) -> Result<String, RunError> {
     let plugin_name = resolved.plugin.name.as_ref();
     let package_name = resolved.package.name.as_ref();
-    let kind = r2x_manifest::build_runtime_bindings_from_plugin(resolved.plugin).plugin_kind;
+    let kind = build_runtime_bindings_from_plugin(resolved.plugin).plugin_kind;
     let kind_alias = plugin_kind_alias(kind);
 
     for key in config_key_candidates(plugin_ref, package_name, plugin_name, kind_alias) {

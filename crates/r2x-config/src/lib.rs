@@ -372,7 +372,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_config_new() {

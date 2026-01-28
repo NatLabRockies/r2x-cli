@@ -283,7 +283,7 @@ impl Default for StringInterner {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::sync::*;
     use crate::types::{InstallType, Plugin, PluginType};
 
     fn create_test_package(name: &str) -> Package {

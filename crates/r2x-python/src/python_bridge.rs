@@ -608,7 +608,7 @@ pub struct PythonEnvCompat {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::python_bridge::*;
 
     #[test]
     fn test_bridge_struct() {

@@ -1,6 +1,9 @@
 #![allow(private_interfaces)]
 
-use super::*;
+use crate::extractor::PluginExtractor;
+use anyhow::Result;
+use ast_grep_core::AstGrep;
+use ast_grep_language::Python;
 use r2x_logger::debug;
 
 pub(super) struct ParameterEntry {
@@ -16,18 +19,18 @@ impl PluginExtractor {
         content: &str,
         class_name: &str,
     ) -> Result<Vec<ParameterEntry>> {
-        if let Some(init_signature) = self.find_init_signature(content, class_name) {
+        if let Some(init_signature) = Self::find_init_signature(content, class_name) {
             let params = self.parse_parameters_to_entries(&init_signature);
             if !params.is_empty() {
                 return Ok(params);
             }
         }
 
-        if let Some(class_signature) = self.find_class_signature(content, class_name) {
+        if let Some(class_signature) = Self::find_class_signature(content, class_name) {
             return Ok(self.parse_parameters_to_entries(&class_signature));
         }
 
-        if self.class_exists(content, class_name) {
+        if Self::class_exists(content, class_name) {
             return Ok(Vec::new());
         }
 
@@ -39,11 +42,11 @@ impl PluginExtractor {
         content: &str,
         function_name: &str,
     ) -> Result<Vec<ParameterEntry>> {
-        if let Some(function_signature) = self.find_function_signature(content, function_name) {
+        if let Some(function_signature) = Self::find_function_signature(content, function_name) {
             return Ok(self.parse_parameters_to_entries(&function_signature));
         }
 
-        if self.function_exists(content, function_name) {
+        if Self::function_exists(content, function_name) {
             return Ok(Vec::new());
         }
 
@@ -55,7 +58,7 @@ impl PluginExtractor {
         content: &str,
         function_name: &str,
     ) -> Option<String> {
-        let func_text = self.find_function_signature(content, function_name)?;
+        let func_text = Self::find_function_signature(content, function_name)?;
 
         let arrow_pos = func_text.find("->")?;
         let colon_pos = func_text[arrow_pos..].find(':')?;
@@ -66,7 +69,7 @@ impl PluginExtractor {
         )
     }
 
-    fn find_class_signature(&self, content: &str, class_name: &str) -> Option<String> {
+    fn find_class_signature(content: &str, class_name: &str) -> Option<String> {
         let sg = AstGrep::new(content, Python);
         let root = sg.root();
         // Use ast-grep pattern to match class definitions
@@ -75,7 +78,7 @@ impl PluginExtractor {
         matches.next().map(|m| m.text().to_string())
     }
 
-    fn find_function_signature(&self, content: &str, function_name: &str) -> Option<String> {
+    fn find_function_signature(content: &str, function_name: &str) -> Option<String> {
         let sg = AstGrep::new(content, Python);
         let root = sg.root();
 
@@ -119,7 +122,7 @@ impl PluginExtractor {
         None
     }
 
-    fn find_init_signature(&self, content: &str, class_name: &str) -> Option<String> {
+    fn find_init_signature(content: &str, class_name: &str) -> Option<String> {
         let lines: Vec<&str> = content.lines().collect();
         let mut in_target_class = false;
         let mut class_indent = 0usize;
@@ -181,11 +184,11 @@ impl PluginExtractor {
         None
     }
 
-    fn class_exists(&self, content: &str, class_name: &str) -> bool {
+    fn class_exists(content: &str, class_name: &str) -> bool {
         content.contains(&format!("class {}", class_name))
     }
 
-    fn function_exists(&self, content: &str, function_name: &str) -> bool {
+    fn function_exists(content: &str, function_name: &str) -> bool {
         content.contains(&format!("def {}", function_name))
     }
 
@@ -214,7 +217,7 @@ impl PluginExtractor {
                     current_param.push(ch);
                 }
                 ',' if depth == 0 => {
-                    if let Some(entry) = self.parse_single_parameter_entry(&current_param) {
+                    if let Some(entry) = Self::parse_single_parameter_entry(&current_param) {
                         parameters.push(entry);
                     }
                     current_param.clear();
@@ -223,14 +226,14 @@ impl PluginExtractor {
             }
         }
 
-        if let Some(entry) = self.parse_single_parameter_entry(&current_param) {
+        if let Some(entry) = Self::parse_single_parameter_entry(&current_param) {
             parameters.push(entry);
         }
 
         parameters
     }
 
-    fn parse_single_parameter_entry(&self, raw: &str) -> Option<ParameterEntry> {
+    fn parse_single_parameter_entry(raw: &str) -> Option<ParameterEntry> {
         let param_str = raw.trim();
 
         // Strip inline comments from the parameter string

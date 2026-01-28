@@ -81,7 +81,7 @@ pub fn find_matching_paren(text: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::naming::*;
 
     #[test]
     fn test_camel_to_kebab() {

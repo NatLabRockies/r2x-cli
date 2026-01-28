@@ -1,7 +1,7 @@
-use crate::logger;
 use crate::manifest_lookup::resolve_plugin_ref;
-use crate::r2x_manifest::Manifest;
 use colored::Colorize;
+use r2x_logger as logger;
+use r2x_manifest::types::Manifest;
 
 /// Show help for the run command when invoked with no arguments
 pub fn show_run_help() -> Result<(), String> {

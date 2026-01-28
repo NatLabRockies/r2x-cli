@@ -1,11 +1,11 @@
-use crate::r2x_manifest::runtime::RuntimeBindings;
-use crate::r2x_manifest::ImplementationType;
+use r2x_manifest::execution_types::ImplementationType;
+use r2x_manifest::runtime::RuntimeBindings;
 use std::collections::HashSet;
 
-use super::super::RunError;
-use super::constants::{
+use crate::commands::run::pipeline::constants::{
     DEFAULT_OUTPUT_ROOT, FOLDER_FIELD_KEYS, PATH_FALLBACK_KEYS, STORE_FIELD_KEYS,
 };
+use crate::commands::run::RunError;
 
 pub(super) fn build_plugin_config(
     bindings: &RuntimeBindings,
@@ -164,7 +164,7 @@ fn fallback_store_value(
 
 #[cfg(test)]
 mod tests {
-    use super::merge_config_values;
+    use crate::commands::run::pipeline::builder::merge_config_values;
     use serde_json::json;
 
     #[test]

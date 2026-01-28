@@ -2,10 +2,10 @@ use std::process::Command;
 
 use colored::Colorize;
 
-use crate::logger;
-use crate::plugins::PluginError;
+use crate::plugins::error::PluginError;
+use r2x_logger as logger;
 
-use super::PluginContext;
+use crate::commands::plugins::context::PluginContext;
 
 pub fn clean_manifest(yes: bool, ctx: &mut PluginContext) -> Result<(), PluginError> {
     let manifest = &mut ctx.manifest;

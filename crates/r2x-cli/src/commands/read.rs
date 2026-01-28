@@ -1,8 +1,8 @@
-use crate::config_manager::Config;
-use crate::logger;
-use crate::GlobalOpts;
+use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
+use r2x_config::Config;
+use r2x_logger as logger;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -58,9 +58,7 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
         file_path
     } else {
         if atty::is(Stream::Stdin) {
-            logger::info(
-                "No JSON input detected; please provide --file or pipe JSON via stdin.",
-            );
+            logger::info("No JSON input detected; please provide --file or pipe JSON via stdin.");
             return Err(
                 "No JSON input provided; either use --file or pipe data into `r2x read`".into(),
             );
@@ -1594,7 +1592,7 @@ fn ensure_ipython_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::commands::read::*;
 
     #[test]
     fn test_read_command_creation() {

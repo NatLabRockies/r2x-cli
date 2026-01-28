@@ -1,11 +1,12 @@
 use crate::manifest_lookup::resolve_plugin_ref;
 use crate::pipeline_config::PipelineConfig;
-use crate::r2x_manifest::Manifest;
+use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::types::Manifest;
 use std::collections::HashSet;
 
-use super::super::RunError;
-use super::config::resolve_plugin_config_json;
-use super::constants::AUTO_PROVIDED_PARAMS;
+use crate::commands::run::pipeline::config::resolve_plugin_config_json;
+use crate::commands::run::pipeline::constants::AUTO_PROVIDED_PARAMS;
+use crate::commands::run::RunError;
 
 pub(super) fn validate_pipeline_configs(
     config: &PipelineConfig,
@@ -21,7 +22,7 @@ pub(super) fn validate_pipeline_configs(
         };
 
         let plugin = resolved.plugin;
-        let bindings = crate::r2x_manifest::build_runtime_bindings_from_plugin(plugin);
+        let bindings = build_runtime_bindings_from_plugin(plugin);
 
         // Get user-provided config from YAML
         let yaml_config = match resolve_plugin_config_json(config, plugin_name, &resolved) {
@@ -82,7 +83,7 @@ fn is_auto_provided_param(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_auto_provided_param;
+    use crate::commands::run::pipeline::validation::is_auto_provided_param;
 
     #[test]
     fn is_auto_provided_param_recognizes_store() {

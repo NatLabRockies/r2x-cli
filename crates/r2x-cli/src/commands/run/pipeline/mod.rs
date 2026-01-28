@@ -1,13 +1,14 @@
-use super::RunError;
+use crate::commands::run::RunError;
+use crate::common::GlobalOpts;
 use crate::errors::PipelineError;
-use crate::logger;
 use crate::manifest_lookup::{resolve_plugin_ref, PluginRefError};
 use crate::package_verification;
 use crate::pipeline_config::PipelineConfig;
-use crate::python_bridge::Bridge;
-use crate::r2x_manifest::{self, Manifest};
-use crate::GlobalOpts;
 use colored::Colorize;
+use r2x_logger as logger;
+use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::types::Manifest;
+use r2x_python::python_bridge::Bridge;
 use std::time::Instant;
 
 mod builder;
@@ -181,7 +182,7 @@ fn run_pipeline(
         let pkg = resolved.package;
         let plugin = resolved.plugin;
 
-        let bindings = r2x_manifest::build_runtime_bindings_from_plugin(plugin);
+        let bindings = build_runtime_bindings_from_plugin(plugin);
 
         let yaml_config = resolve_plugin_config_json(config, plugin_name, &resolved)?;
 
@@ -208,7 +209,7 @@ fn run_pipeline(
             pipeline_overrides.as_deref(),
         )?;
 
-        let target = super::build_call_target(&bindings)?;
+        let target = crate::commands::run::build_call_target(&bindings)?;
         let bridge = Bridge::get()?;
         logger::debug(&format!("Invoking: {}", target));
 
@@ -236,11 +237,11 @@ fn run_pipeline(
                     plugin_name,
                     step_num,
                     total_steps,
-                    super::format_duration(elapsed)
+                    crate::commands::run::format_duration(elapsed)
                 ));
                 if logger::get_verbosity() > 0 {
                     if let Some(timings) = &inv_result.timings {
-                        super::print_plugin_timing_breakdown(timings);
+                        crate::commands::run::print_plugin_timing_breakdown(timings);
                     }
                 }
                 inv_result
@@ -252,7 +253,7 @@ fn run_pipeline(
                     plugin_name,
                     step_num,
                     total_steps,
-                    super::format_duration(elapsed)
+                    crate::commands::run::format_duration(elapsed)
                 ));
                 // Clear plugin context before returning error
                 logger::set_current_plugin(None);
@@ -281,7 +282,7 @@ fn run_pipeline(
         "{}",
         format!(
             "Finished in: {}",
-            super::format_duration(pipeline_start.elapsed())
+            crate::commands::run::format_duration(pipeline_start.elapsed())
         )
         .green()
         .bold()

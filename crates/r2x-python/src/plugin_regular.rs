@@ -2,10 +2,11 @@
 
 use crate::errors::BridgeError;
 use crate::plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
-use crate::Bridge;
+use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use pyo3::PyResult;
 use r2x_logger as logger;
+use r2x_manifest::execution_types::PluginKind;
 use r2x_manifest::runtime::RuntimeBindings;
 use std::time::{Duration, Instant};
 
@@ -97,7 +98,7 @@ impl Bridge {
             } else {
                 logger::debug("Building kwargs for function invocation");
                 let kwargs =
-                    self.build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
+                    Self::build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
                 Self::invoke_function_callable(
                     py,
                     &module,
@@ -117,9 +118,8 @@ impl Bridge {
 
             // For exporters, skip serialization - they write their own output
             // and return PluginContext which we don't need to pass downstream
-            let is_exporter = runtime_bindings
-                .map(|b| b.plugin_kind == r2x_manifest::PluginKind::Exporter)
-                .unwrap_or(false);
+            let is_exporter =
+                runtime_bindings.is_some_and(|b| b.plugin_kind == PluginKind::Exporter);
 
             if is_exporter {
                 logger::debug("Exporter plugin completed, skipping result serialization");
@@ -257,7 +257,7 @@ impl Bridge {
         };
 
         let config_instance = if bindings.config.is_some() {
-            bridge.instantiate_config_class(py, &config_params, bindings.config.as_ref())?
+            Bridge::instantiate_config_class(py, &config_params, bindings.config.as_ref())?
         } else {
             logger::debug(&format!(
                 "Config metadata missing for '{}', discovering from plugin class",
@@ -274,7 +274,7 @@ impl Bridge {
 
         let store_instance = if let Some(value) = store_value {
             logger::debug("Creating DataStore from path for PluginContext");
-            Some(bridge.instantiate_data_store(
+            Some(Bridge::instantiate_data_store(
                 py,
                 &value,
                 Some(&config_instance),
@@ -285,7 +285,6 @@ impl Bridge {
         };
 
         let system_instance = if let Some(stdin) = stdin_obj {
-            use r2x_manifest::PluginKind;
             if bindings.plugin_kind == PluginKind::Exporter {
                 logger::step("Deserializing system from stdin for PluginContext");
 
@@ -309,7 +308,7 @@ impl Bridge {
             None
         };
 
-        let ctx = bridge.instantiate_plugin_context(
+        let ctx = Bridge::instantiate_plugin_context(
             py,
             &config_instance,
             store_instance.as_ref(),

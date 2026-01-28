@@ -136,22 +136,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Rust non-interactively if not already installed
+      - name: Install Rust toolchain
         if: ${{ matrix.container }}
-        shell: bash
-        run: |
-          export HOME=/root
-          export RUSTUP_HOME=/root/.rustup
-          export CARGO_HOME=/root/.cargo
-
-          if ! command -v rustup > /dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-          else
-            rustup toolchain install stable
-            rustup default stable
-          fi
-
-          echo "$CARGO_HOME/bin" >> $GITHUB_PATH
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+        env:
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
@@ -166,7 +159,21 @@ jobs:
         run: |
           ${{ matrix.packages_install }}
 
-      - name: Build artifacts
+      - name: Build artifacts (container)
+        if: ${{ matrix.container }}
+        shell: bash
+        env:
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
+          PATH: /root/.cargo/bin:${{ env.PATH }}
+        run: |
+          # Actually do builds and make zips and whatnot
+          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          echo "dist ran successfully"
+
+      - name: Build artifacts (host)
+        if: ${{ !matrix.container }}
         shell: bash
         run: |
           # Actually do builds and make zips and whatnot

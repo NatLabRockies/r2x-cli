@@ -6,9 +6,6 @@
 use std::io;
 use thiserror::Error;
 
-pub use r2x_manifest::errors::ManifestError;
-pub use r2x_python::errors::BridgeError;
-
 /// Errors that can occur during pipeline configuration operations
 #[derive(Error, Debug)]
 pub enum PipelineError {
@@ -30,7 +27,7 @@ pub enum PipelineError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::errors::*;
 
     #[test]
     fn test_pipeline_error_display() {

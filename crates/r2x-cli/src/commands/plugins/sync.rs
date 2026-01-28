@@ -1,8 +1,8 @@
-use super::PluginContext;
-use crate::logger;
-use crate::plugins::AstDiscovery;
-use crate::plugins::PluginError;
+use crate::commands::plugins::context::PluginContext;
+use crate::plugins::error::PluginError;
 use colored::Colorize;
+use r2x_ast::AstDiscovery;
+use r2x_logger as logger;
 use std::path::PathBuf;
 
 /// Fast sync that re-discovers plugins using AST parsing

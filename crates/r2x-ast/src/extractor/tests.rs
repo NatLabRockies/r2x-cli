@@ -1,6 +1,9 @@
-use super::*;
+use crate::extractor::PluginExtractor;
+use anyhow::Result;
+use r2x_manifest::execution_types::{ImplementationType, PluginKind};
 use std::collections::HashMap;
 use std::fs;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
@@ -14,8 +17,8 @@ fn test_infer_argument_type_string() {
         current_module: "test.module".to_string(),
     };
 
-    assert_eq!(extractor.infer_argument_type(r#""hello""#), "string");
-    assert_eq!(extractor.infer_argument_type("'hello'"), "string");
+    assert_eq!(PluginExtractor::infer_argument_type(r#""hello""#), "string");
+    assert_eq!(PluginExtractor::infer_argument_type("'hello'"), "string");
 }
 
 #[test]
@@ -29,8 +32,8 @@ fn test_infer_argument_type_number() {
         current_module: "test.module".to_string(),
     };
 
-    assert_eq!(extractor.infer_argument_type("42"), "number");
-    assert_eq!(extractor.infer_argument_type("3.14"), "float");
+    assert_eq!(PluginExtractor::infer_argument_type("42"), "number");
+    assert_eq!(PluginExtractor::infer_argument_type("3.14"), "float");
 }
 
 #[test]
@@ -44,7 +47,10 @@ fn test_infer_argument_type_enum() {
         current_module: "test.module".to_string(),
     };
 
-    assert_eq!(extractor.infer_argument_type("IOType.STDOUT"), "enum_value");
+    assert_eq!(
+        PluginExtractor::infer_argument_type("IOType.STDOUT"),
+        "enum_value"
+    );
 }
 
 #[test]
@@ -59,10 +65,13 @@ fn test_infer_argument_type_class() {
     };
 
     assert_eq!(
-        extractor.infer_argument_type("ReEDSParser"),
+        PluginExtractor::infer_argument_type("ReEDSParser"),
         "class_reference"
     );
-    assert_eq!(extractor.infer_argument_type("MyClass"), "class_reference");
+    assert_eq!(
+        PluginExtractor::infer_argument_type("MyClass"),
+        "class_reference"
+    );
 }
 
 #[test]
@@ -173,7 +182,7 @@ manifest.add(PluginSpec.parser(name="demo.parser", entry=DemoParser))
 
 #[test]
 fn test_extract_parameters_with_inline_comments() -> Result<()> {
-    let content = r#"
+    let content = r"
 class TestExporter:
     def __init__(
         self,
@@ -184,7 +193,7 @@ class TestExporter:
         weather_year: int | None = None,  # ReEDS field for filename association
     ):
         pass
-"#;
+";
 
     let temp_dir = TempDir::new()?;
     let pkg_root = temp_dir.path().join("test_pkg");
@@ -220,12 +229,12 @@ class TestExporter:
 
 #[test]
 fn test_extract_config_fields_with_inline_comments() -> Result<()> {
-    let content = r#"
+    let content = r"
 class TestConfig:
     model_name: str
     template: str | None = None  # Template file path
     simulation_config: dict | None = None  # Simulation configuration
-"#;
+";
 
     let temp_dir = TempDir::new()?;
     let pkg_root = temp_dir.path().join("test_pkg");

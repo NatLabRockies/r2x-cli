@@ -1,12 +1,12 @@
 use crate::errors::PipelineError;
-use crate::logger;
-use crate::r2x_manifest::runtime::RuntimeBindings;
 use r2x_config::Config;
+use r2x_logger as logger;
+use r2x_manifest::runtime::RuntimeBindings;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::super::RunError;
-use super::constants::JSON_PATH_FIELDS;
+use crate::commands::run::pipeline::constants::JSON_PATH_FIELDS;
+use crate::commands::run::RunError;
 
 pub(super) fn prepare_pipeline_overrides(
     pipeline_input: Option<&str>,

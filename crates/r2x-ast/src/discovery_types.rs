@@ -1,9 +1,9 @@
 //! Local types for AST-based plugin discovery
 //!
-//! This module defines AST-specific types and re-exports common execution types
+//! This module defines AST-specific types and uses common execution types
 //! from r2x_manifest to avoid duplication.
 //!
-//! ## Re-exported types (from r2x_manifest::execution_types)
+//! ## Shared execution types (from r2x_manifest::execution_types)
 //!
 //! - `PluginKind` - Plugin type enumeration
 //! - `InvocationSpec` - How to construct and invoke a plugin
@@ -27,16 +27,10 @@
 //! - `FunctionParameter` - Single function parameter
 //! - `VarArgType` - Variable argument type
 
-use serde::{Deserialize, Serialize};
-
-// Re-export common types from r2x_manifest::execution_types
-// Note: ResourceSpec and ConfigSpec are NOT re-exported because they have
-// different field structures (AST uses ConfigField with types: Vec<String>,
-// execution uses ExecConfigField with annotation: Option<String>)
-pub use r2x_manifest::{
-    ArgumentSpec, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind, StoreMode,
-    StoreSpec, UpgradeSpec,
+use r2x_manifest::execution_types::{
+    IOContract, ImplementationType, InvocationSpec, PluginKind, StoreSpec, UpgradeSpec,
 };
+use serde::{Deserialize, Serialize};
 
 /// Resource requirements (config and data store)
 ///
@@ -77,11 +71,7 @@ impl EntryPointInfo {
 
     /// Check if the symbol likely refers to a class (starts with uppercase)
     pub fn is_class(&self) -> bool {
-        self.symbol
-            .chars()
-            .next()
-            .map(|c| c.is_uppercase())
-            .unwrap_or(false)
+        self.symbol.chars().next().is_some_and(|c| c.is_uppercase())
     }
 
     /// Infer plugin kind from the section name
@@ -215,9 +205,9 @@ pub enum VarArgType {
 
 impl DiscoveredPlugin {
     /// Convert to the new manifest Plugin type
-    pub fn to_manifest_plugin(&self) -> r2x_manifest::Plugin {
+    pub fn to_manifest_plugin(&self) -> r2x_manifest::types::Plugin {
         use crate::schema_extractor::parse_union_types_from_annotation;
-        use r2x_manifest::{Plugin, PluginType};
+        use r2x_manifest::types::{Parameter, Plugin, PluginType};
         use smallvec::SmallVec;
         use std::sync::Arc;
 
@@ -244,20 +234,18 @@ impl DiscoveredPlugin {
 
         let config_spec = self.resources.as_ref().and_then(|r| r.config.as_ref());
 
-        let (config_class, config_module) = config_spec
-            .map(|c| {
-                (
-                    Some(Arc::from(c.name.as_str())),
-                    Some(Arc::from(c.module.as_str())),
-                )
-            })
-            .unwrap_or((None, None));
+        let (config_class, config_module) = config_spec.map_or((None, None), |c| {
+            (
+                Some(Arc::from(c.name.as_str())),
+                Some(Arc::from(c.module.as_str())),
+            )
+        });
 
-        let config_fields = config_spec.map(|c| c.fields.as_slice()).unwrap_or(&[]);
+        let config_fields = config_spec.map_or(&[], |c| c.fields.as_slice());
 
-        let mut parameters: SmallVec<[r2x_manifest::Parameter; 4]> = config_fields
+        let mut parameters: SmallVec<[Parameter; 4]> = config_fields
             .iter()
-            .map(|field| r2x_manifest::Parameter {
+            .map(|field| Parameter {
                 name: Arc::from(field.name.as_str()),
                 types: field.types.iter().map(|t| Arc::from(t.as_str())).collect(),
                 module: None,
@@ -270,23 +258,22 @@ impl DiscoveredPlugin {
         let existing_names: std::collections::HashSet<String> =
             parameters.iter().map(|p| p.name.to_string()).collect();
 
-        for arg in self.invocation.call.iter() {
+        for arg in &self.invocation.call {
             let name = arg.name.as_str();
             if RUNTIME_PARAMS.contains(&name) || existing_names.contains(name) {
                 continue;
             }
-            let types: SmallVec<[Arc<str>; 2]> = arg
-                .annotation
-                .as_deref()
-                .map(|ann| {
+            let types: SmallVec<[Arc<str>; 2]> = arg.annotation.as_deref().map_or_else(
+                || SmallVec::from_elem(Arc::from("Any"), 1),
+                |ann| {
                     parse_union_types_from_annotation(ann)
                         .into_iter()
                         .map(|t| Arc::from(t.as_str()))
                         .collect()
-                })
-                .unwrap_or_else(|| SmallVec::from_elem(Arc::from("Any"), 1));
+                },
+            );
 
-            parameters.push(r2x_manifest::Parameter {
+            parameters.push(Parameter {
                 name: Arc::from(arg.name.as_str()),
                 types,
                 module: None,

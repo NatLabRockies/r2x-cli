@@ -1,5 +1,5 @@
-use crate::logger;
-use crate::plugins::PluginError;
+use crate::plugins::error::PluginError;
+use r2x_logger as logger;
 use std::process::Command;
 
 /// Query package info via a single pip show call.

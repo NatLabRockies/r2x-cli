@@ -554,7 +554,7 @@ impl PackageAstCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::package_cache::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_extract_method_names() {
-        let body = r#"
+        let body = r"
 class MyClass:
     def __init__(self):
         pass
@@ -581,7 +581,7 @@ class MyClass:
 
     def on_build(self, system):
         pass
-"#;
+";
         let methods = PackageAstCache::extract_method_names(body);
         assert!(methods.contains(&"__init__".to_string()));
         assert!(methods.contains(&"process".to_string()));

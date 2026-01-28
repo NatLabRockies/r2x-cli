@@ -1,18 +1,17 @@
 //! Keyword argument building for plugin invocation
 
 use crate::errors::BridgeError;
-use crate::Bridge;
+use crate::python_bridge::Bridge;
 use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use r2x_logger as logger;
+use r2x_manifest::execution_types::ConfigSpec;
 use r2x_manifest::runtime::RuntimeBindings;
-use r2x_manifest::ConfigSpec;
 use std::path::Path;
 
 impl Bridge {
     pub(crate) fn build_kwargs<'py>(
-        &self,
         py: pyo3::Python<'py>,
         config_dict: &pyo3::Bound<'py, PyDict>,
         stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
@@ -20,23 +19,20 @@ impl Bridge {
     ) -> Result<pyo3::Bound<'py, PyDict>, BridgeError> {
         let kwargs = PyDict::new(py);
 
-        let runtime = match runtime_bindings {
-            Some(binding) => binding,
-            None => {
-                for (k, v) in config_dict {
-                    kwargs.set_item(k, v)?;
-                }
-                if let Some(stdin) = stdin_obj {
-                    kwargs.set_item("stdin", stdin)?;
-                }
-                return Ok(kwargs);
+        let Some(runtime) = runtime_bindings else {
+            for (k, v) in config_dict {
+                kwargs.set_item(k, v)?;
             }
+            if let Some(stdin) = stdin_obj {
+                kwargs.set_item("stdin", stdin)?;
+            }
+            return Ok(kwargs);
         };
 
         // For upgrader plugins without config metadata, pass all config values directly as kwargs.
         // Upgraders typically have simple constructors (path, folder_path, etc.) and don't use
         // the complex config class machinery that parsers/exporters use.
-        if runtime.plugin_kind == r2x_manifest::PluginKind::Upgrader
+        if runtime.plugin_kind == r2x_manifest::execution_types::PluginKind::Upgrader
             && runtime.config.is_none()
             && runtime.entry_parameters.is_empty()
         {
@@ -66,7 +62,7 @@ impl Bridge {
                     || annotation.contains(config_class_name.as_str())
                 {
                     needs_config_class = true;
-                    config_param_name = param.name.clone();
+                    config_param_name.clone_from(&param.name);
                     logger::debug(&format!(
                         "Config parameter detected: '{}' (annotation '{}' matches config class '{}')",
                         param.name, annotation, config_class_name
@@ -119,7 +115,7 @@ impl Bridge {
 
             logger::step("Instantiating config class with params");
             let config_obj =
-                self.instantiate_config_class(py, &config_params, runtime.config.as_ref())?;
+                Self::instantiate_config_class(py, &config_params, runtime.config.as_ref())?;
             logger::step(&format!(
                 "Config class instantiated, setting as kwarg '{}'",
                 config_param_name
@@ -150,14 +146,14 @@ impl Bridge {
                 if let Some(value) = value {
                     let config_binding = config_instance.as_ref().map(|obj| obj.bind(py));
                     let store_instance = if let Some(binding) = config_binding.as_ref() {
-                        self.instantiate_data_store(
+                        Self::instantiate_data_store(
                             py,
                             &value,
                             Some(binding),
                             runtime.config.as_ref(),
                         )?
                     } else {
-                        self.instantiate_data_store(py, &value, None, runtime.config.as_ref())?
+                        Self::instantiate_data_store(py, &value, None, runtime.config.as_ref())?
                     };
                     kwargs.set_item(&param.name, store_instance)?;
                 }
@@ -171,18 +167,15 @@ impl Bridge {
                 let in_metadata = runtime
                     .config
                     .as_ref()
-                    .map(|spec| spec.fields.iter().any(|f| f.name == param.name))
-                    .unwrap_or(false);
+                    .is_some_and(|spec| spec.fields.iter().any(|f| f.name == param.name));
 
                 // If not found in metadata, check the config instance directly
-                if !in_metadata {
-                    if let Some(ref config_obj) = config_instance {
-                        config_obj.bind(py).hasattr(&*param.name).unwrap_or(false)
-                    } else {
-                        false
-                    }
-                } else {
+                if in_metadata {
                     true
+                } else if let Some(ref config_obj) = config_instance {
+                    config_obj.bind(py).hasattr(&*param.name).unwrap_or(false)
+                } else {
+                    false
                 }
             } else {
                 false
@@ -232,7 +225,6 @@ impl Bridge {
     }
 
     pub(crate) fn instantiate_config_class<'py>(
-        &self,
         py: pyo3::Python<'py>,
         config_params: &pyo3::Bound<'py, PyDict>,
         config_metadata: Option<&ConfigSpec>,
@@ -262,7 +254,6 @@ impl Bridge {
     }
 
     pub(crate) fn instantiate_data_store<'py>(
-        &self,
         py: pyo3::Python<'py>,
         value: &pyo3::Bound<'py, PyAny>,
         config_instance: Option<&pyo3::Bound<'py, PyAny>>,
@@ -459,7 +450,6 @@ impl Bridge {
     /// Instantiate a PluginContext from r2x_core with config (positional) and optional
     /// keyword-only arguments (store, system).
     pub(crate) fn instantiate_plugin_context<'py>(
-        &self,
         py: pyo3::Python<'py>,
         config_instance: &pyo3::Bound<'py, PyAny>,
         store_instance: Option<&pyo3::Bound<'py, PyAny>>,

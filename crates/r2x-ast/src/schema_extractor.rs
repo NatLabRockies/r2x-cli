@@ -11,7 +11,9 @@
 use anyhow::{anyhow, Result};
 use ast_grep_core::AstGrep;
 use ast_grep_language::Python;
-use r2x_manifest::{Constraint, DefaultValue, FieldType, NestedInfo, SchemaField, SchemaFields};
+use r2x_manifest::types::{
+    Constraint, DefaultValue, FieldType, NestedInfo, SchemaField, SchemaFields,
+};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -450,7 +452,7 @@ pub fn parse_union_types_from_annotation(annotation: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::schema_extractor::*;
 
     #[test]
     fn test_extract_simple_fields() {
@@ -513,16 +515,12 @@ class MyConfig(BaseModel):
         assert!(fields.is_ok());
         let fields = fields.unwrap_or_default();
 
-        let mode = fields.get("mode");
-        assert!(
-            mode.is_some_and(|m| m
-                .enum_values
-                .as_ref()
-                .is_some_and(|values| values.len() == 3
-                    && values.iter().any(|v| v.as_ref() == "fast")
-                    && values.iter().any(|v| v.as_ref() == "slow")
-                    && values.iter().any(|v| v.as_ref() == "balanced")))
-        );
+        let mode = fields.get("mode").expect("mode field missing");
+        let values = mode.enum_values.as_ref().expect("mode enum values missing");
+        assert_eq!(values.len(), 3);
+        assert!(values.iter().any(|v| v.as_ref() == "fast"));
+        assert!(values.iter().any(|v| v.as_ref() == "slow"));
+        assert!(values.iter().any(|v| v.as_ref() == "balanced"));
     }
 
     #[test]
@@ -537,9 +535,9 @@ class MyConfig(BaseModel):
         assert!(fields.is_ok());
         let fields = fields.unwrap_or_default();
 
-        let items = fields.get("items");
-        assert!(items.is_some_and(|i| i.field_type == FieldType::Array
-            && i.items.as_ref().map(|s| s.as_ref()) == Some("str")));
+        let items = fields.get("items").expect("items field missing");
+        assert_eq!(items.field_type, FieldType::Array);
+        assert_eq!(items.items.as_ref().map(|s| s.as_ref()), Some("str"));
     }
 
     #[test]
@@ -570,11 +568,14 @@ class MyConfig(BaseModel):
         assert!(fields.is_ok());
         let fields = fields.unwrap_or_default();
 
-        let database = fields.get("database");
-        assert!(database.is_some_and(|d| d.field_type == FieldType::Object
-            && d.nested
-                .as_ref()
-                .is_some_and(|n| n.class.as_ref().map(|s| s.as_ref()) == Some("DatabaseConfig"))));
+        let database = fields.get("database").expect("database field missing");
+        assert_eq!(database.field_type, FieldType::Object);
+        let nested = database
+            .nested
+            .as_ref()
+            .expect("database nested info missing");
+        let class_name = nested.class.as_ref().map(|s| s.as_ref());
+        assert_eq!(class_name, Some("DatabaseConfig"));
     }
 
     #[test]

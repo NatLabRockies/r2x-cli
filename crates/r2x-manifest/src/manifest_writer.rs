@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 use tracing::{debug, info};
 
-use super::types::Manifest;
+use crate::types::Manifest;
 
 /// Write manifest to a custom path (primarily for testing)
 pub fn write_to_path(manifest: &Manifest, output_path: &Path) -> Result<()> {
@@ -43,7 +43,7 @@ pub fn read_from_path(manifest_path: &Path) -> Result<Manifest> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::manifest_writer::*;
     use crate::types::{
         ArgumentSpec, IOContract, ImplementationType, InvocationSpec, Metadata, Package,
         PluginKind, PluginSpec,

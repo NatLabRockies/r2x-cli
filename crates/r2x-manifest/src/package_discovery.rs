@@ -396,7 +396,7 @@ pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::package_discovery::*;
 
     #[test]
     fn test_parse_entry_points() {

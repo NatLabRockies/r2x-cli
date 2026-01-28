@@ -1,4 +1,6 @@
-use super::*;
+use crate::extractor::PluginExtractor;
+use anyhow::{anyhow, Result};
+use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum KwArgRole {
@@ -57,7 +59,7 @@ impl PluginExtractor {
                     if let Some(eq_idx) = arg.find('=') {
                         let key = arg[..eq_idx].trim().to_string();
                         let value_str = arg[eq_idx + 1..].trim();
-                        let arg_type = self.infer_argument_type(value_str);
+                        let arg_type = Self::infer_argument_type(value_str);
                         let value = if arg_type == "string" {
                             value_str
                                 .trim_matches(|c: char| c == '"' || c == '\'')
@@ -82,7 +84,7 @@ impl PluginExtractor {
         Ok(args)
     }
 
-    pub(super) fn infer_argument_type(&self, value_str: &str) -> String {
+    pub(super) fn infer_argument_type(value_str: &str) -> String {
         let value_str = value_str.trim();
 
         if (value_str.starts_with('"') && value_str.ends_with('"'))
@@ -122,7 +124,7 @@ impl PluginExtractor {
         "identifier".to_string()
     }
 
-    pub(super) fn find_kwarg_value(&self, kwargs: &[KwArg], name: &str) -> Result<String> {
+    pub(super) fn find_kwarg_value(kwargs: &[KwArg], name: &str) -> Result<String> {
         kwargs
             .iter()
             .find(|arg| arg.name == name)

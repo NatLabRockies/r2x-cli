@@ -1,4 +1,4 @@
-use crate::plugins::PluginError;
+use crate::plugins::error::PluginError;
 
 /// Expand tilde (~) to home directory path (cross-platform)
 /// Works on Windows, macOS, and Linux
@@ -183,7 +183,7 @@ fn add_git_ref(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plugins::package_spec::*;
 
     #[test]
     fn test_extract_package_name_pypi() {

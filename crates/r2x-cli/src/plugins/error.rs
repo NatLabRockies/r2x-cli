@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::r2x_manifest::errors::ManifestError;
+use r2x_manifest::errors::ManifestError;
 
 #[derive(Debug, Error)]
 pub enum PluginError {

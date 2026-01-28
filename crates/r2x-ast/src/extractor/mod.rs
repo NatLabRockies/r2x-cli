@@ -1,10 +1,11 @@
-use crate::discovery_types::{
-    ArgumentSpec, ConfigField, ConfigSpec, DiscoveredPlugin, IOContract, IOSlot,
-    ImplementationType, InvocationSpec, PluginKind, ResourceSpec, StoreMode, StoreSpec,
-};
+use crate::discovery_types::{ConfigField, ConfigSpec, DiscoveredPlugin, ResourceSpec};
 use anyhow::{anyhow, Result};
 use ast_grep_core::AstGrep;
 use ast_grep_language::Python;
+use r2x_manifest::execution_types::{
+    ArgumentSpec, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind, StoreMode,
+    StoreSpec,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -150,8 +151,8 @@ impl PluginExtractor {
         let call_text = spec_match.text();
         let kwargs = self.extract_keyword_arguments_from_text(call_text.as_ref())?;
 
-        let name = self.find_kwarg_value(&kwargs, "name")?;
-        let entry_value = self.find_kwarg_value(&kwargs, "entry")?;
+        let name = Self::find_kwarg_value(&kwargs, "name")?;
+        let entry_value = Self::find_kwarg_value(&kwargs, "entry")?;
         let entry = self.qualify_symbol(&entry_value);
 
         // Infer implementation type from the entry point
@@ -168,9 +169,9 @@ impl PluginExtractor {
             }
         };
 
-        let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
+        let description = Self::find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
 
-        let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
+        let method_param = Self::find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
         let resolved_method = method_param.or_else(|| Self::default_method_for_kind(&kind));
 
         let invocation = InvocationSpec {
@@ -242,10 +243,10 @@ impl PluginExtractor {
         call_text: &str,
     ) -> Result<DiscoveredPlugin> {
         let kwargs = self.extract_keyword_arguments_from_text(call_text)?;
-        let name = self.find_kwarg_by_role(&kwargs, args::KwArgRole::Name)?;
+        let name = Self::find_kwarg_by_role(&kwargs, args::KwArgRole::Name)?;
         let entry = self.find_entry_reference(&kwargs)?;
-        let description = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
-        let method_param = self.find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
+        let description = Self::find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Description);
+        let method_param = Self::find_optional_kwarg_by_role(&kwargs, args::KwArgRole::Method);
 
         // Infer implementation type from the entry point
         let implementation = Self::infer_invocation_type(&entry);
@@ -289,12 +290,7 @@ impl PluginExtractor {
 
     fn infer_invocation_type(entry: &str) -> ImplementationType {
         let ident = entry.rsplit('.').next().unwrap_or(entry);
-        if ident
-            .chars()
-            .next()
-            .map(|c| c.is_uppercase())
-            .unwrap_or(false)
-        {
+        if ident.chars().next().is_some_and(|c| c.is_uppercase()) {
             ImplementationType::Class
         } else {
             ImplementationType::Function
@@ -302,11 +298,11 @@ impl PluginExtractor {
     }
 
     fn find_entry_reference(&self, kwargs: &[args::KwArg]) -> Result<String> {
-        let symbol = self.find_kwarg_by_role(kwargs, args::KwArgRole::EntryReference)?;
+        let symbol = Self::find_kwarg_by_role(kwargs, args::KwArgRole::EntryReference)?;
         Ok(self.qualify_symbol(&symbol))
     }
 
-    fn find_kwarg_by_role(&self, kwargs: &[args::KwArg], role: args::KwArgRole) -> Result<String> {
+    fn find_kwarg_by_role(kwargs: &[args::KwArg], role: args::KwArgRole) -> Result<String> {
         kwargs
             .iter()
             .find(|kw| kw.role == role)
@@ -315,7 +311,6 @@ impl PluginExtractor {
     }
 
     fn find_optional_kwarg_by_role(
-        &self,
         kwargs: &[args::KwArg],
         role: args::KwArgRole,
     ) -> Option<String> {
@@ -330,12 +325,9 @@ impl PluginExtractor {
         entry: &str,
         implementation: &ImplementationType,
     ) -> Vec<ArgumentSpec> {
-        let (module_path, symbol) = match Self::split_entry(entry) {
-            Some(parts) => parts,
-            None => {
-                debug!("Failed to split entry point: {}", entry);
-                return Vec::new();
-            }
+        let Some((module_path, symbol)) = Self::split_entry(entry) else {
+            debug!("Failed to split entry point: {}", entry);
+            return Vec::new();
         };
 
         // Try to resolve parameters, following imports if necessary
@@ -548,8 +540,7 @@ impl PluginExtractor {
         callee
             .rsplit('.')
             .next()
-            .map(|segment| segment.trim().ends_with("Plugin"))
-            .unwrap_or(false)
+            .is_some_and(|segment| segment.trim().ends_with("Plugin"))
     }
 
     fn infer_io_contract(&self, kind: &PluginKind) -> IOContract {
@@ -818,8 +809,7 @@ impl PluginExtractor {
                 if !(trimmed
                     .chars()
                     .next()
-                    .map(|c| c.is_ascii_alphabetic() || c == '_')
-                    .unwrap_or(false))
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_'))
                 {
                     continue;
                 }
@@ -855,8 +845,7 @@ impl PluginExtractor {
                 let looks_like_new_field = trimmed_no_comment
                     .chars()
                     .next()
-                    .map(|c| c.is_ascii_alphabetic() || c == '_')
-                    .unwrap_or(false)
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                     && (trimmed_no_comment.contains(':') || trimmed_no_comment.contains('='));
 
                 // If we see a new field starting, finish the current one
@@ -971,10 +960,10 @@ impl PluginExtractor {
         let annotation = annotation.filter(|s| !s.is_empty());
 
         // Parse union types from the annotation
-        let types = annotation
-            .as_ref()
-            .map(|ann| parse_union_types_from_annotation(ann))
-            .unwrap_or_else(|| vec!["Any".to_string()]);
+        let types = annotation.as_ref().map_or_else(
+            || vec!["Any".to_string()],
+            parse_union_types_from_annotation,
+        );
 
         // Extract description from Field() if present in the definition
         let description = extract_description_from_field(definition);

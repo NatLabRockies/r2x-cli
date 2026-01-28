@@ -17,29 +17,25 @@ pub mod naming;
 pub mod package_cache;
 pub mod schema_extractor;
 
-use crate::entry_points::{
-    find_pyproject_toml_path, parse_all_entry_points, parse_pyproject_entry_points,
+use crate::discovery_types::{
+    ConfigField, ConfigSpec, DecoratorRegistration, DiscoveredPlugin, EntryPointInfo, ResourceSpec,
 };
+use crate::entry_points::{parser as entry_parser, pyproject as entry_pyproject};
 // Re-export for tests
 #[cfg(test)]
-use crate::entry_points::is_r2x_section;
+use crate::entry_points::parser::is_r2x_section;
 use crate::naming::{camel_to_kebab, find_matching_paren, snake_to_kebab};
 use crate::package_cache::PackageAstCache;
 use anyhow::{anyhow, Result};
 use ast_grep_language::Python;
 use r2x_logger as logger;
+use r2x_manifest::execution_types::{
+    ArgumentSpec, IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-
-// Re-export commonly used types (also used internally)
-pub use discovery_types::{
-    ArgumentSpec, ConfigField, ConfigSpec, DecoratorRegistration, DiscoveredPlugin, EntryPointInfo,
-    IOContract, IOSlot, ImplementationType, InvocationSpec, PluginKind, ResourceSpec, StoreMode,
-    StoreSpec, UpgradeSpec,
-};
-pub use schema_extractor::SchemaExtractor;
 
 type PythonAst = ast_grep_core::AstGrep<ast_grep_core::source::StrDoc<Python>>;
 
@@ -99,7 +95,7 @@ impl AstDiscovery {
                     let content = std::fs::read_to_string(&entry_points_path)
                         .map_err(|e| anyhow!("Failed to read entry_points.txt: {}", e))?;
 
-                    parse_all_entry_points(&content)
+                    entry_parser::parse_all_entry_points(&content)
                 }
                 Err(e) => {
                     logger::debug(&format!(
@@ -232,8 +228,7 @@ impl AstDiscovery {
         let path_name_matches = package_path
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name == normalized_name)
-            .unwrap_or(false);
+            .is_some_and(|name| name == normalized_name);
 
         if path_name_matches || package_path.join("__init__.py").exists() {
             return package_path.to_path_buf();
@@ -293,10 +288,11 @@ impl AstDiscovery {
         discovery_root: &Path,
         package_name_full: &str,
     ) -> Vec<EntryPointInfo> {
-        let pyproject_path = match find_pyproject_toml_path(package_path, discovery_root) {
-            Some(path) => path,
-            None => return Vec::new(),
-        };
+        let pyproject_path =
+            match entry_pyproject::find_pyproject_toml_path(package_path, discovery_root) {
+                Some(path) => path,
+                None => return Vec::new(),
+            };
 
         let content = match std::fs::read_to_string(&pyproject_path) {
             Ok(content) => content,
@@ -309,7 +305,7 @@ impl AstDiscovery {
             }
         };
 
-        let entries = parse_pyproject_entry_points(&content);
+        let entries = entry_pyproject::parse_pyproject_entry_points(&content);
         if !entries.is_empty() {
             logger::debug(&format!(
                 "Parsed {} entry points from pyproject.toml for '{}'",
@@ -658,8 +654,7 @@ impl AstDiscovery {
         if matches!(implementation, ImplementationType::Class) {
             let mut has_class = cached
                 .as_ref()
-                .map(|cached| Self::ast_has_class(&cached.ast, &entry.symbol))
-                .unwrap_or(false);
+                .is_some_and(|cached| Self::ast_has_class(&cached.ast, &entry.symbol));
 
             if !has_class {
                 if let Some(cached_file) = cached.as_ref() {
@@ -673,10 +668,9 @@ impl AstDiscovery {
                         {
                             source_file = Some(path.clone());
                             cached = Self::read_file_cached(file_cache, &path);
-                            has_class = cached
-                                .as_ref()
-                                .map(|cached| Self::ast_has_class(&cached.ast, &entry.symbol))
-                                .unwrap_or(false);
+                            has_class = cached.as_ref().is_some_and(|cached| {
+                                Self::ast_has_class(&cached.ast, &entry.symbol)
+                            });
                         }
                     }
                 }
@@ -698,8 +692,7 @@ impl AstDiscovery {
             // For functions, also check if it's re-exported and follow the import
             let has_function = cached
                 .as_ref()
-                .map(|cached| Self::ast_has_function(&cached.ast, &entry.symbol))
-                .unwrap_or(false);
+                .is_some_and(|cached| Self::ast_has_function(&cached.ast, &entry.symbol));
 
             if !has_function {
                 // Function not defined here, try to resolve from imports
@@ -799,11 +792,11 @@ impl AstDiscovery {
         let (constructor_args, call_args) = match implementation {
             ImplementationType::Class => {
                 let args = Self::extract_class_init_params(&cached.ast, &entry.symbol);
-                (args, Vec::new())
+                (args, Vec::<ArgumentSpec>::new())
             }
             ImplementationType::Function => {
                 let args = Self::extract_function_params(&cached.content, &entry.symbol);
-                (Vec::new(), args)
+                (Vec::<ArgumentSpec>::new(), args)
             }
         };
 
@@ -835,7 +828,7 @@ impl AstDiscovery {
             Some(ResourceSpec {
                 store: None,
                 config: Some(ConfigSpec {
-                    module: entry.module.to_string(),
+                    module: entry.module.clone(),
                     name: format!("{}Params", entry.symbol),
                     fields,
                 }),
@@ -916,7 +909,7 @@ impl AstDiscovery {
         } else {
             // Fallback: try to resolve from imports in the source file
             Self::resolve_config_module_from_imports(&cached.content, &config_name, &entry.module)
-                .unwrap_or_else(|| entry.module.to_string())
+                .unwrap_or_else(|| entry.module.clone())
         };
 
         Some(ConfigSpec {
@@ -1299,9 +1292,8 @@ impl AstDiscovery {
                 let name = before_eq[..colon_idx].trim().to_string();
                 let annotation = before_eq[colon_idx + 1..].trim().to_string();
                 return (name, Some(annotation), Some(default));
-            } else {
-                return (before_eq.to_string(), None, Some(default));
             }
+            return (before_eq.to_string(), None, Some(default));
         }
 
         // Handle: name: type
@@ -1355,13 +1347,7 @@ impl AstDiscovery {
             let name = full_text[..colon_pos].trim().to_string();
 
             // Skip private/magic attributes and non-identifier names
-            if name.starts_with('_')
-                || !name
-                    .chars()
-                    .next()
-                    .map(|c| c.is_alphabetic())
-                    .unwrap_or(false)
-            {
+            if name.starts_with('_') || !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
                 continue;
             }
 
@@ -1464,11 +1450,10 @@ impl AstDiscovery {
     fn argument_to_config_field(arg: &ArgumentSpec) -> ConfigField {
         use schema_extractor::parse_union_types_from_annotation;
 
-        let types = arg
-            .annotation
-            .as_deref()
-            .map(parse_union_types_from_annotation)
-            .unwrap_or_else(|| vec!["Any".to_string()]);
+        let types = arg.annotation.as_deref().map_or_else(
+            || vec!["Any".to_string()],
+            parse_union_types_from_annotation,
+        );
 
         let default = arg.default.as_deref().map(Self::clean_default_value);
         let required = arg.required && !types.iter().any(|t| t == "None");
@@ -1507,14 +1492,14 @@ impl AstDiscovery {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn test_parse_all_entry_points_r2x_plugin() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
-"#;
-        let entries = parse_all_entry_points(content);
+";
+        let entries = entry_parser::parse_all_entry_points(content);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "reeds");
         assert_eq!(entries[0].module, "r2x_reeds");
@@ -1524,7 +1509,7 @@ reeds = r2x_reeds:ReEDSParser
 
     #[test]
     fn test_parse_all_entry_points_multiple_sections() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds:ReEDSParser
 
 [r2x.transforms]
@@ -1533,8 +1518,8 @@ add-emission-cap = r2x_reeds.sysmod.emission_cap:add_emission_cap
 
 [console_scripts]
 some-cli = some_module:main
-"#;
-        let entries = parse_all_entry_points(content);
+";
+        let entries = entry_parser::parse_all_entry_points(content);
         assert_eq!(entries.len(), 3);
 
         // Check r2x_plugin entry
@@ -1553,13 +1538,13 @@ some-cli = some_module:main
 
     #[test]
     fn test_parse_all_entry_points_ignores_non_r2x_sections() {
-        let content = r#"[console_scripts]
+        let content = r"[console_scripts]
 some-cli = some_module:main
 
 [gui_scripts]
 some-gui = some_module:gui_main
-"#;
-        let entries = parse_all_entry_points(content);
+";
+        let entries = entry_parser::parse_all_entry_points(content);
         assert!(entries.is_empty());
     }
 
@@ -1613,10 +1598,10 @@ some-gui = some_module:gui_main
 
     #[test]
     fn test_resolve_reexported_symbol() {
-        let content = r#"
+        let content = r"
 from .parser import ReEDSParser
 from .plugin_config import ReEDSConfig
-"#;
+";
         let resolved = AstDiscovery::resolve_reexported_symbol(content, "r2x_reeds", "ReEDSParser");
         assert_eq!(resolved, Some("r2x_reeds.parser".to_string()));
     }
@@ -1672,31 +1657,31 @@ from .plugin_config import ReEDSConfig
     #[test]
     fn test_find_config_class_name_from_function() {
         // Test single-line function with return type
-        let source_single = r#"
+        let source_single = r"
 def add_pcm_defaults(system: System, config: PCMDefaultsConfig) -> Result[System, str]:
     pass
-"#;
+";
         let config_name =
             AstDiscovery::extract_config_type_from_function_text(source_single, "add_pcm_defaults");
         assert_eq!(config_name, Some("PCMDefaultsConfig".to_string()));
 
         // Test multi-line function with return type
-        let source_multi = r#"
+        let source_multi = r"
 def add_pcm_defaults(
     system: System,
     config: PCMDefaultsConfig,
 ) -> Result[System, str]:
     pass
-"#;
+";
         let config_name_multi =
             AstDiscovery::extract_config_type_from_function_text(source_multi, "add_pcm_defaults");
         assert_eq!(config_name_multi, Some("PCMDefaultsConfig".to_string()));
 
         // Test function without return type
-        let source_no_ret = r#"
+        let source_no_ret = r"
 def add_pcm_defaults(system: System, config: PCMDefaultsConfig):
     pass
-"#;
+";
         let config_name_no_ret =
             AstDiscovery::extract_config_type_from_function_text(source_no_ret, "add_pcm_defaults");
         assert_eq!(config_name_no_ret, Some("PCMDefaultsConfig".to_string()));
@@ -1704,7 +1689,7 @@ def add_pcm_defaults(system: System, config: PCMDefaultsConfig):
 
     #[test]
     fn test_extract_function_params_direct() {
-        let source = r#"
+        let source = r"
 def add_pcm_defaults(
     system: System,
     pcm_defaults_fpath: str | None = None,
@@ -1712,7 +1697,7 @@ def add_pcm_defaults(
     pcm_defaults_override: bool = False,
 ) -> System:
     pass
-"#;
+";
         let params = AstDiscovery::extract_function_params(source, "add_pcm_defaults");
         // system should be filtered out
         assert!(!params.iter().any(|p| p.name == "system"));
@@ -1734,7 +1719,7 @@ def add_pcm_defaults(
 
     #[test]
     fn test_argument_to_config_field() {
-        let arg = discovery_types::ArgumentSpec {
+        let arg = ArgumentSpec {
             name: "pcm_defaults_fpath".to_string(),
             annotation: Some("str | None".to_string()),
             default: Some("None".to_string()),
@@ -1817,12 +1802,12 @@ def add_pcm_defaults(
         );
 
         // Multi-line function
-        let text_multi = r#"@expose_plugin
+        let text_multi = r"@expose_plugin
 def break_gens(
     system: System,
     config: BreakGensConfig,
 ) -> System:
-    pass"#;
+    pass";
         assert_eq!(
             AstDiscovery::extract_function_name_from_text(text_multi),
             Some("break_gens".to_string())
@@ -1857,9 +1842,9 @@ def break_gens(
     #[test]
     fn test_find_config_class_name_from_class() {
         // Test class with generic Plugin[Config] - simple single line
-        let source_simple = r#"class MyParser(Plugin[MyConfig]):
+        let source_simple = r"class MyParser(Plugin[MyConfig]):
     pass
-"#;
+";
         let ast = PythonAst::new(source_simple, Python);
         let config_name = AstDiscovery::find_config_class_name(
             &ast,
@@ -1888,9 +1873,9 @@ class ReEDSParser(Plugin[ReEDSConfig]):
         assert_eq!(config_name_reeds, Some("ReEDSConfig".to_string()));
 
         // Test class with multiple bases - Plugin[Config] should still be found
-        let source_multi_base = r#"class MyExporter(SomeMixin, Plugin[ExporterConfig], AnotherMixin):
+        let source_multi_base = r"class MyExporter(SomeMixin, Plugin[ExporterConfig], AnotherMixin):
     pass
-"#;
+";
         let ast_multi = PythonAst::new(source_multi_base, Python);
         let config_name_multi = AstDiscovery::find_config_class_name(
             &ast_multi,
@@ -1901,9 +1886,9 @@ class ReEDSParser(Plugin[ReEDSConfig]):
         assert_eq!(config_name_multi, Some("ExporterConfig".to_string()));
 
         // Test class without Plugin generic - should return None
-        let source_no_plugin = r#"class RegularClass(BaseClass):
+        let source_no_plugin = r"class RegularClass(BaseClass):
     pass
-"#;
+";
         let ast_no_plugin = PythonAst::new(source_no_plugin, Python);
         let config_name_none = AstDiscovery::find_config_class_name(
             &ast_no_plugin,

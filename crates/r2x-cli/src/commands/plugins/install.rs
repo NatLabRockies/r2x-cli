@@ -1,13 +1,13 @@
-use super::PluginContext;
-use crate::logger;
+use crate::commands::plugins::context::PluginContext;
 use crate::plugins::{
     discovery::{discover_and_register_entry_points_with_deps, DiscoveryOptions},
+    error::PluginError,
     install::get_package_info,
     package_spec::{build_package_spec, extract_package_name},
-    PluginError,
 };
 use colored::Colorize;
-use r2x_manifest::PackageDiscoverer;
+use r2x_logger as logger;
+use r2x_manifest::package_discovery::PackageDiscoverer;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};

@@ -1,8 +1,9 @@
-use super::PluginContext;
-use crate::plugins::{get_package_info, PluginError};
-use crate::r2x_manifest::{Manifest, Plugin};
-use crate::GlobalOpts;
+use crate::commands::plugins::context::PluginContext;
+use crate::common::GlobalOpts;
+use crate::plugins::error::PluginError;
+use crate::plugins::install::get_package_info;
 use colored::Colorize;
+use r2x_manifest::types::{Manifest, Plugin};
 use std::collections::BTreeMap;
 
 pub fn list_plugins(
@@ -138,9 +139,7 @@ fn show_plugin_details(
                 // e.g., "r2x_reeds.break_gens" matches module "break_gens"
                 let name_str = p.name.as_ref();
                 let parts: Vec<&str> = name_str.split('.').collect();
-                parts
-                    .last()
-                    .is_some_and(|&last| last == module_name)
+                parts.last().is_some_and(|&last| last == module_name)
             })
             .collect()
     } else {

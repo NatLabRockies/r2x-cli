@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
-use r2x::{
-    commands::{
-        config::{self, ConfigAction},
-        init, plugins, read, run,
-    },
-    config_manager, logger, GlobalOpts,
+use r2x::commands::{
+    config::{self, ConfigAction},
+    init, plugins, read, run,
 };
+use r2x::common::GlobalOpts;
+use r2x_config as config_manager;
+use r2x_logger as logger;
 
 #[derive(Parser)]
 #[command(name = "r2x")]
@@ -83,9 +83,9 @@ enum Commands {
 
 fn with_plugin_context<F>(action: F)
 where
-    F: FnOnce(&mut plugins::PluginContext) -> Result<(), plugins::PluginError>,
+    F: FnOnce(&mut plugins::context::PluginContext) -> Result<(), r2x::plugins::error::PluginError>,
 {
-    let mut ctx = match plugins::PluginContext::load() {
+    let mut ctx = match plugins::context::PluginContext::load() {
         Ok(ctx) => ctx,
         Err(e) => {
             logger::error(&e.to_string());
@@ -123,7 +123,9 @@ fn main() {
             config::handle_config(action, cli.global);
         }
         Commands::List { plugin, module } => {
-            with_plugin_context(|ctx| plugins::list_plugins(&cli.global, plugin, module, ctx));
+            with_plugin_context(|ctx| {
+                plugins::list::list_plugins(&cli.global, plugin, module, ctx)
+            });
         }
         Commands::Install {
             plugin,
@@ -136,11 +138,11 @@ fn main() {
         } => match plugin {
             Some(pkg) => {
                 with_plugin_context(|ctx| {
-                    plugins::install_plugin(
+                    plugins::install::install_plugin(
                         &pkg,
                         editable,
                         no_cache,
-                        plugins::GitOptions {
+                        plugins::install::GitOptions {
                             host,
                             branch,
                             tag,
@@ -151,19 +153,19 @@ fn main() {
                 });
             }
             None => {
-                if let Err(e) = plugins::show_install_help() {
+                if let Err(e) = plugins::install::show_install_help() {
                     logger::error(&e.to_string());
                 }
             }
         },
         Commands::Remove { plugin } => {
-            with_plugin_context(|ctx| plugins::remove_plugin(&plugin, ctx));
+            with_plugin_context(|ctx| plugins::remove::remove_plugin(&plugin, ctx));
         }
         Commands::Sync => {
-            with_plugin_context(plugins::sync_manifest);
+            with_plugin_context(plugins::sync::sync_manifest);
         }
         Commands::Clean { yes } => {
-            with_plugin_context(|ctx| plugins::clean_manifest(yes, ctx));
+            with_plugin_context(|ctx| plugins::clean::clean_manifest(yes, ctx));
         }
         Commands::Init { file } => {
             init::handle_init(file, cli.global);

@@ -348,7 +348,7 @@ impl Package {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::manifest::*;
     use crate::types::PluginType;
 
     #[test]

@@ -1,10 +1,10 @@
-use crate::config_manager::Config;
-use crate::logger;
-use crate::plugins::get_package_info;
-use crate::python_bridge::configure_python_venv;
-use crate::GlobalOpts;
+use crate::common::GlobalOpts;
+use crate::plugins::install::get_package_info;
 use clap::Subcommand;
 use colored::Colorize;
+use r2x_config::Config;
+use r2x_logger as logger;
+use r2x_python::python_bridge::configure_python_venv;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -78,7 +78,9 @@ pub enum CacheAction {
 }
 
 pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
-    let action = if let Some(action) = action { action } else {
+    let action = if let Some(action) = action {
+        action
+    } else {
         println!(
             "{}",
             "Tip: run `r2x config show` to inspect settings or `r2x config set <key> <value>` to update them."
@@ -699,7 +701,7 @@ fn handle_cache_path(new_path: Option<String>, _opts: GlobalOpts) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::commands::config::*;
 
     fn quiet_opts() -> GlobalOpts {
         GlobalOpts {

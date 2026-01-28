@@ -18,13 +18,8 @@ pub mod plugin_invoker;
 mod plugin_kwargs;
 mod plugin_regular;
 mod plugin_upgrader;
-mod python_bridge;
-mod utils;
-
-pub use errors::BridgeError;
-pub use plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
-pub use python_bridge::{configure_python_venv, Bridge, PythonEnvCompat as PythonEnvironment};
-pub use utils::{resolve_python_path, resolve_site_package_path, PYTHON_LIB_DIR};
+pub mod python_bridge;
+pub mod utils;
 
 #[cfg(test)]
 mod tests {

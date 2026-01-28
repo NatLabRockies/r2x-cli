@@ -1,6 +1,6 @@
-use crate::r2x_manifest::{
-    build_runtime_bindings_from_plugin, Manifest, Package, Plugin, PluginKind,
-};
+use r2x_manifest::execution_types::PluginKind;
+use r2x_manifest::runtime::build_runtime_bindings_from_plugin;
+use r2x_manifest::types::{Manifest, Package, Plugin};
 use std::collections::HashSet;
 use std::fmt;
 
@@ -161,8 +161,8 @@ fn plugin_kind(plugin: &Plugin) -> PluginKind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::r2x_manifest::PluginType;
+    use crate::manifest_lookup::*;
+    use r2x_manifest::types::PluginType;
     use std::sync::Arc;
 
     fn sample_manifest() -> Manifest {

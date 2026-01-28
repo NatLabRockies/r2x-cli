@@ -1,6 +1,6 @@
-use crate::logger;
-use crate::GlobalOpts;
+use crate::common::GlobalOpts;
 use colored::Colorize;
+use r2x_logger as logger;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -150,7 +150,7 @@ pub fn handle_init(filename: Option<String>, _opts: GlobalOpts) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::commands::init::*;
 
     #[test]
     fn test_default_filename() {

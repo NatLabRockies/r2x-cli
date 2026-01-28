@@ -1,7 +1,7 @@
-use super::PluginContext;
-use crate::logger;
-use crate::plugins::PluginError;
+use crate::commands::plugins::context::PluginContext;
+use crate::plugins::error::PluginError;
 use colored::Colorize;
+use r2x_logger as logger;
 use std::process::Command;
 
 pub fn remove_plugin(package: &str, ctx: &mut PluginContext) -> Result<(), PluginError> {
