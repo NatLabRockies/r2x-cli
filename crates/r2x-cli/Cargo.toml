@@ -9,7 +9,6 @@ homepage = { workspace = true }
 documentation = { workspace = true }
 rust-version = { workspace = true }
 build = "build.rs"
-
 description = "A framework plugin manager for the r2x power systems modeling ecosystem."
 readme = { workspace = true }
 keywords = ["power-systems", "r2x", "cli", "plugin-manager", "uv"]
