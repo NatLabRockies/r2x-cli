@@ -10,7 +10,7 @@ documentation = { workspace = true }
 rust-version = { workspace = true }
 build = "build.rs"
 
-description = "A comprehensive framework plugin manager for the r2x power systems modeling ecosystem. Simplifies discovery, installation, and management of r2x framework plugins."
+description = "A framework plugin manager for the r2x power systems modeling ecosystem."
 readme = { workspace = true }
 keywords = ["power-systems", "r2x", "cli", "plugin-manager", "uv"]
 categories = ["command-line-utilities", "development-tools"]
