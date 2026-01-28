@@ -140,13 +140,18 @@ jobs:
         if: ${{ matrix.container }}
         shell: bash
         run: |
-          if ! command -v cargo > /dev/null 2>&1; then
-            export HOME=/root
-            export RUSTUP_HOME=/root/.rustup
-            export CARGO_HOME=/root/.cargo
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            echo "$CARGO_HOME/bin" >> $GITHUB_PATH
+          export HOME=/root
+          export RUSTUP_HOME=/root/.rustup
+          export CARGO_HOME=/root/.cargo
+
+          if ! command -v rustup > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          else
+            rustup toolchain install stable
+            rustup default stable
           fi
+
+          echo "$CARGO_HOME/bin" >> $GITHUB_PATH
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
