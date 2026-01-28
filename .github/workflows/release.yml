@@ -159,6 +159,37 @@ jobs:
         run: |
           ${{ matrix.packages_install }}
 
+      - name: Build and fix Python library paths (container)
+        if: ${{ matrix.container }}
+        shell: bash
+        env:
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
+          PATH: /root/.cargo/bin:${{ env.PATH }}
+        run: |
+          echo "Building binary first..."
+          cargo build --release -p r2x
+
+          R2X_BIN="target/release/r2x"
+          if [ -f "$R2X_BIN" ]; then
+            echo "Fixing Python library paths..."
+            ./scripts/fix_python_dylib.sh "$R2X_BIN"
+          fi
+
+      - name: Build and fix Python library paths (host)
+        if: ${{ !matrix.container && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          echo "Building binary first..."
+          cargo build --release -p r2x
+
+          R2X_BIN="target/release/r2x"
+          if [ -f "$R2X_BIN" ]; then
+            echo "Fixing Python library paths..."
+            ./scripts/fix_python_dylib.sh "$R2X_BIN"
+          fi
+
       - name: Build artifacts (container)
         if: ${{ matrix.container }}
         shell: bash
@@ -168,7 +199,7 @@ jobs:
           CARGO_HOME: /root/.cargo
           PATH: /root/.cargo/bin:${{ env.PATH }}
         run: |
-          # Actually do builds and make zips and whatnot
+          # dist will reuse the already-built binary (Cargo skips rebuild if binary is newer than sources)
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
 
@@ -176,94 +207,9 @@ jobs:
         if: ${{ !matrix.container }}
         shell: bash
         run: |
-          # Actually do builds and make zips and whatnot
+          # dist will reuse the already-built binary (Cargo skips rebuild if binary is newer than sources)
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
-
-      - name: Fix Python library paths in release binaries
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          echo "Fixing Python library paths in release archives..."
-
-          # Find all tar.gz and tar.xz archives produced by dist
-          for archive in target/distrib/*.tar.gz target/distrib/*.tar.xz; do
-            [ -f "$archive" ] || continue
-            echo "Processing archive: $archive"
-
-            # Create temp directory for extraction
-            TEMP_DIR=$(mktemp -d)
-
-            # Determine compression type and extract
-            if [[ "$archive" == *.tar.gz ]]; then
-              tar -xzf "$archive" -C "$TEMP_DIR"
-            else
-              tar -xJf "$archive" -C "$TEMP_DIR"
-            fi
-
-            # Find the r2x binary in the extracted files
-            R2X_BIN=$(find "$TEMP_DIR" -name "r2x" -type f -perm -u+x 2>/dev/null | head -1)
-
-            if [ -n "$R2X_BIN" ]; then
-              echo "Found r2x binary: $R2X_BIN"
-
-              # Run the fix script
-              ./scripts/fix_python_dylib.sh "$R2X_BIN" || true
-
-              # Repack the archive
-              ARCHIVE_NAME=$(basename "$archive")
-              ARCHIVE_DIR=$(dirname "$archive")
-
-              # Get the top-level directory name in the archive
-              TOP_DIR=$(ls "$TEMP_DIR" | head -1)
-
-              # Remove old archive and create new one
-              rm "$archive"
-
-              if [[ "$archive" == *.tar.gz ]]; then
-                tar -czf "$ARCHIVE_DIR/$ARCHIVE_NAME" -C "$TEMP_DIR" "$TOP_DIR"
-              else
-                tar -cJf "$ARCHIVE_DIR/$ARCHIVE_NAME" -C "$TEMP_DIR" "$TOP_DIR"
-              fi
-
-              echo "Repacked archive: $archive"
-            else
-              echo "No r2x binary found in archive, skipping"
-            fi
-
-            # Cleanup
-            rm -rf "$TEMP_DIR"
-          done
-
-          echo "Python library path fix complete"
-
-      - name: Recalculate checksums after binary fix
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          echo "Recalculating checksums for modified archives..."
-
-          # Use sha256sum on Linux, shasum on macOS
-          if command -v sha256sum &> /dev/null; then
-            SHA_CMD="sha256sum"
-          else
-            SHA_CMD="shasum -a 256"
-          fi
-          echo "Using: $SHA_CMD"
-
-          for archive in target/distrib/*.tar.gz target/distrib/*.tar.xz; do
-            [ -f "$archive" ] || continue
-            checksum_file="${archive}.sha256"
-
-            if [ -f "$checksum_file" ]; then
-              echo "Recalculating: $(basename "$archive")"
-              new_hash=$($SHA_CMD "$archive" | cut -d' ' -f1)
-              echo "${new_hash}  $(basename "$archive")" > "$checksum_file"
-              echo "  Updated: ${new_hash}"
-            fi
-          done
-
-          echo "Checksum recalculation complete"
 
       - id: cargo-dist
         name: Post-build
