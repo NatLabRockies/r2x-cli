@@ -168,27 +168,31 @@ jobs:
           CARGO_HOME: /root/.cargo
           PATH: /root/.cargo/bin:${{ env.PATH }}
         run: |
-          echo "Building binary first..."
-          cargo build --release -p r2x
+          echo "Building dist-profile binaries first..."
+          TARGETS="${{ join(matrix.targets, ' ') }}"
+          for target in $TARGETS; do
+            cargo build --profile dist -p r2x --target "$target"
+          done
 
-          R2X_BIN="target/release/r2x"
-          if [ -f "$R2X_BIN" ]; then
-            echo "Fixing Python library paths..."
-            ./scripts/fix_python_dylib.sh "$R2X_BIN"
-          fi
+          echo "Fixing Python library paths..."
+          while IFS= read -r -d '' bin; do
+            ./scripts/fix_python_dylib.sh "$bin"
+          done < <(find target -path "*/dist/r2x" -type f -print0)
 
       - name: Build and fix Python library paths (host)
         if: ${{ !matrix.container && runner.os != 'Windows' }}
         shell: bash
         run: |
-          echo "Building binary first..."
-          cargo build --release -p r2x
+          echo "Building dist-profile binaries first..."
+          TARGETS="${{ join(matrix.targets, ' ') }}"
+          for target in $TARGETS; do
+            cargo build --profile dist -p r2x --target "$target"
+          done
 
-          R2X_BIN="target/release/r2x"
-          if [ -f "$R2X_BIN" ]; then
-            echo "Fixing Python library paths..."
-            ./scripts/fix_python_dylib.sh "$R2X_BIN"
-          fi
+          echo "Fixing Python library paths..."
+          while IFS= read -r -d '' bin; do
+            ./scripts/fix_python_dylib.sh "$bin"
+          done < <(find target -path "*/dist/r2x" -type f -print0)
 
       - name: Build artifacts (container)
         if: ${{ matrix.container }}
@@ -210,6 +214,63 @@ jobs:
           # dist will reuse the already-built binary (Cargo skips rebuild if binary is newer than sources)
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+
+      - name: Verify checksum artifacts
+        shell: bash
+        run: |
+          if command -v shasum >/dev/null 2>&1; then
+            hash_cmd="shasum -a 256"
+          elif command -v sha256sum >/dev/null 2>&1; then
+            hash_cmd="sha256sum"
+          else
+            echo "No sha256 tool found (need shasum or sha256sum)"
+            exit 1
+          fi
+
+          files=$(dist print-upload-files-from-manifest --manifest dist-manifest.json)
+          checksum_files=$(printf '%s\n' "$files" | awk '/\\.sha256(sum)?$/ {print}')
+
+          if [[ -z "$checksum_files" ]]; then
+            echo "No checksum artifacts found to verify."
+            exit 0
+          fi
+
+          failures=0
+          for checksum_path in $checksum_files; do
+            if [[ ! -f "$checksum_path" ]]; then
+              echo "Missing checksum file: $checksum_path"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            target_path="${checksum_path%.sha256}"
+            target_path="${target_path%.sha256sum}"
+            if [[ ! -f "$target_path" ]]; then
+              echo "Missing target for checksum: $checksum_path -> $target_path"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            expected=$(awk '{print $1; exit}' "$checksum_path")
+            if [[ -z "$expected" ]]; then
+              echo "Empty checksum file: $checksum_path"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            actual=$($hash_cmd "$target_path" | awk '{print $1}')
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Checksum mismatch for $target_path: want $expected got $actual"
+              failures=$((failures + 1))
+            fi
+          done
+
+          if [[ "$failures" -ne 0 ]]; then
+            echo "$failures checksum mismatch(es) detected."
+            exit 1
+          fi
+
+          echo "Checksum verification passed."
 
       - id: cargo-dist
         name: Post-build
