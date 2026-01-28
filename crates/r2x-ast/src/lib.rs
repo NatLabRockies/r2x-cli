@@ -9,14 +9,13 @@
 //! This approach is significantly faster than Python-based discovery and requires
 //! no Python interpreter startup.
 
-pub mod decorator_scanner;
 pub mod discovery_types;
 pub mod entry_points;
 pub mod naming;
 pub mod package_cache;
 pub mod schema_extractor;
 
-use crate::discovery_types::{ConfigField, ConfigSpec, DecoratorRegistration, EntryPointInfo};
+use crate::discovery_types::{ConfigField, ConfigSpec, EntryPointInfo};
 use crate::entry_points::{parser as entry_parser, pyproject as entry_pyproject};
 // Re-export for tests
 #[cfg(test)]
@@ -69,13 +68,13 @@ impl AstDiscovery {
     /// * `package_version` - Optional package version string
     ///
     /// # Returns
-    /// Tuple of (discovered plugins, decorator registrations)
+    /// Vector of discovered plugins
     pub fn discover_plugins(
         package_path: &Path,
         package_name_full: &str,
         venv_path: Option<&str>,
         _package_version: Option<&str>,
-    ) -> Result<(Vec<Plugin>, Vec<DecoratorRegistration>)> {
+    ) -> Result<Vec<Plugin>> {
         let total_start = Instant::now();
         logger::debug(&format!("AST discovery started for: {}", package_name_full));
 
@@ -152,7 +151,7 @@ impl AstDiscovery {
 
         if all_entries.is_empty() {
             logger::debug(&format!("No plugins found for '{}'", package_name_full));
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(Vec::new());
         }
 
         logger::debug(&format!(
@@ -197,19 +196,14 @@ impl AstDiscovery {
             file_cache.len()
         ));
 
-        // Step 5: Decorator registrations - only extract if needed (lazy)
-        // For now, skip full package scanning - decorators can be extracted on-demand
-        let decorator_registrations = Vec::new();
-
         logger::info(&format!(
-            "AST discovery total: {} plugins, {} decorators in {:.2}ms for {}",
+            "AST discovery total: {} plugins in {:.2}ms for {}",
             plugins.len(),
-            decorator_registrations.len(),
             total_start.elapsed().as_secs_f64() * 1000.0,
             package_name_full
         ));
 
-        Ok((plugins, decorator_registrations))
+        Ok(plugins)
     }
 
     /// Resolve the most likely package root for AST discovery.

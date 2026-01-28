@@ -71,11 +71,6 @@ pub fn build_runtime_bindings(plugin: &Plugin) -> RuntimeBindings {
     }
 }
 
-/// Convenience wrapper for call sites that still use the old function name.
-pub fn build_runtime_bindings_from_plugin(plugin: &Plugin) -> RuntimeBindings {
-    build_runtime_bindings(plugin)
-}
-
 fn parse_entry_point(plugin: &Plugin) -> (String, String) {
     let entry_module = plugin.module.to_string();
     let entry_name = if let Some(ref class_name) = plugin.class_name {
