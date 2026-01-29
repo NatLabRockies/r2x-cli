@@ -1,6 +1,7 @@
 //! Keyword argument building for plugin invocation
 
 use crate::errors::BridgeError;
+use crate::plugin_regular::format_python_error;
 use crate::python_bridge::Bridge;
 use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
@@ -18,7 +19,19 @@ impl Bridge {
     ) -> Result<pyo3::Bound<'py, PyDict>, BridgeError> {
         let kwargs = PyDict::new(py);
 
+        // Log the input config dict keys for debugging
+        let config_keys: Vec<String> = config_dict
+            .keys()
+            .iter()
+            .filter_map(|k| k.extract::<String>().ok())
+            .collect();
+        logger::debug(&format!(
+            "build_kwargs: input config_dict keys: {:?}",
+            config_keys
+        ));
+
         let Some(runtime) = runtime_bindings else {
+            logger::debug("build_kwargs: no runtime bindings, passing all config_dict keys as kwargs");
             for (k, v) in config_dict {
                 kwargs.set_item(k, v)?;
             }
@@ -28,6 +41,13 @@ impl Bridge {
             return Ok(kwargs);
         };
 
+        // Log the runtime parameters we're working with
+        let param_names: Vec<&str> = runtime.parameters.iter().map(|p| p.name.as_ref()).collect();
+        logger::debug(&format!(
+            "build_kwargs: runtime parameters to process: {:?}",
+            param_names
+        ));
+
         // For upgrader plugins without config metadata, pass all config values directly as kwargs.
         // Upgraders typically have simple constructors (path, folder_path, etc.) and don't use
         // the complex config class machinery that parsers/exporters use.
@@ -35,6 +55,9 @@ impl Bridge {
             && runtime.config.is_none()
             && runtime.parameters.is_empty()
         {
+            logger::debug(
+                "build_kwargs: upgrader plugin without config metadata, passing all config_dict keys as kwargs",
+            );
             for (k, v) in config_dict {
                 kwargs.set_item(k, v)?;
             }
@@ -43,6 +66,10 @@ impl Bridge {
 
         let mut needs_config_class = false;
         let mut config_param_name = String::new();
+
+        // Track which arguments are created vs skipped for logging
+        let mut created_args: Vec<String> = Vec::new();
+        let mut skipped_args: Vec<(String, String)> = Vec::new(); // (name, reason)
 
         // Use ConfigSpec metadata as the authoritative source for config parameter detection.
         // Match parameters by their annotation against the config class name from the manifest,
@@ -121,12 +148,17 @@ impl Bridge {
                 config_param_name
             ));
             kwargs.set_item(&config_param_name, &config_obj)?;
+            created_args.push(format!("{} (config class)", config_param_name));
             config_instance = Some(config_obj.unbind());
         }
 
         for param in &runtime.parameters {
             // Skip the config parameter - it was already handled above
             if needs_config_class && param.name.as_ref() == config_param_name {
+                skipped_args.push((
+                    param.name.to_string(),
+                    "already handled as config class".to_string(),
+                ));
                 continue;
             }
 
@@ -156,6 +188,12 @@ impl Bridge {
                         Self::instantiate_data_store(py, &value, None, runtime.config.as_ref())?
                     };
                     kwargs.set_item(param.name.as_ref(), store_instance)?;
+                    created_args.push(format!("{} (DataStore)", param.name));
+                } else {
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "no store path found in config".to_string(),
+                    ));
                 }
                 continue;
             }
@@ -181,14 +219,20 @@ impl Bridge {
                     "Skipping '{}' as separate kwarg - it's a config field",
                     param.name
                 ));
+                skipped_args.push((
+                    param.name.to_string(),
+                    "already in config object".to_string(),
+                ));
                 continue;
             }
 
             if let Some(value) = config_dict.get_item(param.name.as_ref()).ok().flatten() {
                 let path_alias = value.clone();
                 kwargs.set_item(param.name.as_ref(), value)?;
+                created_args.push(param.name.to_string());
                 if param.name.as_ref() == "folder_path" && !kwargs.contains("path")? {
                     kwargs.set_item("path", path_alias)?;
+                    created_args.push("path (alias of folder_path)".to_string());
                 }
             } else if param.required {
                 let stdin_param = param.name.as_ref() == "stdin" || param.name.as_ref() == "system";
@@ -197,12 +241,25 @@ impl Bridge {
                         "Required parameter '{}' will be provided via stdin",
                         param.name
                     ));
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "will be provided via stdin".to_string(),
+                    ));
                 } else {
                     logger::warn(&format!(
                         "Required parameter '{}' missing in config",
                         param.name
                     ));
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "missing in config (required)".to_string(),
+                    ));
                 }
+            } else {
+                skipped_args.push((
+                    param.name.to_string(),
+                    "not found in config (optional)".to_string(),
+                ));
             }
         }
 
@@ -213,10 +270,31 @@ impl Bridge {
                 .any(|p| p.name.as_ref() == "stdin")
             {
                 kwargs.set_item("stdin", stdin)?;
+                created_args.push("stdin (from pipeline)".to_string());
             } else {
                 logger::debug(
                     "Plugin received stdin payload but exposes no 'stdin' parameter; skipping kwargs injection",
                 );
+                skipped_args.push((
+                    "stdin".to_string(),
+                    "plugin has no stdin parameter".to_string(),
+                ));
+            }
+        }
+
+        // Log summary of argument reconstruction
+        logger::debug(&format!(
+            "build_kwargs: created {} arguments: {:?}",
+            created_args.len(),
+            created_args
+        ));
+        if !skipped_args.is_empty() {
+            logger::debug(&format!(
+                "build_kwargs: skipped {} arguments from pipeline:",
+                skipped_args.len()
+            ));
+            for (name, reason) in &skipped_args {
+                logger::debug(&format!("  - '{}': {}", name, reason));
             }
         }
 
@@ -232,22 +310,25 @@ impl Bridge {
             .ok_or_else(|| BridgeError::Python("Plugin config metadata missing".to_string()))?;
 
         let config_module = PyModule::import(py, &config_meta.module).map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to import config module '{}': {}",
-                config_meta.module, e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                &format!("Failed to import config module '{}'", config_meta.module),
             ))
         })?;
         let config_class = config_module.getattr(&config_meta.name).map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to get config class '{}': {}",
-                config_meta.name, e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                &format!("Failed to get config class '{}'", config_meta.name),
             ))
         })?;
 
         config_class.call((), Some(config_params)).map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to instantiate config class '{}': {}",
-                config_meta.name, e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                &format!("Failed to instantiate config class '{}'", config_meta.name),
             ))
         })
     }
@@ -352,7 +433,11 @@ Verify the data folder contains all expected outputs (did you unpack the full `i
             missing
         ))
     } else {
-        BridgeError::Python(format!("Failed to instantiate DataStore: {}", err))
+        BridgeError::Python(format_python_error(
+            py,
+            err,
+            "Failed to instantiate DataStore",
+        ))
     }
 }
 
@@ -455,13 +540,18 @@ impl Bridge {
         system_instance: Option<&pyo3::Bound<'py, PyAny>>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let context_module = PyModule::import(py, "r2x_core").map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to import r2x_core for PluginContext: {}",
-                e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                "Failed to import r2x_core for PluginContext",
             ))
         })?;
         let context_class = context_module.getattr("PluginContext").map_err(|e| {
-            BridgeError::Python(format!("Failed to get PluginContext class: {}", e))
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                "Failed to get PluginContext class",
+            ))
         })?;
 
         let kwargs = PyDict::new(py);
@@ -475,6 +565,8 @@ impl Bridge {
         // config is positional (first argument), rest are keyword-only
         context_class
             .call((config_instance,), Some(&kwargs))
-            .map_err(|e| BridgeError::Python(format!("Failed to create PluginContext: {}", e)))
+            .map_err(|e| {
+                BridgeError::Python(format_python_error(py, e, "Failed to create PluginContext"))
+            })
     }
 }

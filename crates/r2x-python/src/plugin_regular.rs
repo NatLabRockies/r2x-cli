@@ -4,7 +4,7 @@ use crate::errors::BridgeError;
 use crate::plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
 use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
-use pyo3::PyResult;
+use pyo3::{Bound, PyResult};
 use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use std::time::{Duration, Instant};
@@ -149,10 +149,7 @@ impl Bridge {
                         .getattr("error")
                         .or_else(|_| result_py.getattr("err_value"))
                         .or_else(|_| result_py.getattr("value"))?;
-                    return Err(BridgeError::Python(format!(
-                        "Plugin returned Err: {}",
-                        err_value
-                    )));
+                    return Err(BridgeError::Python(format_exception_value(py, &err_value)));
                 } else {
                     result_py
                 }
@@ -464,6 +461,10 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// Format a Python error with full traceback information.
+///
+/// This function extracts the traceback from a `PyErr` and formats it
+/// into a human-readable string with context.
 pub(crate) fn format_python_error(py: pyo3::Python<'_>, err: pyo3::PyErr, context: &str) -> String {
     if let Some(traceback_text) = render_traceback(py, &err) {
         format!("{}:\n{}", context, traceback_text)
@@ -472,7 +473,8 @@ pub(crate) fn format_python_error(py: pyo3::Python<'_>, err: pyo3::PyErr, contex
     }
 }
 
-fn render_traceback(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<String> {
+/// Render a Python traceback to a string.
+pub(crate) fn render_traceback(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<String> {
     let traceback = err.traceback(py)?;
     let traceback_module = PyModule::import(py, "traceback").ok()?;
     let formatter = traceback_module.getattr("format_exception").ok()?;
@@ -481,6 +483,34 @@ fn render_traceback(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<String> {
         .ok()?;
     let lines: Vec<String> = formatted.extract().ok()?;
     Some(lines.join(""))
+}
+
+/// Format a Python exception value with its traceback (if available).
+///
+/// This is used for exceptions extracted from Result Err variants, where
+/// we have a Python object that is an exception but not a PyErr.
+pub(crate) fn format_exception_value(py: pyo3::Python<'_>, exc_value: &Bound<'_, PyAny>) -> String {
+    // Try to extract traceback using Option chaining
+    let traceback_text = (|| -> Option<String> {
+        let tb = exc_value.getattr("__traceback__").ok()?;
+        if tb.is_none() {
+            return None;
+        }
+        let exc_type = exc_value.getattr("__class__").ok()?;
+        let tb_mod = PyModule::import(py, "traceback").ok()?;
+        let formatted = tb_mod
+            .getattr("format_exception")
+            .ok()?
+            .call1((exc_type, exc_value, tb))
+            .ok()?;
+        let lines: Vec<String> = formatted.extract().ok()?;
+        Some(lines.join(""))
+    })();
+
+    match traceback_text {
+        Some(tb) => format!("Plugin returned Err:\n{}", tb),
+        None => format!("Plugin returned Err: {}", exc_value),
+    }
 }
 
 fn method_accepts_stdin(method: &pyo3::Bound<'_, PyAny>) -> PyResult<bool> {
@@ -526,9 +556,13 @@ fn discover_and_instantiate_config<'py>(
                                     return config_type
                                         .call((), Some(config_params))
                                         .map_err(|e| {
-                                            BridgeError::Python(format!(
-                                                "Failed to instantiate discovered config class '{}': {}",
-                                                type_name, e
+                                            BridgeError::Python(format_python_error(
+                                                py,
+                                                e,
+                                                &format!(
+                                                    "Failed to instantiate discovered config class '{}'",
+                                                    type_name
+                                                ),
                                             ))
                                         });
                                 }
@@ -544,7 +578,11 @@ fn discover_and_instantiate_config<'py>(
         if config_class.is_callable() {
             logger::debug("Discovered nested Config class");
             return config_class.call((), Some(config_params)).map_err(|e| {
-                BridgeError::Python(format!("Failed to instantiate nested Config class: {}", e))
+                BridgeError::Python(format_python_error(
+                    py,
+                    e,
+                    "Failed to instantiate nested Config class",
+                ))
             });
         }
     }
@@ -560,21 +598,33 @@ fn discover_and_instantiate_config<'py>(
                 type_name
             ));
             return config_class.call((), Some(config_params)).map_err(|e| {
-                BridgeError::Python(format!(
-                    "Failed to instantiate config class from config_class attribute: {}",
-                    e
+                BridgeError::Python(format_python_error(
+                    py,
+                    e,
+                    "Failed to instantiate config class from config_class attribute",
                 ))
             });
         }
     }
 
     logger::debug("No config class discovered, using PluginConfig from r2x_core");
-    let r2x_core = PyModule::import(py, "r2x_core")
-        .map_err(|e| BridgeError::Python(format!("Failed to import r2x_core: {}", e)))?;
-    let plugin_config_class = r2x_core
-        .getattr("PluginConfig")
-        .map_err(|e| BridgeError::Python(format!("Failed to get PluginConfig class: {}", e)))?;
+    let r2x_core = PyModule::import(py, "r2x_core").map_err(|e| {
+        BridgeError::Python(format_python_error(py, e, "Failed to import r2x_core"))
+    })?;
+    let plugin_config_class = r2x_core.getattr("PluginConfig").map_err(|e| {
+        BridgeError::Python(format_python_error(
+            py,
+            e,
+            "Failed to get PluginConfig class",
+        ))
+    })?;
     plugin_config_class
         .call((), Some(config_params))
-        .map_err(|e| BridgeError::Python(format!("Failed to instantiate PluginConfig: {}", e)))
+        .map_err(|e| {
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                "Failed to instantiate PluginConfig",
+            ))
+        })
 }

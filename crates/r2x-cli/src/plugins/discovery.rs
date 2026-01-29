@@ -9,6 +9,7 @@ use r2x_ast::AstDiscovery;
 use r2x_logger as logger;
 use r2x_manifest::package_discovery::PackageLocator;
 use r2x_manifest::types::{InstallType, Manifest, Plugin};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Options for plugin discovery and registration
@@ -49,12 +50,8 @@ pub fn discover_and_register_entry_points_with_deps(
             .unwrap_or_default()
     } else {
         // Discover from source
-        let package_path = locator.find_package_path(package_name_full).map_err(|e| {
-            PluginError::Locator(format!(
-                "Failed to locate package '{}': {}",
-                package_name_full, e
-            ))
-        })?;
+        let package_path =
+            resolve_package_path(locator, package_name_full, opts.source_path.as_deref())?;
 
         logger::debug(&format!(
             "Found package path for '{}': {}",
@@ -181,9 +178,43 @@ pub fn discover_and_register_entry_points_with_deps(
     Ok(total_plugins)
 }
 
+fn resolve_package_path(
+    locator: &PackageLocator,
+    package_name_full: &str,
+    source_path: Option<&str>,
+) -> Result<PathBuf, PluginError> {
+    if let Some(source_path) = source_path {
+        let candidate = PathBuf::from(source_path);
+        if candidate.exists() {
+            let resolved = candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone());
+            logger::debug(&format!(
+                "Using source path for '{}': {}",
+                package_name_full,
+                resolved.display()
+            ));
+            return Ok(resolved);
+        }
+
+        logger::warn(&format!(
+            "Source path for '{}' does not exist: {}. Falling back to site-packages.",
+            package_name_full, source_path
+        ));
+    }
+
+    locator.find_package_path(package_name_full).map_err(|e| {
+        PluginError::Locator(format!(
+            "Failed to locate package '{}': {}",
+            package_name_full, e
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::plugins::discovery::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_looks_like_r2x_plugin() {
@@ -191,5 +222,63 @@ mod tests {
         assert!(utils::looks_like_r2x_plugin("r2x-plexos"));
         assert!(!utils::looks_like_r2x_plugin("r2x-core"));
         assert!(!utils::looks_like_r2x_plugin("numpy"));
+    }
+
+    #[test]
+    fn test_resolve_package_path_prefers_source_path() {
+        let site_packages = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let locator = match PackageLocator::new(site_packages.path().to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        let source_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create source dir: {err}"
+                );
+                return;
+            }
+        };
+        let resolved = match resolve_package_path(&locator, "r2x-reeds", source_dir.path().to_str())
+        {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to resolve package path: {err}"
+                );
+                return;
+            }
+        };
+
+        let expected = match source_dir.path().canonicalize() {
+            Ok(path) => path,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to canonicalize path: {err}"
+                );
+                return;
+            }
+        };
+        assert_eq!(resolved, expected);
     }
 }
