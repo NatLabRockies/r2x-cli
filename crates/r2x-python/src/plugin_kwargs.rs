@@ -31,7 +31,9 @@ impl Bridge {
         ));
 
         let Some(runtime) = runtime_bindings else {
-            logger::debug("build_kwargs: no runtime bindings, passing all config_dict keys as kwargs");
+            logger::debug(
+                "build_kwargs: no runtime bindings, passing all config_dict keys as kwargs",
+            );
             for (k, v) in config_dict {
                 kwargs.set_item(k, v)?;
             }

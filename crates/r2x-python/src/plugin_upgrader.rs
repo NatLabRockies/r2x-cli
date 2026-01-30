@@ -2,7 +2,7 @@
 
 use crate::errors::BridgeError;
 use crate::plugin_invoker::PluginInvocationResult;
-use crate::plugin_regular::{format_python_error, StdoutGuard};
+use crate::plugin_regular::{format_err_result, format_python_error, StdoutGuard};
 use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
 use r2x_logger as logger;
@@ -223,17 +223,8 @@ impl Bridge {
                 .map_err(|e| BridgeError::Python(format!("Failed to inspect result: {}", e)))?;
 
             if is_err {
-                let err_obj = result
-                    .getattr("unwrap_err")?
-                    .call0()
-                    .map_err(|e| BridgeError::Python(format!("Failed to fetch error: {}", e)))?;
-                let err_text = err_obj
-                    .str()
-                    .map_or_else(|_| "<unknown error>".to_string(), |s| s.to_string());
-                return Err(BridgeError::Python(format!(
-                    "Upgrade step execution failed: {}",
-                    err_text
-                )));
+                let error_text = format_err_result(py, &result);
+                return Err(BridgeError::Python(error_text));
             }
 
             if upgrade_is_system {

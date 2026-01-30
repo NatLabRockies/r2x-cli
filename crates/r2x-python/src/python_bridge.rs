@@ -274,8 +274,7 @@ def _r2x_cache_path_override():
 
     /// Configure Python loguru logging
     fn configure_python_logging() -> Result<(), BridgeError> {
-        let log_python = logger::get_log_python();
-        if !log_python {
+        if !logger::get_log_python() {
             return Ok(());
         }
 
@@ -296,20 +295,51 @@ def _r2x_cache_path_override():
             })?;
             setup_logging.call1((verbosity,))?;
 
-            let loguru = PyModule::import(py, "loguru")?;
-            let logger_obj = loguru.getattr("logger")?;
-            logger_obj.call_method1("enable", ("r2x_core",))?;
-            logger_obj.call_method1("enable", ("r2x_reeds",))?;
-            logger_obj.call_method1("enable", ("r2x_plexos",))?;
-            logger_obj.call_method1("enable", ("r2x_sienna",))?;
-
-            Ok::<(), BridgeError>(())
+            Self::enable_loguru_modules(
+                py,
+                &[
+                    "r2x_core",
+                    "r2x_reeds",
+                    "r2x_plexos",
+                    "r2x_sienna",
+                    "r2x_nodal",
+                ],
+            )
         })
     }
 
-    /// Reconfigure Python logging for a specific plugin
-    pub fn reconfigure_logging_for_plugin(_plugin_name: &str) -> Result<(), BridgeError> {
-        Self::configure_python_logging()
+    /// Enable loguru logging for a list of Python modules
+    pub(crate) fn enable_loguru_modules(py: Python, modules: &[&str]) -> Result<(), BridgeError> {
+        let loguru = PyModule::import(py, "loguru")?;
+        let logger_obj = loguru.getattr("logger")?;
+
+        for module in modules {
+            logger_obj.call_method1("enable", (module,))?;
+        }
+
+        Ok::<(), BridgeError>(())
+    }
+
+    /// Reconfigure Python logging for a specific plugin.
+    ///
+    /// Enables loguru for the plugin's Python module in addition to
+    /// the base set of packages. The plugin_name can be either a
+    /// fully-qualified ref like "r2x-nodal.zonal-to-nodal" (the
+    /// package prefix before the dot is used) or a bare name.
+    pub fn reconfigure_logging_for_plugin(plugin_name: &str) -> Result<(), BridgeError> {
+        Self::configure_python_logging()?;
+
+        if !logger::get_log_python() {
+            return Ok(());
+        }
+
+        // Extract the package portion (before the first dot) and convert
+        // hyphens to underscores so "r2x-nodal.zonal-to-nodal" becomes
+        // "r2x_nodal", matching the Python module name.
+        let package_part = plugin_name.split('.').next().unwrap_or(plugin_name);
+        let module_name = package_part.replace('-', "_");
+
+        pyo3::Python::attach(|py| Self::enable_loguru_modules(py, &[&module_name]))
     }
 }
 

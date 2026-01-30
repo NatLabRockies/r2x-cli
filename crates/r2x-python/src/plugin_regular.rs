@@ -65,6 +65,17 @@ impl Bridge {
             logger::debug(&format!("Importing module: {}", module_path));
             let module = PyModule::import(py, module_path)
                 .map_err(|e| BridgeError::Import(module_path.to_string(), format!("{}", e)))?;
+
+            // Re-enable loguru for this module after import.
+            // Python __init__.py files call logger.disable() by convention,
+            // which overwrites any enables set before the import.
+            if logger::get_log_python() {
+                let _ = Bridge::enable_loguru_modules(
+                    py,
+                    &[module_path.split('.').next().unwrap_or(module_path)],
+                );
+            }
+
             let json_module = PyModule::import(py, "json")
                 .map_err(|e| BridgeError::Import("json".to_string(), format!("{}", e)))?;
             let loads = json_module.getattr("loads")?;
@@ -144,12 +155,8 @@ impl Bridge {
                         .getattr("ok_value")
                         .or_else(|_| result_py.getattr("value"))?
                 } else if type_name == "Err" {
-                    // rust_ok library uses 'error' property, others might use 'err_value' or 'value'
-                    let err_value = result_py
-                        .getattr("error")
-                        .or_else(|_| result_py.getattr("err_value"))
-                        .or_else(|_| result_py.getattr("value"))?;
-                    return Err(BridgeError::Python(format_exception_value(py, &err_value)));
+                    let error_text = format_err_result(py, &result_py);
+                    return Err(BridgeError::Python(error_text));
                 } else {
                     result_py
                 }
@@ -510,6 +517,35 @@ pub(crate) fn format_exception_value(py: pyo3::Python<'_>, exc_value: &Bound<'_,
     match traceback_text {
         Some(tb) => format!("Plugin returned Err:\n{}", tb),
         None => format!("Plugin returned Err: {}", exc_value),
+    }
+}
+
+/// Format an Err result object using rust-ok's `format_error()` method.
+///
+/// Calls `format_error()` on the Err object directly, which handles:
+/// - BaseException payloads: renders full traceback with chained causes
+/// - String/other payloads: returns str(value)
+///
+/// Falls back to the legacy `format_exception_value()` path if
+/// `format_error()` is unavailable (older rust-ok versions).
+pub(crate) fn format_err_result(py: pyo3::Python<'_>, err_result: &Bound<'_, PyAny>) -> String {
+    if let Ok(formatted) = err_result.call_method0("format_error") {
+        if let Ok(text) = formatted.extract::<String>() {
+            if !text.is_empty() {
+                return format!("Plugin returned Err:\n{}", text);
+            }
+        }
+    }
+
+    // Fallback for older rust-ok versions without format_error()
+    let err_value = err_result
+        .getattr("error")
+        .or_else(|_| err_result.getattr("err_value"))
+        .or_else(|_| err_result.getattr("value"));
+
+    match err_value {
+        Ok(val) => format_exception_value(py, &val),
+        Err(_) => format!("Plugin returned Err: {}", err_result),
     }
 }
 
