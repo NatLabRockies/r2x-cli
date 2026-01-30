@@ -22,6 +22,7 @@ use crate::entry_points::{parser as entry_parser, pyproject as entry_pyproject};
 use crate::entry_points::parser::is_r2x_section;
 use crate::naming::{camel_to_kebab, find_matching_paren, snake_to_kebab};
 use crate::package_cache::PackageAstCache;
+use crate::schema_extractor::TypeResolver;
 use anyhow::{anyhow, Result};
 use ast_grep_language::Python;
 use r2x_logger as logger;
@@ -37,6 +38,37 @@ type PythonAst = ast_grep_core::AstGrep<ast_grep_core::source::StrDoc<Python>>;
 struct CachedFile {
     content: String,
     ast: PythonAst,
+}
+
+/// Adapter that implements TypeResolver using a pre-built class content map.
+///
+/// This allows the SchemaExtractor to recursively resolve nested config
+/// class definitions without holding a reference to the package cache.
+struct ClassContentResolver {
+    /// Map from class name to file content containing that class
+    class_content: HashMap<String, String>,
+}
+
+impl ClassContentResolver {
+    /// Build a resolver from a PackageAstCache by extracting all class content.
+    fn from_package_cache(cache: &PackageAstCache) -> Self {
+        let mut class_content = HashMap::new();
+
+        // Iterate over all files and index class content
+        for file in cache.files().values() {
+            for class in &file.classes {
+                class_content.insert(class.name.clone(), file.content.clone());
+            }
+        }
+
+        ClassContentResolver { class_content }
+    }
+}
+
+impl TypeResolver for ClassContentResolver {
+    fn resolve_class_content(&self, class_name: &str) -> Option<String> {
+        self.class_content.get(class_name).cloned()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +147,16 @@ impl AstDiscovery {
             entry_point_entries.len(),
             entry_start.elapsed().as_secs_f64() * 1000.0
         ));
+
+        if entry_point_entries.is_empty() && Self::is_site_packages_root(&discovery_root, venv_path)
+        {
+            logger::warn(&format!(
+                "Skipping AST discovery for '{}' because discovery root is site-packages: {}",
+                package_name_full,
+                discovery_root.display()
+            ));
+            return Ok(Vec::new());
+        }
 
         // Step 2: Package-wide AST discovery only when entry points are missing
         let mut package_cache: Option<PackageAstCache> = None;
@@ -233,6 +275,26 @@ impl AstDiscovery {
         }
 
         package_path.to_path_buf()
+    }
+
+    fn is_site_packages_root(discovery_root: &Path, venv_path: Option<&str>) -> bool {
+        let Some(venv_path) = venv_path else {
+            return false;
+        };
+
+        let Ok(site_packages) = r2x_config::venv_paths::resolve_site_packages(Path::new(venv_path))
+        else {
+            return false;
+        };
+
+        Self::paths_equivalent(discovery_root, &site_packages)
+    }
+
+    fn paths_equivalent(left: &Path, right: &Path) -> bool {
+        match (left.canonicalize(), right.canonicalize()) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => left == right,
+        }
     }
 
     /// Find entry_points.txt for the package
@@ -782,6 +844,8 @@ impl AstDiscovery {
         // For functions without a config class, convert call_args to ConfigField format
         if config.is_none() && matches!(plugin_type, PluginType::Function) && !call_args.is_empty()
         {
+            use r2x_manifest::types::SchemaFields;
+
             // For functions without config, use function parameters as config fields
             let fields = call_args
                 .iter()
@@ -792,6 +856,7 @@ impl AstDiscovery {
                 module: entry.module.clone(),
                 name: format!("{}Params", entry.symbol),
                 fields,
+                config_schema: SchemaFields::default(),
             });
         }
 
@@ -869,6 +934,11 @@ impl AstDiscovery {
             });
         }
 
+        // Use config_schema from ConfigSpec if available
+        let config_schema = config
+            .map(|spec| spec.config_schema.clone())
+            .unwrap_or_default();
+
         Plugin {
             name: Arc::from(entry.name.as_str()),
             plugin_type,
@@ -879,7 +949,7 @@ impl AstDiscovery {
             config_module,
             hooks: SmallVec::new(),
             parameters,
-            config_schema: Default::default(),
+            config_schema,
             content_hash: 0,
         }
     }
@@ -896,18 +966,23 @@ impl AstDiscovery {
         package_cache: &mut Option<PackageAstCache>,
         package_name: &str,
     ) -> Option<ConfigSpec> {
+        use crate::schema_extractor::SchemaExtractor;
+        use r2x_manifest::types::SchemaFields;
+
         // First, find the config class name from the current file
         let config_name =
             Self::find_config_class_name(&cached.ast, &cached.content, &entry.symbol, plugin_type)?;
 
         // Track where we found the config class to determine the correct module
         let mut config_file_path: Option<PathBuf> = None;
+        let mut config_content: Option<String> = None;
 
         // Try to extract fields from the same file first
         let mut fields = Self::extract_config_fields_from_ast(&cached.ast, &config_name);
         if !fields.is_empty() {
             // Config class is in the same file as the function
             config_file_path = Some(source_path.to_path_buf());
+            config_content = Some(cached.content.clone());
         }
 
         // If no fields found in the same file, search the package using ast-grep
@@ -917,11 +992,11 @@ impl AstDiscovery {
             }
 
             if let Some(cache) = package_cache.as_ref() {
-                if let Some((path, config_content)) = cache.find_config_class_content(&config_name)
-                {
-                    fields = Self::extract_config_fields(config_content, &config_name);
+                if let Some((path, content)) = cache.find_config_class_content(&config_name) {
+                    fields = Self::extract_config_fields(content, &config_name);
                     if !fields.is_empty() {
                         config_file_path = Some(path.clone());
+                        config_content = Some(content.to_string());
                     }
                 }
             }
@@ -929,14 +1004,15 @@ impl AstDiscovery {
 
         // If still no fields, try looking in common locations relative to source file
         if fields.is_empty() {
-            if let Some((path, config_content)) = Self::find_config_in_common_locations_with_path(
+            if let Some((path, content)) = Self::find_config_in_common_locations_with_path(
                 source_path,
                 &config_name,
                 file_cache,
             ) {
-                fields = Self::extract_config_fields(&config_content, &config_name);
+                fields = Self::extract_config_fields(&content, &config_name);
                 if !fields.is_empty() {
                     config_file_path = Some(path);
+                    config_content = Some(content);
                 }
             }
         }
@@ -952,10 +1028,24 @@ impl AstDiscovery {
                 .unwrap_or_else(|| entry.module.clone())
         };
 
+        // Extract schema with nested type resolution if we have the content and package cache
+        let config_schema = if let (Some(content), Some(cache)) =
+            (config_content.as_ref(), package_cache.as_ref())
+        {
+            let resolver = ClassContentResolver::from_package_cache(cache);
+            let extractor = SchemaExtractor::with_resolver(HashMap::new(), Arc::new(resolver));
+            extractor
+                .extract_with_nesting(content, &config_name)
+                .unwrap_or_default()
+        } else {
+            SchemaFields::default()
+        };
+
         Some(ConfigSpec {
             module: config_module,
             name: config_name,
             fields,
+            config_schema,
         })
     }
 
@@ -1114,17 +1204,14 @@ impl AstDiscovery {
     }
 
     fn ast_has_class(ast: &PythonAst, class_name: &str) -> bool {
-        let root = ast.root();
         let pattern = format!("class {}($$$BASES): $$$BODY", class_name);
-        let found = root.find_all(pattern.as_str()).next().is_some();
+        let found = ast.root().find_all(pattern.as_str()).next().is_some();
         found
     }
 
     fn ast_has_function(ast: &PythonAst, function_name: &str) -> bool {
-        let root = ast.root();
-        // Match decorated or undecorated function definitions
         let pattern = format!("def {}($$$PARAMS): $$$BODY", function_name);
-        let found = root.find_all(pattern.as_str()).next().is_some();
+        let found = ast.root().find_all(pattern.as_str()).next().is_some();
         found
     }
 
@@ -1455,6 +1542,8 @@ impl AstDiscovery {
 #[cfg(test)]
 mod tests {
     use crate::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_all_entry_points_r2x_plugin() {
@@ -1813,5 +1902,204 @@ class ReEDSParser(Plugin[ReEDSConfig]):
             PluginType::Class,
         );
         assert_eq!(config_name_none, None);
+    }
+
+    #[test]
+    fn test_discover_plugins_skips_site_packages_root() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let venv_path = temp_dir.path().join("venv");
+
+        #[cfg(windows)]
+        let site_packages = {
+            let site_packages = venv_path
+                .join(r2x_config::venv_paths::PYTHON_LIB_DIR)
+                .join("site-packages");
+            if let Err(err) = fs::create_dir_all(&site_packages) {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create site-packages dir: {err}"
+                );
+                return;
+            }
+            site_packages
+        };
+
+        #[cfg(not(windows))]
+        let site_packages = {
+            let site_packages = venv_path
+                .join(r2x_config::venv_paths::PYTHON_LIB_DIR)
+                .join("python3.12")
+                .join("site-packages");
+            if let Err(err) = fs::create_dir_all(&site_packages) {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create site-packages dir: {err}"
+                );
+                return;
+            }
+            site_packages
+        };
+
+        let other_pkg = site_packages.join("other_pkg");
+        if let Err(err) = fs::create_dir_all(&other_pkg) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create package dir: {err}"
+            );
+            return;
+        }
+        if let Err(err) = fs::write(
+            other_pkg.join("plugin.py"),
+            r"
+from r2x_core import Plugin
+
+class MyPlugin(Plugin[MyConfig]):
+    pass
+",
+        ) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to write plugin file: {err}"
+            );
+            return;
+        }
+
+        let venv_str = venv_path.to_str().unwrap_or_default();
+        assert!(
+            !venv_str.is_empty(),
+            "Failed to convert venv path to string"
+        );
+
+        let plugins =
+            match AstDiscovery::discover_plugins(&site_packages, "r2x-reeds", Some(venv_str), None)
+            {
+                Ok(plugins) => plugins,
+                Err(err) => {
+                    assert!(err.to_string().is_empty(), "Discovery failed: {err}");
+                    return;
+                }
+            };
+
+        assert!(plugins.is_empty());
+    }
+
+    #[test]
+    fn test_nested_config_discovery_integration() {
+        use crate::package_cache::PackageAstCache;
+        use crate::schema_extractor::SchemaExtractor;
+
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+
+        // Create config.py with nested configs matching the real use case
+        let config_content = r"
+from pydantic import BaseModel
+
+class TransmissionConfig(BaseModel):
+    capacity: float = 1000.0
+    voltage: int = 345
+
+class NodalConfig(BaseModel):
+    transmission: TransmissionConfig
+    excluded_techs: list[str] | None = None
+    solve_year: int = 2030
+
+class ZonalToNodalConfig(BaseModel):
+    config: NodalConfig
+    name: str
+";
+
+        if let Err(err) = fs::write(temp_dir.path().join("config.py"), config_content) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to write config file: {err}"
+            );
+            return;
+        }
+
+        let cache = PackageAstCache::build(temp_dir.path());
+
+        // Build resolver from cache
+        let resolver = ClassContentResolver::from_package_cache(&cache);
+        let extractor = SchemaExtractor::with_resolver(
+            std::collections::HashMap::new(),
+            std::sync::Arc::new(resolver),
+        );
+
+        // Find ZonalToNodalConfig content
+        let Some((_, content)) = cache.find_config_class_content("ZonalToNodalConfig") else {
+            // Simulate the pattern used in other tests
+            let err = "ZonalToNodalConfig not found";
+            assert!(err.is_empty(), "Config class not found: {err}");
+            return;
+        };
+
+        // Extract with nesting
+        let Ok(fields) = extractor.extract_with_nesting(content, "ZonalToNodalConfig") else {
+            let err = "extraction failed";
+            assert!(err.is_empty(), "extraction failed");
+            return;
+        };
+
+        // Verify top-level structure
+        assert!(fields.get("name").is_some(), "name field missing");
+
+        // Verify nested NodalConfig
+        assert!(fields.get("config").is_some(), "config field missing");
+        let config_field = fields.get("config");
+        assert!(
+            config_field.is_some_and(|f| f.field_type == r2x_manifest::types::FieldType::Object)
+        );
+
+        // Get nodal properties
+        let nodal_props = config_field.and_then(|f| f.properties.as_ref());
+        assert!(nodal_props.is_some(), "NodalConfig properties missing");
+
+        // Verify NodalConfig has solve_year (the field that was causing the runtime error)
+        let nodal = nodal_props;
+        assert!(
+            nodal.is_some_and(|p| p.get("solve_year").is_some()),
+            "solve_year field missing in NodalConfig"
+        );
+        assert!(nodal.is_some_and(|p| p
+            .get("solve_year")
+            .is_some_and(|f| f.field_type == r2x_manifest::types::FieldType::Int)));
+
+        // Verify nested TransmissionConfig
+        assert!(
+            nodal.is_some_and(|p| p.get("transmission").is_some()),
+            "transmission field missing"
+        );
+
+        let tx_props = nodal
+            .and_then(|p| p.get("transmission"))
+            .and_then(|f| f.properties.as_ref());
+        assert!(tx_props.is_some(), "TransmissionConfig properties missing");
+
+        assert!(
+            tx_props.is_some_and(|p| p.get("capacity").is_some()),
+            "capacity field missing"
+        );
+        assert!(
+            tx_props.is_some_and(|p| p.get("voltage").is_some()),
+            "voltage field missing"
+        );
     }
 }

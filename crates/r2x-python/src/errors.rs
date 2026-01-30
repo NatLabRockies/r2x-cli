@@ -36,6 +36,12 @@ pub enum BridgeError {
     Io(#[from] io::Error),
 }
 
+/// Generic conversion from PyErr to BridgeError.
+///
+/// NOTE: This conversion loses the Python traceback information!
+/// For user-facing errors where tracebacks are important (plugin failures,
+/// config instantiation, etc.), use `format_python_error()` or
+/// `format_exception_value()` from plugin_regular.rs instead.
 impl From<pyo3::PyErr> for BridgeError {
     fn from(err: pyo3::PyErr) -> Self {
         BridgeError::Python(format!("{}", err))

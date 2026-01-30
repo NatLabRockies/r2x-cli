@@ -18,6 +18,18 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Trait for resolving type references to their source content.
+///
+/// This allows the schema extractor to recursively resolve nested types
+/// by looking up class definitions from the package cache or other sources.
+pub trait TypeResolver: Send + Sync {
+    /// Resolve a class name to its source file content.
+    ///
+    /// Returns the content of the file containing the class definition,
+    /// or None if the class cannot be found.
+    fn resolve_class_content(&self, class_name: &str) -> Option<String>;
+}
+
 type ParsedTypeInfo = (
     FieldType,
     Option<Arc<str>>,
@@ -25,10 +37,17 @@ type ParsedTypeInfo = (
     Option<Arc<[Arc<str>]>>,
 );
 
+/// Default maximum depth for nested type resolution
+const DEFAULT_MAX_DEPTH: usize = 5;
+
 /// Schema extractor for Python config classes
 pub struct SchemaExtractor {
     /// Import map for resolving type references
     import_map: HashMap<String, String>,
+    /// Optional type resolver for nested type extraction
+    type_resolver: Option<Arc<dyn TypeResolver>>,
+    /// Maximum depth for nested type resolution (prevents runaway recursion)
+    max_depth: usize,
 }
 
 impl SchemaExtractor {
@@ -36,12 +55,30 @@ impl SchemaExtractor {
     pub fn new() -> Self {
         SchemaExtractor {
             import_map: HashMap::new(),
+            type_resolver: None,
+            max_depth: DEFAULT_MAX_DEPTH,
         }
     }
 
     /// Create a schema extractor with an import map for type resolution
     pub fn with_imports(import_map: HashMap<String, String>) -> Self {
-        SchemaExtractor { import_map }
+        SchemaExtractor {
+            import_map,
+            type_resolver: None,
+            max_depth: DEFAULT_MAX_DEPTH,
+        }
+    }
+
+    /// Create a schema extractor with a type resolver for nested type extraction
+    pub fn with_resolver(
+        import_map: HashMap<String, String>,
+        resolver: Arc<dyn TypeResolver>,
+    ) -> Self {
+        SchemaExtractor {
+            import_map,
+            type_resolver: Some(resolver),
+            max_depth: DEFAULT_MAX_DEPTH,
+        }
     }
 
     /// Extract schema from a config class in source code
@@ -64,6 +101,77 @@ impl SchemaExtractor {
 
         // Extract fields directly from the class match (no re-parsing)
         self.extract_fields_from_class_node(&class_matches[0], &mut fields)?;
+
+        Ok(fields)
+    }
+
+    /// Extract schema with recursive nested type resolution.
+    ///
+    /// This method extends `extract()` by recursively resolving nested types
+    /// using the configured type resolver. For each field with `FieldType::Object`
+    /// and nested info, it attempts to resolve and extract the nested class fields.
+    ///
+    /// # Arguments
+    /// * `content` - The source content containing the class definition
+    /// * `class_name` - The name of the class to extract
+    ///
+    /// # Returns
+    /// SchemaFields with nested properties populated for object types
+    pub fn extract_with_nesting(&self, content: &str, class_name: &str) -> Result<SchemaFields> {
+        let mut visited = std::collections::HashSet::new();
+        self.extract_recursive(content, class_name, 0, &mut visited)
+    }
+
+    /// Internal recursive extraction with depth tracking and cycle detection.
+    fn extract_recursive(
+        &self,
+        content: &str,
+        class_name: &str,
+        depth: usize,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<SchemaFields> {
+        // Prevent infinite recursion
+        if depth > self.max_depth {
+            return Ok(SchemaFields::default());
+        }
+
+        // Detect circular references
+        if !visited.insert(class_name.to_string()) {
+            return Ok(SchemaFields::default());
+        }
+
+        // Extract fields from the current class
+        let mut fields = self.extract(content, class_name)?;
+
+        // Only resolve nested types if we have a type resolver
+        let Some(ref resolver) = self.type_resolver else {
+            return Ok(fields);
+        };
+
+        // Recursively resolve nested object types
+        for field in fields.fields.values_mut() {
+            let Some(nested_class) = field
+                .nested
+                .as_ref()
+                .and_then(|n| n.class.as_ref())
+                .filter(|_| field.field_type == FieldType::Object)
+                .filter(|class| !visited.contains(class.as_ref()))
+            else {
+                continue;
+            };
+
+            let Some(nested_content) = resolver.resolve_class_content(nested_class) else {
+                continue;
+            };
+
+            if let Ok(nested_fields) =
+                self.extract_recursive(&nested_content, nested_class, depth + 1, visited)
+            {
+                if !nested_fields.is_empty() {
+                    field.properties = Some(Box::new(nested_fields));
+                }
+            }
+        }
 
         Ok(fields)
     }
@@ -617,5 +725,224 @@ class PCMDefaultsConfig(PluginConfig):
             override_field.is_some_and(|f| f.field_type == FieldType::Bool && !f.required),
             "pcm_defaults_override should be bool and not required"
         );
+    }
+
+    // =========================================================================
+    // Tests for nested config extraction with TypeResolver
+    // =========================================================================
+
+    /// Mock resolver that returns the same source for all class lookups
+    struct MockResolver {
+        content: String,
+    }
+
+    impl TypeResolver for MockResolver {
+        fn resolve_class_content(&self, _class_name: &str) -> Option<String> {
+            Some(self.content.clone())
+        }
+    }
+
+    #[test]
+    fn test_single_level_nested_extraction() {
+        let source = r"
+class InnerConfig(BaseModel):
+    value: int = 10
+    name: str
+
+class OuterConfig(BaseModel):
+    inner: InnerConfig
+    description: str
+";
+
+        let resolver = MockResolver {
+            content: source.to_string(),
+        };
+        let extractor = SchemaExtractor::with_resolver(HashMap::new(), Arc::new(resolver));
+        let fields = extractor
+            .extract_with_nesting(source, "OuterConfig")
+            .expect("extraction failed");
+
+        // Check outer fields
+        assert!(fields.get("description").is_some());
+
+        // Check inner field is object type
+        let inner = fields.get("inner").expect("inner field missing");
+        assert_eq!(inner.field_type, FieldType::Object);
+        assert!(inner.nested.is_some());
+
+        // Check that properties were populated
+        let inner_props = inner.properties.as_ref().expect("inner properties missing");
+        assert!(inner_props.get("value").is_some());
+        assert!(inner_props.get("name").is_some());
+
+        // Verify nested field types
+        let value_field = inner_props.get("value").expect("value field missing");
+        assert_eq!(value_field.field_type, FieldType::Int);
+    }
+
+    #[test]
+    fn test_multi_level_nested_extraction() {
+        let source = r"
+class Level3(BaseModel):
+    deep_value: str
+
+class Level2(BaseModel):
+    level3: Level3
+
+class Level1(BaseModel):
+    level2: Level2
+    top_value: int
+";
+
+        let resolver = MockResolver {
+            content: source.to_string(),
+        };
+        let extractor = SchemaExtractor::with_resolver(HashMap::new(), Arc::new(resolver));
+        let fields = extractor
+            .extract_with_nesting(source, "Level1")
+            .expect("extraction failed");
+
+        // Verify top level
+        assert!(fields.get("top_value").is_some());
+
+        // Verify level 2 nested
+        let level2_field = fields.get("level2").expect("level2 missing");
+        assert_eq!(level2_field.field_type, FieldType::Object);
+        let level2_props = level2_field
+            .properties
+            .as_ref()
+            .expect("level2 properties missing");
+
+        // Verify level 3 nested
+        let level3_field = level2_props.get("level3").expect("level3 missing");
+        assert_eq!(level3_field.field_type, FieldType::Object);
+        let level3_props = level3_field
+            .properties
+            .as_ref()
+            .expect("level3 properties missing");
+
+        // Verify deepest level
+        let deep_value = level3_props.get("deep_value").expect("deep_value missing");
+        assert_eq!(deep_value.field_type, FieldType::Str);
+    }
+
+    #[test]
+    fn test_circular_reference_protection() {
+        let source = r"
+class ConfigA(BaseModel):
+    other: ConfigB
+    value: int
+
+class ConfigB(BaseModel):
+    back: ConfigA
+    name: str
+";
+
+        let resolver = MockResolver {
+            content: source.to_string(),
+        };
+        let extractor = SchemaExtractor::with_resolver(HashMap::new(), Arc::new(resolver));
+
+        // Should not hang or panic
+        let fields = extractor
+            .extract_with_nesting(source, "ConfigA")
+            .expect("extraction failed");
+
+        // Should have resolved ConfigB's properties
+        let other = fields.get("other").expect("other field missing");
+        assert_eq!(other.field_type, FieldType::Object);
+
+        // ConfigB should have properties
+        let other_props = other
+            .properties
+            .as_ref()
+            .expect("ConfigB properties missing");
+        assert!(other_props.get("name").is_some());
+
+        // But ConfigB.back should NOT have nested properties (circular ref detected)
+        let back_field = other_props.get("back").expect("back field missing");
+        assert_eq!(back_field.field_type, FieldType::Object);
+        // Properties should be None because ConfigA was already visited
+        assert!(
+            back_field.properties.is_none(),
+            "circular reference should prevent nested extraction"
+        );
+    }
+
+    #[test]
+    fn test_extract_without_resolver() {
+        let source = r"
+class InnerConfig(BaseModel):
+    value: int
+
+class OuterConfig(BaseModel):
+    inner: InnerConfig
+";
+
+        // Without a resolver, nested types should not be expanded
+        let extractor = SchemaExtractor::new();
+        let fields = extractor
+            .extract_with_nesting(source, "OuterConfig")
+            .expect("extraction failed");
+
+        let inner = fields.get("inner").expect("inner field missing");
+        assert_eq!(inner.field_type, FieldType::Object);
+        assert!(inner.nested.is_some());
+
+        // Properties should be None (no resolver to look up InnerConfig)
+        assert!(
+            inner.properties.is_none(),
+            "without resolver, properties should not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_mixed_nested_and_primitive_types() {
+        let source = r#"
+class DatabaseConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 5432
+
+class CacheConfig(BaseModel):
+    enabled: bool = True
+    ttl: int = 300
+
+class AppConfig(BaseModel):
+    database: DatabaseConfig
+    cache: CacheConfig
+    debug: bool = False
+    name: str
+"#;
+
+        let resolver = MockResolver {
+            content: source.to_string(),
+        };
+        let extractor = SchemaExtractor::with_resolver(HashMap::new(), Arc::new(resolver));
+        let fields = extractor
+            .extract_with_nesting(source, "AppConfig")
+            .expect("extraction failed");
+
+        // Check primitive fields
+        let debug_field = fields.get("debug").expect("debug missing");
+        assert_eq!(debug_field.field_type, FieldType::Bool);
+        assert!(debug_field.properties.is_none());
+
+        // Check database nested config
+        let db_field = fields.get("database").expect("database missing");
+        let db_props = db_field
+            .properties
+            .as_ref()
+            .expect("database props missing");
+        assert!(db_props.get("host").is_some());
+        assert!(db_props.get("port").is_some());
+
+        // Check cache nested config
+        let cache_field = fields.get("cache").expect("cache missing");
+        let cache_props = cache_field
+            .properties
+            .as_ref()
+            .expect("cache props missing");
+        assert!(cache_props.get("enabled").is_some());
+        assert!(cache_props.get("ttl").is_some());
     }
 }

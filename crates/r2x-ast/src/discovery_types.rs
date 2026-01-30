@@ -3,6 +3,7 @@
 //! These types are used during AST parsing and discovery. They are distinct
 //! from the manifest types and keep AST-specific details out of the manifest.
 
+use r2x_manifest::types::SchemaFields;
 use serde::{Deserialize, Serialize};
 
 /// Entry point information parsed from entry_points.txt
@@ -43,6 +44,10 @@ pub struct ConfigSpec {
     pub name: String,
     #[serde(default)]
     pub fields: Vec<ConfigField>,
+    /// Schema with nested type information for the config class.
+    /// This includes recursively extracted properties for nested object types.
+    #[serde(default, skip_serializing_if = "SchemaFields::is_empty")]
+    pub config_schema: SchemaFields,
 }
 
 /// Configuration field specification (AST-specific)
