@@ -69,12 +69,10 @@ impl Bridge {
             // Re-enable loguru for this module after import.
             // Python __init__.py files call logger.disable() by convention,
             // which overwrites any enables set before the import.
-            if logger::get_log_python() {
-                let _ = Bridge::enable_loguru_modules(
-                    py,
-                    &[module_path.split('.').next().unwrap_or(module_path)],
-                );
-            }
+            let _ = Bridge::enable_loguru_modules(
+                py,
+                &[module_path.split('.').next().unwrap_or(module_path)],
+            );
 
             let json_module = PyModule::import(py, "json")
                 .map_err(|e| BridgeError::Import("json".to_string(), format!("{}", e)))?;
