@@ -2,7 +2,7 @@
 
 use crate::errors::BridgeError;
 use crate::plugin_invoker::PluginInvocationResult;
-use crate::plugin_regular::StdoutGuard;
+use crate::plugin_regular::{format_err_result, format_python_error, StdoutGuard};
 use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
 use r2x_logger as logger;
@@ -43,9 +43,10 @@ impl Bridge {
 
             let kwargs = Self::build_kwargs(py, &config_dict, None, runtime_bindings)?;
             let upgrader_class = module.getattr(callable_path).map_err(|e| {
-                BridgeError::Python(format!(
-                    "Failed to get upgrader class '{}': {}",
-                    callable_path, e
+                BridgeError::Python(format_python_error(
+                    py,
+                    e,
+                    &format!("Failed to get upgrader class '{}'", callable_path),
                 ))
             })?;
 
@@ -62,22 +63,28 @@ impl Bridge {
             }
 
             let instance = upgrader_class.call((), Some(&kwargs)).map_err(|e| {
-                BridgeError::Python(format!(
-                    "Failed to instantiate upgrader '{}': {}",
-                    callable_path, e
+                BridgeError::Python(format_python_error(
+                    py,
+                    e,
+                    &format!("Failed to instantiate upgrader '{}'", callable_path),
                 ))
             })?;
 
             if instance.hasattr("run")? {
-                let output = instance
-                    .call_method0("run")?
-                    .extract::<String>()
-                    .map_err(|e| {
-                        BridgeError::Python(format!(
-                            "Failed to run upgrader '{}': {}",
-                            callable_path, e
-                        ))
-                    })?;
+                let output = instance.call_method0("run").map_err(|e| {
+                    BridgeError::Python(format_python_error(
+                        py,
+                        e,
+                        &format!("Failed to run upgrader '{}'", callable_path),
+                    ))
+                })?;
+                let output = output.extract::<String>().map_err(|e| {
+                    BridgeError::Python(format_python_error(
+                        py,
+                        e,
+                        &format!("Failed to extract upgrader '{}' output", callable_path),
+                    ))
+                })?;
                 Ok(PluginInvocationResult {
                     output,
                     timings: None,
@@ -104,29 +111,41 @@ impl Bridge {
     fn invoke_registered_steps(
         instance: &pyo3::Bound<'_, pyo3::PyAny>,
     ) -> Result<String, BridgeError> {
-        let steps = instance
-            .getattr("steps")
-            .map_err(|e| BridgeError::Python(format!("Failed to access upgrader steps: {}", e)))?;
+        let py = instance.py();
+
+        let steps = instance.getattr("steps").map_err(|e| {
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                "Failed to access upgrader steps",
+            ))
+        })?;
 
         let path_obj = instance.getattr("path").map_err(|e| {
-            BridgeError::Python(format!("Upgrader missing 'path' attribute: {}", e))
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                "Upgrader missing 'path' attribute",
+            ))
         })?;
         let path_str = path_obj
             .str()
-            .map_err(|e| BridgeError::Python(format!("Invalid upgrader path: {}", e)))?
+            .map_err(|e| BridgeError::Python(format_python_error(py, e, "Invalid upgrader path")))?
             .to_string();
         let path_buf = PathBuf::from(path_str);
         let path_handle = path_obj.clone().unbind();
 
-        let py = instance.py();
-
         let upgrader_utils = PyModule::import(py, "r2x_core.upgrader_utils").map_err(|e| {
-            BridgeError::Import("r2x_core.upgrader_utils".to_string(), format!("{}", e))
+            BridgeError::Import(
+                "r2x_core.upgrader_utils".to_string(),
+                format_python_error(py, e, "Import failed"),
+            )
         })?;
         let run_upgrade_step = upgrader_utils.getattr("run_upgrade_step").map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to import r2x_core.upgrader_utils.run_upgrade_step: {}",
-                e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                "Failed to import r2x_core.upgrader_utils.run_upgrade_step",
             ))
         })?;
 
@@ -194,7 +213,7 @@ impl Bridge {
             let result = run_upgrade_step
                 .call((step_obj.clone(), data_arg), Some(&kwargs))
                 .map_err(|e| {
-                    BridgeError::Python(format!("Upgrade step execution failed: {}", e))
+                    BridgeError::Python(format_python_error(py, e, "Upgrade step execution failed"))
                 })?;
 
             let is_err = result
@@ -204,17 +223,8 @@ impl Bridge {
                 .map_err(|e| BridgeError::Python(format!("Failed to inspect result: {}", e)))?;
 
             if is_err {
-                let err_obj = result
-                    .getattr("unwrap_err")?
-                    .call0()
-                    .map_err(|e| BridgeError::Python(format!("Failed to fetch error: {}", e)))?;
-                let err_text = err_obj
-                    .str()
-                    .map_or_else(|_| "<unknown error>".to_string(), |s| s.to_string());
-                return Err(BridgeError::Python(format!(
-                    "Upgrade step execution failed: {}",
-                    err_text
-                )));
+                let error_text = format_err_result(py, &result);
+                return Err(BridgeError::Python(error_text));
             }
 
             if upgrade_is_system {
@@ -317,10 +327,10 @@ fn load_system_data<'py>(
     })?;
     let py_str = PyString::new(py, &content);
     let data = loads.call1((py_str,)).map_err(|e| {
-        BridgeError::Python(format!(
-            "Failed to parse system JSON {}: {}",
-            json_path.display(),
-            e
+        BridgeError::Python(format_python_error(
+            py,
+            e,
+            &format!("Failed to parse system JSON {}", json_path.display()),
         ))
     })?;
     Ok(data.into())
@@ -338,18 +348,24 @@ fn write_system_data<'py>(
     let json_str: String = dumps
         .call((data.bind(py),), Some(&kwargs))
         .map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to serialize upgraded system JSON {}: {}",
-                json_path.display(),
-                e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                &format!(
+                    "Failed to serialize upgraded system JSON {}",
+                    json_path.display()
+                ),
             ))
         })?
         .extract()
         .map_err(|e| {
-            BridgeError::Python(format!(
-                "Failed to convert upgraded system JSON {}: {}",
-                json_path.display(),
-                e
+            BridgeError::Python(format_python_error(
+                py,
+                e,
+                &format!(
+                    "Failed to convert upgraded system JSON {}",
+                    json_path.display()
+                ),
             ))
         })?;
     std::fs::write(json_path, json_str).map_err(|e| {

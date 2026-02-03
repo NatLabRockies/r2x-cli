@@ -14,7 +14,7 @@ use crate::errors::BridgeError;
 use crate::utils::{resolve_python_path, resolve_site_package_path};
 use once_cell::sync::OnceCell;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 use r2x_config::Config;
 use r2x_logger as logger;
 use std::env;
@@ -273,43 +273,75 @@ def _r2x_cache_path_override():
     }
 
     /// Configure Python loguru logging
+    ///
+    /// Always configures a file sink pointing to the shared r2x.log.
+    /// Optionally adds a console sink when --log-python is active.
     fn configure_python_logging() -> Result<(), BridgeError> {
-        let log_python = logger::get_log_python();
-        if !log_python {
-            return Ok(());
-        }
-
         let verbosity = logger::get_verbosity();
+        let log_python = logger::get_log_python();
+        let log_file = logger::get_log_path_string();
+
         logger::debug(&format!(
-            "Configuring Python logging with verbosity={}",
-            verbosity
+            "Configuring Python logging with verbosity={}, log_python={}, log_file={}",
+            verbosity, log_python, log_file
         ));
 
         pyo3::Python::attach(|py| {
             let logger_module = PyModule::import(py, "r2x_core.logger").map_err(|e| {
-                logger::warn(&format!("Failed to import r2x_core.logger: {}", e));
                 BridgeError::Import("r2x_core.logger".to_string(), format!("{}", e))
             })?;
-            let setup_logging = logger_module.getattr("setup_logging").map_err(|e| {
-                logger::warn(&format!("Failed to get setup_logging function: {}", e));
-                BridgeError::Python(format!("setup_logging not found: {}", e))
-            })?;
-            setup_logging.call1((verbosity,))?;
+            let setup_logging = logger_module
+                .getattr("setup_logging")
+                .map_err(|e| BridgeError::Python(format!("setup_logging not found: {}", e)))?;
 
-            let loguru = PyModule::import(py, "loguru")?;
-            let logger_obj = loguru.getattr("logger")?;
-            logger_obj.call_method1("enable", ("r2x_core",))?;
-            logger_obj.call_method1("enable", ("r2x_reeds",))?;
-            logger_obj.call_method1("enable", ("r2x_plexos",))?;
-            logger_obj.call_method1("enable", ("r2x_sienna",))?;
+            let kwargs = PyDict::new(py);
+            if !log_file.is_empty() {
+                kwargs.set_item("log_file", &log_file)?;
+            }
+            kwargs.set_item("log_to_console", log_python)?;
+            setup_logging.call((verbosity,), Some(&kwargs))?;
 
-            Ok::<(), BridgeError>(())
+            Self::enable_loguru_modules(
+                py,
+                &[
+                    "r2x_core",
+                    "r2x_reeds",
+                    "r2x_plexos",
+                    "r2x_sienna",
+                    "r2x_nodal",
+                ],
+            )
         })
     }
 
-    /// Reconfigure Python logging for a specific plugin
-    pub fn reconfigure_logging_for_plugin(_plugin_name: &str) -> Result<(), BridgeError> {
-        Self::configure_python_logging()
+    /// Enable loguru logging for a list of Python modules
+    pub(crate) fn enable_loguru_modules(py: Python, modules: &[&str]) -> Result<(), BridgeError> {
+        let loguru = PyModule::import(py, "loguru")?;
+        let logger_obj = loguru.getattr("logger")?;
+
+        for module in modules {
+            logger_obj.call_method1("enable", (module,))?;
+        }
+
+        Ok(())
+    }
+
+    /// Reconfigure Python logging for a specific plugin.
+    ///
+    /// Enables loguru for the plugin's Python module in addition to
+    /// the base set of packages. The plugin_name can be either a
+    /// fully-qualified ref like "r2x-nodal.zonal-to-nodal" (the
+    /// package prefix before the dot is used) or a bare name.
+    pub fn reconfigure_logging_for_plugin(plugin_name: &str) -> Result<(), BridgeError> {
+        Self::configure_python_logging()?;
+
+        // Extract the package portion (before the first dot) and convert
+        // hyphens to underscores so "r2x-nodal.zonal-to-nodal" becomes
+        // "r2x_nodal", matching the Python module name.
+        let package_part = plugin_name.split('.').next().unwrap_or(plugin_name);
+        let module_name = package_part.replace('-', "_");
+
+        pyo3::Python::attach(|py| Self::enable_loguru_modules(py, &[&module_name]))
     }
 }
 
