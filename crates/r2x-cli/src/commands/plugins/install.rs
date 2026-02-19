@@ -325,13 +325,8 @@ fn discover_all_installed_packages(
     no_cache: bool,
     total_start: std::time::Instant,
 ) -> Result<(), PluginError> {
-    let discoverer =
-        PackageDiscoverer::new(ctx.locator.site_packages().to_path_buf()).map_err(|e| {
-            PluginError::Discovery(format!("Failed to initialize package discovery: {e}"))
-        })?;
-    let packages = discoverer
-        .discover_packages()
-        .map_err(|e| PluginError::Discovery(format!("Failed to discover packages: {e}")))?;
+    let discoverer = PackageDiscoverer::new(&ctx.locator);
+    let packages = discoverer.discover_packages();
 
     if packages.is_empty() {
         logger::warn("No packages with r2x_plugin entry points found");

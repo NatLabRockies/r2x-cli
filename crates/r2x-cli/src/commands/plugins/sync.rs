@@ -57,6 +57,7 @@ pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
             &package_name,
             Some(venv_path),
             Some(&version),
+            None, // dist-info path resolved by PackageLocator (wired in later task)
         ) {
             Ok(result) => result,
             Err(e) => {

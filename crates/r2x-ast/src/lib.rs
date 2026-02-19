@@ -97,7 +97,8 @@ impl AstDiscovery {
     /// * `package_path` - Path to the installed package (e.g., site-packages/r2x_reeds)
     /// * `package_name_full` - Full package name (e.g., "r2x-reeds")
     /// * `venv_path` - Optional path to virtual environment for entry_points.txt lookup
-    /// * `package_version` - Optional package version string
+    /// * `_package_version` - Optional package version string
+    /// * `dist_info_path` - Optional pre-resolved dist-info directory path from PackageLocator
     ///
     /// # Returns
     /// Vector of discovered plugins
@@ -106,19 +107,41 @@ impl AstDiscovery {
         package_name_full: &str,
         venv_path: Option<&str>,
         _package_version: Option<&str>,
+        dist_info_path: Option<&Path>,
     ) -> Result<Vec<Plugin>> {
         let total_start = Instant::now();
         logger::debug(&format!("AST discovery started for: {}", package_name_full));
 
         let discovery_root = Self::resolve_discovery_root(package_path, package_name_full);
-        logger::debug(&format!("AST discovery root: {}", discovery_root.display()));
+        let is_site_packages = Self::is_site_packages_root(&discovery_root, venv_path);
+        logger::debug(&format!(
+            "AST discovery root: {} (site-packages: {})",
+            discovery_root.display(),
+            is_site_packages
+        ));
 
         // Step 1: Check explicit entry points (entry_points.txt or pyproject.toml)
         let entry_start = Instant::now();
         let pyproject_entries =
             Self::find_pyproject_entry_points(package_path, &discovery_root, package_name_full);
         let entry_point_entries = if pyproject_entries.is_empty() {
-            match Self::find_entry_points_txt(package_path, package_name_full, venv_path) {
+            // If caller provided a pre-resolved dist-info path, read entry_points.txt directly
+            // Otherwise fall back to find_entry_points_txt which only checks the package directory
+            let entry_points_result = if let Some(dist_info) = dist_info_path {
+                let entry_points_txt = dist_info.join("entry_points.txt");
+                if entry_points_txt.exists() {
+                    Ok(entry_points_txt)
+                } else {
+                    Err(anyhow!(
+                        "No entry_points.txt in dist-info: {}",
+                        dist_info.display()
+                    ))
+                }
+            } else {
+                Self::find_entry_points_txt(package_path, package_name_full)
+            };
+
+            match entry_points_result {
                 Ok(entry_points_path) => {
                     logger::debug(&format!(
                         "Found entry_points.txt at: {}",
@@ -215,6 +238,7 @@ impl AstDiscovery {
                 package_name_full,
                 &mut file_cache,
                 &mut package_cache,
+                is_site_packages,
             ) {
                 Ok(plugin) => {
                     logger::debug(&format!(
@@ -299,41 +323,18 @@ impl AstDiscovery {
 
     /// Find entry_points.txt for the package
     ///
-    /// Optimized to avoid directory scanning by trying direct paths first.
+    /// Only checks for entry_points.txt directly in the package path (for source/editable installs).
+    /// For installed packages, the caller should provide `dist_info_path` to `discover_plugins`
+    /// which is resolved by PackageLocator using cached directory entries.
     fn find_entry_points_txt(
         package_path: &Path,
         package_name_full: &str,
-        venv_path: Option<&str>,
     ) -> Result<std::path::PathBuf> {
-        let normalized_name = package_name_full.replace('-', "_");
-
-        // Strategy 1: Look for entry_points.txt directly in package_path (for source packages)
+        // Look for entry_points.txt directly in package_path (for source packages)
         // This handles editable installs where package_path is the source directory
         let direct_path = package_path.join("entry_points.txt");
         if direct_path.exists() {
             return Ok(direct_path);
-        }
-
-        // Strategy 2: Look in parent directory's dist-info (for installed packages)
-        // Pattern: ../package_name-*.dist-info/entry_points.txt
-        if let Some(parent) = package_path.parent() {
-            // Try to find dist-info by scanning just the parent (usually site-packages)
-            if let Some(entry_points) = Self::find_dist_info_entry_points(parent, &normalized_name)
-            {
-                return Ok(entry_points);
-            }
-        }
-
-        // Strategy 3: Use venv site-packages if provided
-        if let Some(venv) = venv_path {
-            let venv_path = std::path::PathBuf::from(venv);
-            if let Ok(site_packages) = r2x_config::venv_paths::resolve_site_packages(&venv_path) {
-                if let Some(entry_points) =
-                    Self::find_dist_info_entry_points(&site_packages, &normalized_name)
-                {
-                    return Ok(entry_points);
-                }
-            }
         }
 
         Err(anyhow!(
@@ -376,28 +377,6 @@ impl AstDiscovery {
         }
 
         entries
-    }
-
-    /// Find entry_points.txt in a dist-info directory within the given path
-    fn find_dist_info_entry_points(
-        dir: &Path,
-        normalized_name: &str,
-    ) -> Option<std::path::PathBuf> {
-        let entries = std::fs::read_dir(dir).ok()?;
-        let prefix = format!("{}-", normalized_name);
-
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            if name_str.starts_with(&prefix) && name_str.ends_with(".dist-info") {
-                let entry_points = entry.path().join("entry_points.txt");
-                if entry_points.exists() {
-                    return Some(entry_points);
-                }
-            }
-        }
-        None
     }
 
     /// Resolve a module path to a source file location
@@ -682,6 +661,10 @@ impl AstDiscovery {
     ///
     /// This approach only parses the specific file(s) needed for each entry point,
     /// avoiding the overhead of parsing all files in the package upfront.
+    ///
+    /// When `is_site_packages` is true, we skip expensive fallback operations like
+    /// building a full PackageAstCache, since non-editable installs don't have
+    /// accessible source files and scanning site-packages would be catastrophically slow.
     fn discover_direct_entry_point(
         package_path: &Path,
         discovery_root: &Path,
@@ -689,6 +672,7 @@ impl AstDiscovery {
         package_name: &str,
         file_cache: &mut HashMap<PathBuf, Arc<CachedFile>>,
         package_cache: &mut Option<PackageAstCache>,
+        is_site_packages: bool,
     ) -> Result<Plugin> {
         logger::debug(&format!(
             "Discovering direct entry point: {} = {}:{}",
@@ -733,7 +717,10 @@ impl AstDiscovery {
                 }
             }
 
-            if !has_class {
+            // Only attempt full package AST scan if NOT in site-packages.
+            // For non-editable installs, discovery_root points to site-packages and
+            // scanning all of site-packages would parse thousands of unrelated files.
+            if !has_class && !is_site_packages {
                 if package_cache.is_none() {
                     *package_cache = Some(PackageAstCache::build(discovery_root));
                 }
@@ -1979,15 +1966,19 @@ class MyPlugin(Plugin[MyConfig]):
             "Failed to convert venv path to string"
         );
 
-        let plugins =
-            match AstDiscovery::discover_plugins(&site_packages, "r2x-reeds", Some(venv_str), None)
-            {
-                Ok(plugins) => plugins,
-                Err(err) => {
-                    assert!(err.to_string().is_empty(), "Discovery failed: {err}");
-                    return;
-                }
-            };
+        let plugins = match AstDiscovery::discover_plugins(
+            &site_packages,
+            "r2x-reeds",
+            Some(venv_str),
+            None,
+            None,
+        ) {
+            Ok(plugins) => plugins,
+            Err(err) => {
+                assert!(err.to_string().is_empty(), "Discovery failed: {err}");
+                return;
+            }
+        };
 
         assert!(plugins.is_empty());
     }

@@ -125,15 +125,25 @@ fix_linux() {
         exit 1
     fi
 
-    local python_lib
-    python_lib=$(ldd "$binary" 2>/dev/null | grep -o '/.*libpython[0-9.]*\.so[0-9.]*' | head -1 || true)
+    # Check for ANY libpython reference (resolved or "=> not found")
+    local python_refs
+    python_refs=$(ldd "$binary" 2>/dev/null | grep -i 'libpython' || true)
 
-    if [[ -z "$python_lib" ]]; then
+    if [[ -z "$python_refs" ]]; then
         echo "No libpython reference found in binary."
         return 0
     fi
 
-    echo "Found: $python_lib"
+    # Log what ldd found
+    local python_lib
+    python_lib=$(echo "$python_refs" | grep -o '/.*libpython[0-9.]*\.so[0-9.]*' | head -1 || true)
+
+    if [[ -n "$python_lib" ]]; then
+        echo "Found: $python_lib"
+    else
+        echo "Found unresolved libpython reference (not in current search path):"
+        echo "  $(echo "$python_refs" | head -1)"
+    fi
 
     # $ORIGIN allows finding libs relative to the binary
     local uv_rpath=""
