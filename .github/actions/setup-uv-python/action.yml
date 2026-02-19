@@ -17,3 +17,18 @@ runs:
         UV_PYTHON_BIN=$(uv python find ${{ inputs.python-version }})
         echo "PYO3_PYTHON=$UV_PYTHON_BIN" >> $GITHUB_ENV
         echo "Setting PYO3_PYTHON => $UV_PYTHON_BIN"
+    - name: Fix libpython install name for portable builds
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        UV_PYTHON_BIN=$(uv python find ${{ inputs.python-version }})
+        PYTHON_PREFIX=$(dirname "$(dirname "$UV_PYTHON_BIN")")
+        LIBPYTHON="$PYTHON_PREFIX/lib/libpython${{ inputs.python-version }}.dylib"
+        if [ -f "$LIBPYTHON" ]; then
+          echo "Fixing libpython install name for portable binary linking"
+          echo "  Before: $(otool -D "$LIBPYTHON" | tail -1)"
+          install_name_tool -id "@rpath/libpython${{ inputs.python-version }}.dylib" "$LIBPYTHON"
+          echo "  After:  $(otool -D "$LIBPYTHON" | tail -1)"
+        else
+          echo "libpython not found at $LIBPYTHON (skipping install name fix)"
+        fi

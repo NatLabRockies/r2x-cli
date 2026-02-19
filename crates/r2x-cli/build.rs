@@ -1,26 +1,45 @@
 fn main() {
-    // Rebuild if the Python target changes
     println!("cargo:rerun-if-env-changed=PYO3_PYTHON");
 
     let Ok(target) = std::env::var("TARGET") else {
         return;
     };
 
-    // Add rpath for finding bundled libraries next to the executable
     if target.contains("apple-darwin") {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/..");
-    } else if target.contains("linux") {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
+        // Relative rpaths for portable installation
+        add_rpath("@executable_path");
+        add_rpath("@executable_path/../lib");
 
-        // Embed the actual Python library directory so the binary can find
-        // libpython at runtime without fix_python_dylib.sh or LD_LIBRARY_PATH.
-        // Release builds override this with patchelf via fix_python_dylib.sh.
+        // Homebrew locations
+        add_rpath("/opt/homebrew/lib");
+        add_rpath("/usr/local/lib");
+
+        // Python framework
+        add_rpath("/Library/Frameworks/Python.framework/Versions/Current/lib");
+
+        // Build-time Python LIBDIR (useful for local dev, harmless in release)
         if let Some(libdir) = find_python_libdir() {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", libdir);
+            add_rpath(&libdir);
+        }
+    } else if target.contains("linux") {
+        // Relative rpaths for portable installation
+        add_rpath("$ORIGIN");
+        add_rpath("$ORIGIN/../lib");
+
+        // Standard system library paths
+        add_rpath("/usr/lib");
+        add_rpath("/usr/lib64");
+        add_rpath("/usr/local/lib");
+
+        // Build-time Python LIBDIR
+        if let Some(libdir) = find_python_libdir() {
+            add_rpath(&libdir);
         }
     }
+}
+
+fn add_rpath(path: &str) {
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{path}");
 }
 
 /// Ask the Python interpreter where libpython lives.
