@@ -4,7 +4,6 @@
 //! handling caching, dependencies, and manifest updates.
 
 use crate::plugins::error::PluginError;
-use crate::plugins::utils;
 use r2x_ast::AstDiscovery;
 use r2x_logger as logger;
 use r2x_manifest::package_discovery::PackageLocator;
@@ -59,11 +58,13 @@ pub fn discover_and_register_entry_points_with_deps(
             package_path.display()
         ));
 
+        let dist_info = locator.find_dist_info_path(package_name_full);
         AstDiscovery::discover_plugins(
             &package_path,
             package_name_full,
             venv_path,
             Some(package_version),
+            dist_info.as_deref(),
         )
         .map_err(|e| {
             PluginError::Discovery(format!(
@@ -106,10 +107,10 @@ pub fn discover_and_register_entry_points_with_deps(
     }
     manifest.mark_explicit(package_name_full);
 
-    // Filter r2x dependencies
+    // Filter dependencies that have r2x plugin entry points
     let r2x_dependencies: Vec<String> = dependencies
         .iter()
-        .filter(|dep| utils::looks_like_r2x_plugin(dep))
+        .filter(|dep| locator.has_plugin_entry_points(dep))
         .cloned()
         .collect();
 
@@ -138,7 +139,14 @@ pub fn discover_and_register_entry_points_with_deps(
         } else {
             match locator.find_package_path(&dep) {
                 Ok(dep_path) => {
-                    match AstDiscovery::discover_plugins(&dep_path, &dep, venv_path, None) {
+                    let dep_dist_info = locator.find_dist_info_path(&dep);
+                    match AstDiscovery::discover_plugins(
+                        &dep_path,
+                        &dep,
+                        venv_path,
+                        None,
+                        dep_dist_info.as_deref(),
+                    ) {
                         Ok(ast_plugins) => ast_plugins,
                         Err(e) => {
                             logger::warn(&format!(
@@ -215,14 +223,6 @@ fn resolve_package_path(
 mod tests {
     use crate::plugins::discovery::*;
     use tempfile::TempDir;
-
-    #[test]
-    fn test_looks_like_r2x_plugin() {
-        assert!(utils::looks_like_r2x_plugin("r2x-reeds"));
-        assert!(utils::looks_like_r2x_plugin("r2x-plexos"));
-        assert!(!utils::looks_like_r2x_plugin("r2x-core"));
-        assert!(!utils::looks_like_r2x_plugin("numpy"));
-    }
 
     #[test]
     fn test_resolve_package_path_prefers_source_path() {
