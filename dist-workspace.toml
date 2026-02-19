@@ -24,6 +24,12 @@ allow-dirty = ["ci"]
 # Standardize compression to xz for tar archives
 compression = "xz"
 
+# Override cargo-dist glibc auto-detection. Binary only needs 2.28 (verified
+# via readelf) but dist incorrectly reports 2.31. We build on Rocky Linux 8
+# specifically to target glibc 2.28 for HPC systems.
+[dist.min-glibc-version]
+"*" = "2.28"
+
 # No longer need to copy Python shim libraries - Python is discovered at runtime
 # copy-cdylibs = true
 
