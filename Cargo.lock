@@ -111,7 +111,19 @@ version = "0.22.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "302b68ec51d0990cf24ccc77a98297888145bfe69a078f11f1c51c961bec1b14"
 dependencies = [
- "bit-set",
+ "bit-set 0.5.3",
+ "regex",
+ "thiserror 1.0.69",
+ "tree-sitter-facade-sg",
+]
+
+[[package]]
+name = "ast-grep-core"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "624f575766495025effd15f8125f51ccf11d96f22d0f8c257bf4b8cd09fa26bb"
+dependencies = [
+ "bit-set 0.8.0",
  "regex",
  "thiserror 1.0.69",
  "tree-sitter-facade-sg",
@@ -123,7 +135,7 @@ version = "0.22.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a028281965a8ebc134ba31b3cb15d55eaa7a2c9b1dbf3127856b6a3263b8e3e5"
 dependencies = [
- "ast-grep-core",
+ "ast-grep-core 0.22.6",
  "ignore",
  "serde",
  "tree-sitter-bash",
@@ -173,7 +185,16 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0700ddab506f33b20a03b13996eccd309a48e5ff77d0d95926aa0210fb4e95f1"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.6.3",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
 ]
 
 [[package]]
@@ -181,6 +202,12 @@ name = "bit-vec"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
 name = "bitflags"
@@ -930,7 +957,7 @@ name = "r2x-ast"
 version = "0.0.11"
 dependencies = [
  "anyhow",
- "ast-grep-core",
+ "ast-grep-core 0.25.4",
  "ast-grep-language",
  "r2x-config",
  "r2x-logger",
