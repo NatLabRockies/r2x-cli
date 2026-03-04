@@ -334,6 +334,21 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
 
+      - name: Patch shell installer for Python runtime bootstrap
+        shell: bash
+        run: |
+          shopt -s nullglob
+          installers=(target/distrib/*-installer.sh)
+
+          if [ ${#installers[@]} -eq 0 ]; then
+            echo "No shell installer artifacts found in target/distrib"
+            exit 1
+          fi
+
+          for installer in "${installers[@]}"; do
+            ./scripts/patch_dist_installer.sh "$installer"
+          done
+
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v6
         with:
