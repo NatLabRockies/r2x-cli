@@ -6,6 +6,12 @@ A framework plugin manager for the r2x power systems modeling ecosystem. The r2x
 
 Download the latest pre-built binary for your platform from the [releases page](https://github.com/NatLabRockies/r2x-cli/releases/latest).
 
+Pre-built binaries require Python shared libraries at runtime. If `r2x --version` fails with a missing `libpython` error after install, run:
+
+```bash
+uv python install 3.12
+```
+
 ## Building from Source
 
 ### Prerequisites
