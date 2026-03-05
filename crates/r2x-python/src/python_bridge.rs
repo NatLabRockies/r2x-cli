@@ -345,17 +345,11 @@ def _r2x_cache_path_override():
     }
 }
 
-/// Resolve PYTHONHOME from the venv's pyvenv.cfg file
+/// Resolve PYTHONHOME from the venv's pyvenv.cfg file.
 ///
-/// The pyvenv.cfg file contains:
-/// ```text
-/// home = /path/to/python/installation
-/// include-system-site-packages = false
-/// version = 3.12.1
-/// ```
-///
-/// The `home` field points to the Python installation's bin directory,
-/// so we return its parent as PYTHONHOME.
+/// `home` in `pyvenv.cfg` is not fully consistent across creators/platforms:
+/// it may point at a prefix, a launcher dir (`bin`/`Scripts`), or an executable.
+/// We normalize it into a stable Python prefix for embedded startup.
 fn resolve_python_home(venv_path: &Path) -> Result<PathBuf, BridgeError> {
     let pyvenv_cfg = venv_path.join("pyvenv.cfg");
 
@@ -371,19 +365,16 @@ fn resolve_python_home(venv_path: &Path) -> Result<PathBuf, BridgeError> {
 
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("home") {
-            if let Some((_key, value)) = line.split_once('=') {
-                let home_bin = PathBuf::from(value.trim());
-                // The 'home' field points to the bin directory, return its parent
-                if let Some(parent) = home_bin.parent() {
-                    logger::debug(&format!(
-                        "Resolved PYTHONHOME from pyvenv.cfg: {}",
-                        parent.display()
-                    ));
-                    return Ok(parent.to_path_buf());
-                }
-                // If no parent, use the path directly (unusual case)
-                return Ok(home_bin);
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("home") {
+                let home_value = PathBuf::from(value.trim());
+                let python_home = normalize_python_home(&home_value);
+                logger::debug(&format!(
+                    "Resolved PYTHONHOME from pyvenv.cfg home={} -> {}",
+                    home_value.display(),
+                    python_home.display()
+                ));
+                return Ok(python_home);
             }
         }
     }
@@ -392,6 +383,49 @@ fn resolve_python_home(venv_path: &Path) -> Result<PathBuf, BridgeError> {
         "Could not find 'home' in pyvenv.cfg: {}",
         pyvenv_cfg.display()
     )))
+}
+
+fn normalize_python_home(home_value: &Path) -> PathBuf {
+    let Some(last_segment) = home_value.file_name().and_then(|name| name.to_str()) else {
+        return home_value.to_path_buf();
+    };
+
+    if is_python_executable_name(last_segment)
+        || last_segment.eq_ignore_ascii_case("bin")
+        || last_segment.eq_ignore_ascii_case("scripts")
+    {
+        if let Some(parent) = home_value.parent() {
+            return parent.to_path_buf();
+        }
+    }
+
+    home_value.to_path_buf()
+}
+
+fn is_python_executable_name(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("python")
+        || name.eq_ignore_ascii_case("python.exe")
+        || name.eq_ignore_ascii_case("python3")
+        || name.eq_ignore_ascii_case("python3.exe")
+    {
+        return true;
+    }
+
+    let lower = name.to_ascii_lowercase();
+    if let Some(suffix) = lower.strip_prefix("python") {
+        let suffix = suffix.strip_suffix(".exe").unwrap_or(suffix);
+        if let Some(version) = suffix.strip_prefix('3') {
+            if version.is_empty() {
+                return true;
+            }
+            if let Some(dotless) = version.strip_prefix('.') {
+                return !dotless.is_empty() && dotless.chars().all(|ch| ch.is_ascii_digit());
+            }
+            return version.chars().all(|ch| ch.is_ascii_digit());
+        }
+    }
+
+    false
 }
 
 /// Get the Python version that PyO3 was compiled against
@@ -641,6 +675,8 @@ pub struct PythonEnvCompat {
 #[cfg(test)]
 mod tests {
     use crate::python_bridge::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_bridge_struct() {
@@ -652,5 +688,85 @@ mod tests {
     fn test_get_compiled_python_version() {
         let version = get_compiled_python_version();
         assert!(version.starts_with("3."));
+    }
+
+    #[test]
+    fn test_is_python_executable_name_variants() {
+        assert!(is_python_executable_name("python"));
+        assert!(is_python_executable_name("python.exe"));
+        assert!(is_python_executable_name("python3"));
+        assert!(is_python_executable_name("python3.exe"));
+        assert!(is_python_executable_name("python3.12"));
+        assert!(is_python_executable_name("python3.12.exe"));
+        assert!(is_python_executable_name("PYTHON3.13.EXE"));
+        assert!(!is_python_executable_name("pythonw.exe"));
+        assert!(!is_python_executable_name("python-3.12.exe"));
+    }
+
+    #[test]
+    fn test_normalize_python_home_bin_dir() {
+        let home = PathBuf::from("/opt/python/bin");
+        assert_eq!(normalize_python_home(&home), PathBuf::from("/opt/python"));
+    }
+
+    #[test]
+    fn test_normalize_python_home_scripts_dir() {
+        let home = PathBuf::from("/opt/python/Scripts");
+        assert_eq!(normalize_python_home(&home), PathBuf::from("/opt/python"));
+    }
+
+    #[test]
+    fn test_normalize_python_home_python_executable() {
+        let home = PathBuf::from("/opt/python/python3.12");
+        assert_eq!(normalize_python_home(&home), PathBuf::from("/opt/python"));
+    }
+
+    #[test]
+    fn test_normalize_python_home_prefix_value() {
+        let home = PathBuf::from("/opt/python/cpython-3.12.9-windows-x86_64-none");
+        assert_eq!(normalize_python_home(&home), home);
+    }
+
+    #[test]
+    fn test_resolve_python_home_preserves_prefix_from_pyvenv_cfg() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let venv_path = temp_dir.path().join(".venv");
+        if fs::create_dir_all(&venv_path).is_err() {
+            return;
+        }
+
+        let expected_prefix = temp_dir.path().join("uv-python-prefix");
+        let pyvenv_cfg = format!("home = {}\n", expected_prefix.to_string_lossy());
+        if fs::write(venv_path.join("pyvenv.cfg"), pyvenv_cfg).is_err() {
+            return;
+        }
+
+        let result = resolve_python_home(&venv_path);
+        assert!(result.is_ok());
+        assert!(result.is_ok_and(|path| path == expected_prefix));
+    }
+
+    #[test]
+    fn test_resolve_python_home_converts_bin_home_to_prefix() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let venv_path = temp_dir.path().join(".venv");
+        if fs::create_dir_all(&venv_path).is_err() {
+            return;
+        }
+
+        let expected_prefix = temp_dir.path().join("python-prefix");
+        let home_bin = expected_prefix.join("bin");
+        let pyvenv_cfg = format!("home = {}\n", home_bin.to_string_lossy());
+        if fs::write(venv_path.join("pyvenv.cfg"), pyvenv_cfg).is_err() {
+            return;
+        }
+
+        let result = resolve_python_home(&venv_path);
+        assert!(result.is_ok());
+        assert!(result.is_ok_and(|path| path == expected_prefix));
     }
 }
