@@ -56,6 +56,12 @@ impl PluginContext {
             locator,
         })
     }
+
+    pub fn refresh_locator(&mut self) -> Result<(), PluginError> {
+        self.locator
+            .refresh()
+            .map_err(|e| PluginError::Locator(format!("Failed to refresh package locator: {e}")))
+    }
 }
 
 fn resolve_uv_cache_dir() -> Option<PathBuf> {
