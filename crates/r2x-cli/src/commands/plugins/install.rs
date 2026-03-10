@@ -50,6 +50,7 @@ pub fn install_plugin(
             editable,
             no_cache,
         )?;
+        ctx.refresh_locator()?;
 
         // Now discover all packages with entry points (like sync command)
         logger::info("Discovering plugins from installed packages...");
@@ -112,6 +113,10 @@ pub fn install_plugin(
             return Err(e);
         }
     }
+
+    // uv pip install mutates site-packages and dist-info directories. Refresh the
+    // locator cache so entry_points.txt discovery can see newly installed packages.
+    ctx.refresh_locator()?;
 
     let start = std::time::Instant::now();
     let (package_version, dependencies) =

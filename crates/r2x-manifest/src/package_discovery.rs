@@ -14,6 +14,16 @@ pub struct PackageLocator {
 }
 
 impl PackageLocator {
+    fn read_dir_entries(site_packages: &Path) -> Result<HashMap<String, PathBuf>> {
+        let mut dir_entries = HashMap::new();
+        let entries = fs::read_dir(site_packages)?;
+        for entry in entries.flatten() {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            dir_entries.insert(filename, entry.path());
+        }
+        Ok(dir_entries)
+    }
+
     /// Create a new locator for the given site-packages root.
     pub fn new(site_packages: PathBuf, uv_cache_dir: Option<PathBuf>) -> Result<Self> {
         debug!("Initializing package locator for: {:?}", site_packages);
@@ -25,19 +35,19 @@ impl PackageLocator {
             ));
         }
 
-        // Read directory once and cache all entries
-        let mut dir_entries = HashMap::new();
-        let entries = fs::read_dir(&site_packages)?;
-        for entry in entries.flatten() {
-            let filename = entry.file_name().to_string_lossy().to_string();
-            dir_entries.insert(filename, entry.path());
-        }
+        let dir_entries = Self::read_dir_entries(&site_packages)?;
 
         Ok(PackageLocator {
             site_packages,
             uv_cache_dir,
             dir_entries,
         })
+    }
+
+    /// Refresh cached directory entries from disk.
+    pub fn refresh(&mut self) -> Result<()> {
+        self.dir_entries = Self::read_dir_entries(&self.site_packages)?;
+        Ok(())
     }
 
     /// Return the site-packages root used by this locator.
@@ -614,6 +624,61 @@ other = other.module:func
         // Test non-existent package
         let not_found = locator.find_dist_info_path("nonexistent-package");
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_refresh_updates_cached_directory_entries() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        let mut locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        assert!(locator.find_dist_info_path("r2x-reeds").is_none());
+
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        // Cache is stale until refresh is called.
+        assert!(locator.find_dist_info_path("r2x-reeds").is_none());
+
+        if let Err(err) = locator.refresh() {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to refresh locator: {err}"
+            );
+            return;
+        }
+
+        let found = locator.find_dist_info_path("r2x-reeds");
+        assert!(found.is_some());
+        assert!(
+            found.as_ref().is_some_and(|path| path == &dist_info),
+            "Expected refreshed dist-info path"
+        );
     }
 
     #[test]
