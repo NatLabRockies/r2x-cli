@@ -703,6 +703,18 @@ fn handle_cache_path(new_path: Option<String>, _opts: GlobalOpts) {
 mod tests {
     use crate::commands::config::*;
 
+    /// Point R2X_CONFIG to a temp file so mutating tests don't touch the real config
+    /// or create stray directories (e.g. "test-value/") in the working directory.
+    fn with_temp_config(f: impl FnOnce()) {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let config_path = dir.path().join("r2x.toml");
+        std::env::set_var("R2X_CONFIG", &config_path);
+        f();
+        std::env::remove_var("R2X_CONFIG");
+    }
+
     fn quiet_opts() -> GlobalOpts {
         GlobalOpts {
             quiet: 1,
@@ -737,40 +749,48 @@ mod tests {
 
     #[test]
     fn test_config_set() {
-        handle_config(
-            Some(ConfigAction::Set {
-                key: "cache-path".to_string(),
-                value: "test-value".to_string(),
-            }),
-            normal_opts(),
-        );
+        with_temp_config(|| {
+            handle_config(
+                Some(ConfigAction::Set {
+                    key: "cache-path".to_string(),
+                    value: "test-value".to_string(),
+                }),
+                normal_opts(),
+            );
+        });
     }
 
     #[test]
     fn test_config_set_quiet() {
-        handle_config(
-            Some(ConfigAction::Set {
-                key: "cache-path".to_string(),
-                value: "test-value".to_string(),
-            }),
-            quiet_opts(),
-        );
+        with_temp_config(|| {
+            handle_config(
+                Some(ConfigAction::Set {
+                    key: "cache-path".to_string(),
+                    value: "test-value".to_string(),
+                }),
+                quiet_opts(),
+            );
+        });
     }
 
     #[test]
     fn test_config_set_verbose() {
-        handle_config(
-            Some(ConfigAction::Set {
-                key: "cache-path".to_string(),
-                value: "test-value".to_string(),
-            }),
-            verbose_opts(),
-        );
+        with_temp_config(|| {
+            handle_config(
+                Some(ConfigAction::Set {
+                    key: "cache-path".to_string(),
+                    value: "test-value".to_string(),
+                }),
+                verbose_opts(),
+            );
+        });
     }
 
     #[test]
     fn test_config_reset() {
-        handle_config(Some(ConfigAction::Reset { yes: true }), normal_opts());
+        with_temp_config(|| {
+            handle_config(Some(ConfigAction::Reset { yes: true }), normal_opts());
+        });
     }
 
     #[test]

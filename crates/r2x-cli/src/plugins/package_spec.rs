@@ -2,11 +2,7 @@ use crate::plugins::error::PluginError;
 
 /// Check if a string looks like a local filesystem path.
 pub fn is_local_path(s: &str) -> bool {
-    s.starts_with("./")
-        || s.starts_with("../")
-        || s.starts_with('/')
-        || s == "."
-        || s == ".."
+    s.starts_with("./") || s.starts_with("../") || s.starts_with('/') || s == "." || s == ".."
 }
 
 /// Expand tilde (~) to home directory path (cross-platform)
@@ -277,8 +273,7 @@ mod tests {
     #[test]
     fn test_extract_package_name_ssh_url() {
         assert!(
-            extract_package_name("git@github.com:NatLabRockies/R2X.git")
-                .is_ok_and(|s| s == "R2X")
+            extract_package_name("git@github.com:NatLabRockies/R2X.git").is_ok_and(|s| s == "R2X")
         );
     }
 

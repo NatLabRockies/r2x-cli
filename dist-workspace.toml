@@ -18,7 +18,7 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 # Path that installers should place binaries in
 install-path = "~/.local/bin"
 # Whether to install an updater program
-install-updater = false
+install-updater = true
 # Skip checking whether the specified configuration files are up to date
 allow-dirty = ["ci"]
 # Standardize compression to xz for tar archives
