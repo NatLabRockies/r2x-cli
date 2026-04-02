@@ -3,8 +3,21 @@ use crate::common::GlobalOpts;
 use crate::plugins::error::PluginError;
 use crate::plugins::install::get_package_info;
 use colored::Colorize;
-use r2x_manifest::types::{Manifest, Plugin};
+use r2x_manifest::types::{Manifest, Package, Plugin};
 use std::collections::BTreeMap;
+
+/// Format the source origin for display: `pypi`, `file:///path`, or `ssh://...`
+fn format_source(pkg: &Package) -> String {
+    if pkg.editable_install {
+        pkg.source_uri
+            .as_ref()
+            .map_or_else(|| "local".to_string(), |uri| format!("file://{}", uri))
+    } else if let Some(ref uri) = pkg.source_uri {
+        uri.strip_prefix("git+").unwrap_or(uri).to_string()
+    } else {
+        "pypi".to_string()
+    }
+}
 
 pub fn list_plugins(
     opts: &GlobalOpts,
@@ -60,30 +73,13 @@ pub fn list_plugins(
                 .packages
                 .iter()
                 .find(|p| p.name.as_ref() == package_name);
-            let is_editable = pkg.is_some_and(|p| p.editable_install);
 
             // Get version info
             let version_info = get_package_info(uv_path, python_path, package_name)
                 .ok()
                 .and_then(|(v, _)| v);
 
-            // Build source prefix: pypi:, file://, or git URL
-            let source = if let Some(p) = pkg {
-                if is_editable {
-                    p.source_uri
-                        .as_ref()
-                        .map_or_else(|| "local".to_string(), |uri| format!("file://{}", uri))
-                } else if let Some(ref uri) = p.source_uri {
-                    // Strip git+ prefix for display (show https:// or ssh:// directly)
-                    uri.strip_prefix("git+")
-                        .unwrap_or(uri)
-                        .to_string()
-                } else {
-                    "pypi".to_string()
-                }
-            } else {
-                "pypi".to_string()
-            };
+            let source = pkg.map_or_else(|| "pypi".to_string(), format_source);
 
             let version_str = version_info
                 .as_ref()
@@ -130,16 +126,7 @@ fn show_plugin_details(
         .ok()
         .and_then(|(v, _)| v);
 
-    let source = if package.editable_install {
-        package
-            .source_uri
-            .as_ref()
-            .map_or_else(|| "local".to_string(), |uri| format!("file://{}", uri))
-    } else if let Some(ref uri) = package.source_uri {
-        uri.strip_prefix("git+").unwrap_or(uri).to_string()
-    } else {
-        "pypi".to_string()
-    };
+    let source = format_source(package);
 
     let version_str = version_info
         .as_ref()

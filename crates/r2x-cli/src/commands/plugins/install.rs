@@ -283,7 +283,9 @@ fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::t
     if count == 0 {
         println!(
             "{}",
-            format!("No plugins found in {}ms", elapsed_ms).bold().dimmed()
+            format!("No plugins found in {}ms", elapsed_ms)
+                .bold()
+                .dimmed()
         );
         return;
     }

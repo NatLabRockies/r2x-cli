@@ -703,9 +703,13 @@ fn handle_cache_path(new_path: Option<String>, _opts: GlobalOpts) {
 mod tests {
     use crate::commands::config::*;
 
+    /// Serialize env-mutating tests to avoid races on R2X_CONFIG.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Point R2X_CONFIG to a temp file so mutating tests don't touch the real config
     /// or create stray directories (e.g. "test-value/") in the working directory.
     fn with_temp_config(f: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock();
         let Ok(dir) = tempfile::tempdir() else {
             return;
         };
