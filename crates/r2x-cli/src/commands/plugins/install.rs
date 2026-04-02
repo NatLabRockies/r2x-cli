@@ -294,7 +294,7 @@ fn is_workspace_package(package_spec: &str) -> Result<bool, PluginError> {
     // Only check for local paths or git URLs
     let is_local_path = crate::plugins::package_spec::is_local_path(package_spec);
 
-    let is_git_url = package_spec.starts_with("git+") || package_spec.starts_with("git@");
+    let is_git_url = crate::plugins::package_spec::is_git_url(package_spec);
 
     if !is_local_path && !is_git_url {
         return Ok(false);
