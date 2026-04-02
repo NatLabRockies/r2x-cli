@@ -292,9 +292,7 @@ fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::t
 /// Check if a package is a workspace (by detecting [tool.uv.workspace] in pyproject.toml)
 fn is_workspace_package(package_spec: &str) -> Result<bool, PluginError> {
     // Only check for local paths or git URLs
-    let is_local_path = package_spec.starts_with("./")
-        || package_spec.starts_with("../")
-        || package_spec.starts_with('/');
+    let is_local_path = crate::plugins::package_spec::is_local_path(package_spec);
 
     let is_git_url = package_spec.starts_with("git+") || package_spec.starts_with("git@");
 
@@ -316,11 +314,8 @@ fn is_workspace_package(package_spec: &str) -> Result<bool, PluginError> {
         return Ok(content.contains("[tool.uv.workspace]"));
     }
 
-    // For git URLs, use heuristic: if it's a git URL pointing to NREL/R2X, assume it's a workspace
-    if is_git_url && (package_spec.contains("NREL/R2X") || package_spec.contains("NREL/r2x")) {
-        return Ok(true);
-    }
-
+    // Git URLs: can't inspect pyproject.toml without cloning; dependency
+    // discovery in the normal install flow handles workspace members.
     Ok(false)
 }
 

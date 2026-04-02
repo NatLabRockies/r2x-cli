@@ -83,17 +83,14 @@ pub fn discover_and_register_entry_points_with_deps(
 
     let mut total_plugins = discovered_plugins.len();
 
-    if total_plugins == 0 {
-        logger::warn(&format!("No plugins found in package '{}'", package));
-        return Ok(0);
+    if total_plugins > 0 {
+        logger::debug(&format!(
+            "Registered {} plugin(s) from package '{}'",
+            total_plugins, package
+        ));
     }
 
-    logger::debug(&format!(
-        "Registered {} plugin(s) from package '{}'",
-        total_plugins, package
-    ));
-
-    // Update package in manifest
+    // Update package in manifest (even if no plugins, so dependencies get tracked)
     {
         let pkg = manifest.get_or_create_package(package_name_full);
         pkg.plugins = discovered_plugins;
@@ -178,6 +175,11 @@ pub fn discover_and_register_entry_points_with_deps(
         }
         manifest.mark_dependency(&dep, package_name_full);
         total_plugins += dep_count;
+    }
+
+    if total_plugins == 0 {
+        logger::warn(&format!("No plugins found in package '{}'", package));
+        return Ok(0);
     }
 
     // Save the updated manifest with all plugins (explicit + dependencies)

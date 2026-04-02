@@ -1,5 +1,14 @@
 use crate::plugins::error::PluginError;
 
+/// Check if a string looks like a local filesystem path.
+pub fn is_local_path(s: &str) -> bool {
+    s.starts_with("./")
+        || s.starts_with("../")
+        || s.starts_with('/')
+        || s == "."
+        || s == ".."
+}
+
 /// Expand tilde (~) to home directory path (cross-platform)
 /// Works on Windows, macOS, and Linux
 fn expand_tilde(path: &str) -> String {
@@ -70,8 +79,16 @@ pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
     // Remove git+ prefix if present
     let pkg = package.strip_prefix("git+").unwrap_or(package);
 
-    // Remove @ref if present
-    let pkg = pkg.split('@').next().unwrap_or(pkg);
+    // Remove @ref if present, but preserve @ in SSH URLs (git@host:...)
+    let pkg = if pkg.starts_with("git@") {
+        // Skip the @ in "git@" prefix; only strip a later @ used as a ref separator
+        match pkg.rfind('@') {
+            Some(pos) if pos > "git@".len() - 1 => &pkg[..pos],
+            _ => pkg,
+        }
+    } else {
+        pkg.split('@').next().unwrap_or(pkg)
+    };
 
     // For URLs, extract the repository name
     if pkg.contains("://") || pkg.starts_with("git@") {
@@ -82,7 +99,7 @@ pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
             .unwrap_or(pkg)
             .trim_end_matches(".git")
             .to_string())
-    } else if pkg.contains('/') || pkg.contains('\\') {
+    } else if pkg.contains('/') || pkg.contains('\\') || is_local_path(pkg) {
         // For local paths, always read from pyproject.toml
         extract_name_from_pyproject(pkg).ok_or_else(|| {
             PluginError::PackageSpec(format!("Failed to extract package name from {}", package))
@@ -106,8 +123,8 @@ pub fn build_package_spec(
     let expanded_package = expand_tilde(package);
     let package = expanded_package.as_str();
 
-    // 1. If it's a local path (starts with ./ or ../ or / or contains file separators like ./packages/)
-    if package.starts_with("./") || package.starts_with("../") || package.starts_with('/') {
+    // 1. If it's a local path
+    if is_local_path(package) {
         if branch.is_some() || tag.is_some() || commit.is_some() || host.is_some() {
             return Err(PluginError::PackageSpec(
                 "Cannot use git flags with local paths".to_string(),
@@ -255,6 +272,64 @@ mod tests {
     fn test_expand_tilde_non_tilde_path() {
         let path = "/absolute/path";
         assert_eq!(expand_tilde(path), path);
+    }
+
+    #[test]
+    fn test_extract_package_name_ssh_url() {
+        assert!(
+            extract_package_name("git@github.com:NatLabRockies/R2X.git")
+                .is_ok_and(|s| s == "R2X")
+        );
+    }
+
+    #[test]
+    fn test_extract_package_name_ssh_url_with_ref() {
+        assert!(
+            extract_package_name("git@github.com:NatLabRockies/R2X.git@main")
+                .is_ok_and(|s| s == "R2X")
+        );
+    }
+
+    #[test]
+    fn test_build_package_spec_dot_is_local_path() {
+        let result = build_package_spec(".", None, None, None, None);
+        assert!(result.is_ok_and(|s| s == "."));
+    }
+
+    #[test]
+    fn test_build_package_spec_dot_rejects_git_flags() {
+        let result = build_package_spec(".", None, Some("main".to_string()), None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_package_spec_dotdot_is_local_path() {
+        let result = build_package_spec("..", None, None, None, None);
+        assert!(result.is_ok_and(|s| s == ".."));
+    }
+
+    #[test]
+    fn test_build_package_spec_ssh_url_with_branch() {
+        let result = build_package_spec(
+            "git@github.com:NatLabRockies/R2X.git",
+            None,
+            Some("develop".to_string()),
+            None,
+            None,
+        );
+        assert!(result.is_ok_and(|s| s == "git@github.com:NatLabRockies/R2X.git@develop"));
+    }
+
+    #[test]
+    fn test_build_package_spec_ssh_url_no_branch() {
+        let result = build_package_spec(
+            "git@github.com:NatLabRockies/R2X.git",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_ok_and(|s| s == "git@github.com:NatLabRockies/R2X.git"));
     }
 
     #[test]
