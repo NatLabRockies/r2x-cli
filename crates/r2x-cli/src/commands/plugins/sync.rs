@@ -26,15 +26,17 @@ pub fn sync_manifest(ctx: &mut PluginContext) -> Result<(), PluginError> {
         .packages
         .iter()
         .filter_map(|pkg| {
-            // source_uri is required for sync - it tells us where the package source is
-            pkg.source_uri.as_ref().map(|uri| {
-                (
-                    pkg.name.to_string(),
-                    pkg.version.to_string(),
-                    pkg.editable_install,
-                    uri.to_string(),
-                )
-            })
+            // source_uri is required for sync and must be a local path (not a git URL)
+            let uri = pkg.source_uri.as_ref()?;
+            if crate::plugins::package_spec::is_git_url(uri) {
+                return None;
+            }
+            Some((
+                pkg.name.to_string(),
+                pkg.version.to_string(),
+                pkg.editable_install,
+                uri.to_string(),
+            ))
         })
         .collect();
 

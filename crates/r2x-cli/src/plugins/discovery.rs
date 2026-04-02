@@ -19,7 +19,10 @@ pub struct DiscoveryOptions {
     pub package_version: Option<String>,
     pub no_cache: bool,
     pub editable: bool,
+    /// Local filesystem path for editable installs (used for AST discovery)
     pub source_path: Option<String>,
+    /// Display URI stored in manifest (git URL or local path)
+    pub source_uri: Option<String>,
 }
 
 /// Discover and register plugins from a package and its dependencies
@@ -83,29 +86,26 @@ pub fn discover_and_register_entry_points_with_deps(
 
     let mut total_plugins = discovered_plugins.len();
 
-    if total_plugins == 0 {
-        logger::warn(&format!("No plugins found in package '{}'", package));
-        return Ok(0);
+    if total_plugins > 0 {
+        logger::debug(&format!(
+            "Registered {} plugin(s) from package '{}'",
+            total_plugins, package
+        ));
     }
 
-    logger::debug(&format!(
-        "Registered {} plugin(s) from package '{}'",
-        total_plugins, package
-    ));
-
-    // Update package in manifest
-    {
+    // Only save to manifest if the package has plugins (skip empty wrapper packages)
+    if total_plugins > 0 {
         let pkg = manifest.get_or_create_package(package_name_full);
         pkg.plugins = discovered_plugins;
         pkg.version = Arc::from(package_version);
         pkg.install_type = InstallType::Explicit;
+        pkg.source_uri = opts.source_uri.as_deref().map(Arc::from);
 
         if opts.editable {
             pkg.editable_install = true;
-            pkg.source_uri = opts.source_path.map(Arc::from);
         }
+        manifest.mark_explicit(package_name_full);
     }
-    manifest.mark_explicit(package_name_full);
 
     // Filter dependencies that have r2x plugin entry points
     let r2x_dependencies: Vec<String> = dependencies
@@ -175,9 +175,16 @@ pub fn discover_and_register_entry_points_with_deps(
         {
             let dep_pkg = manifest.get_or_create_package(&dep);
             dep_pkg.plugins = dep_plugins;
+            // Dependencies are installed from PyPI by uv, not from the parent's source
+            dep_pkg.source_uri = None;
         }
         manifest.mark_dependency(&dep, package_name_full);
         total_plugins += dep_count;
+    }
+
+    if total_plugins == 0 {
+        logger::warn(&format!("No plugins found in package '{}'", package));
+        return Ok(0);
     }
 
     // Save the updated manifest with all plugins (explicit + dependencies)

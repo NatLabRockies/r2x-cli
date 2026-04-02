@@ -129,18 +129,20 @@ pub fn install_plugin(
         };
     logger::debug(&format!("get_package_info took: {:?}", start.elapsed()));
 
-    // Resolve source path for editable installs
-    let source_path = if editable {
-        // If it's a local path, canonicalize it
-        if Path::new(package).exists() {
-            fs::canonicalize(package)
-                .ok()
-                .and_then(|p| p.to_str().map(|s| s.to_string()))
-        } else {
-            None
-        }
+    // source_path: local filesystem path for AST discovery (editable installs only)
+    let source_path = if editable && Path::new(package).exists() {
+        fs::canonicalize(package)
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
     } else {
         None
+    };
+
+    // source_uri: display origin stored in manifest (git URL or local path)
+    let source_uri = if crate::plugins::package_spec::is_git_url(package) {
+        Some(package_spec.clone())
+    } else {
+        source_path.clone()
     };
 
     let start = std::time::Instant::now();
@@ -156,6 +158,7 @@ pub fn install_plugin(
             no_cache,
             editable,
             source_path,
+            source_uri,
         },
     )?;
     logger::debug(&format!(
@@ -277,26 +280,35 @@ fn run_pip_install(
 
 fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::time::Duration) {
     let elapsed_ms = elapsed.as_millis();
-    logger::debug(&format!(
-        "Installed {} entry point(s) in {}ms",
-        count, elapsed_ms
-    ));
+    if count == 0 {
+        println!(
+            "{}",
+            format!("No plugins found in {}ms", elapsed_ms)
+                .bold()
+                .dimmed()
+        );
+        return;
+    }
     let disp = if version.is_empty() {
         format!("{}", pkg.bold())
     } else {
         format!("{}=={}", pkg.bold(), version)
     };
+    println!(
+        "{}",
+        format!("Installed {} plugin(s) in {}ms", count, elapsed_ms)
+            .bold()
+            .dimmed()
+    );
     println!(" {} {}", "+".bold().green(), disp);
 }
 
 /// Check if a package is a workspace (by detecting [tool.uv.workspace] in pyproject.toml)
 fn is_workspace_package(package_spec: &str) -> Result<bool, PluginError> {
     // Only check for local paths or git URLs
-    let is_local_path = package_spec.starts_with("./")
-        || package_spec.starts_with("../")
-        || package_spec.starts_with('/');
+    let is_local_path = crate::plugins::package_spec::is_local_path(package_spec);
 
-    let is_git_url = package_spec.starts_with("git+") || package_spec.starts_with("git@");
+    let is_git_url = crate::plugins::package_spec::is_git_url(package_spec);
 
     if !is_local_path && !is_git_url {
         return Ok(false);
@@ -316,11 +328,8 @@ fn is_workspace_package(package_spec: &str) -> Result<bool, PluginError> {
         return Ok(content.contains("[tool.uv.workspace]"));
     }
 
-    // For git URLs, use heuristic: if it's a git URL pointing to NREL/R2X, assume it's a workspace
-    if is_git_url && (package_spec.contains("NREL/R2X") || package_spec.contains("NREL/r2x")) {
-        return Ok(true);
-    }
-
+    // Git URLs: can't inspect pyproject.toml without cloning; dependency
+    // discovery in the normal install flow handles workspace members.
     Ok(false)
 }
 
@@ -381,7 +390,8 @@ fn discover_all_installed_packages(
                 package_version: package_version.clone(),
                 no_cache,
                 editable: package.is_editable,
-                source_path,
+                source_path: source_path.clone(),
+                source_uri: source_path,
             },
         ) {
             if entry_count > 0 {
