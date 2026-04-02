@@ -129,18 +129,20 @@ pub fn install_plugin(
         };
     logger::debug(&format!("get_package_info took: {:?}", start.elapsed()));
 
-    // Resolve source path for editable installs
-    let source_path = if editable {
-        // If it's a local path, canonicalize it
-        if Path::new(package).exists() {
-            fs::canonicalize(package)
-                .ok()
-                .and_then(|p| p.to_str().map(|s| s.to_string()))
-        } else {
-            None
-        }
+    // source_path: local filesystem path for AST discovery (editable installs only)
+    let source_path = if editable && Path::new(package).exists() {
+        fs::canonicalize(package)
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
     } else {
         None
+    };
+
+    // source_uri: display origin stored in manifest (git URL or local path)
+    let source_uri = if crate::plugins::package_spec::is_git_url(package) {
+        Some(package_spec.clone())
+    } else {
+        source_path.clone()
     };
 
     let start = std::time::Instant::now();
@@ -156,6 +158,7 @@ pub fn install_plugin(
             no_cache,
             editable,
             source_path,
+            source_uri,
         },
     )?;
     logger::debug(&format!(
@@ -385,7 +388,8 @@ fn discover_all_installed_packages(
                 package_version: package_version.clone(),
                 no_cache,
                 editable: package.is_editable,
-                source_path,
+                source_path: source_path.clone(),
+                source_uri: source_path,
             },
         ) {
             if entry_count > 0 {

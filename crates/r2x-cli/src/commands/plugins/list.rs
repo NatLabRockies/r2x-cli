@@ -67,19 +67,35 @@ pub fn list_plugins(
                 .ok()
                 .and_then(|(v, _)| v);
 
-            // Build package header with version and editable status
-            let mut package_header = format!(" {}:", package_name.bold().blue());
-            if let Some(version) = version_info {
-                package_header.push_str(&format!(" {}", format!("v{}", version).dimmed()));
-            }
-            if is_editable {
-                if let Some(source_uri) = pkg.and_then(|p| p.source_uri.as_ref()) {
-                    package_header.push_str(&format!(" {}", format!("({})", source_uri).dimmed()));
+            // Build source prefix: pypi:, file://, or git URL
+            let source = if let Some(p) = pkg {
+                if is_editable {
+                    p.source_uri
+                        .as_ref()
+                        .map_or_else(|| "local".to_string(), |uri| format!("file://{}", uri))
+                } else if let Some(ref uri) = p.source_uri {
+                    // Strip git+ prefix for display (show https:// or ssh:// directly)
+                    uri.strip_prefix("git+")
+                        .unwrap_or(uri)
+                        .to_string()
                 } else {
-                    package_header.push_str(&format!(" {}", "[editable]".yellow()));
+                    "pypi".to_string()
                 }
-            }
-            println!("{}", package_header);
+            } else {
+                "pypi".to_string()
+            };
+
+            let version_str = version_info
+                .as_ref()
+                .map(|v| format!(" (v{})", v))
+                .unwrap_or_default();
+
+            println!(
+                "  {}{}{}",
+                format!("{}:", source).dimmed(),
+                package_name.bold().blue(),
+                version_str.dimmed()
+            );
 
             for plugin_name in plugin_names {
                 println!("    - {}", plugin_name);
@@ -114,22 +130,29 @@ fn show_plugin_details(
         .ok()
         .and_then(|(v, _)| v);
 
-    print!(
-        "{} {}",
+    let source = if package.editable_install {
+        package
+            .source_uri
+            .as_ref()
+            .map_or_else(|| "local".to_string(), |uri| format!("file://{}", uri))
+    } else if let Some(ref uri) = package.source_uri {
+        uri.strip_prefix("git+").unwrap_or(uri).to_string()
+    } else {
+        "pypi".to_string()
+    };
+
+    let version_str = version_info
+        .as_ref()
+        .map(|v| format!(" (v{})", v))
+        .unwrap_or_default();
+
+    println!(
+        "{} {}{}{}",
         "Package:".bold().green(),
-        package.name.as_ref().bold().blue()
+        format!("{}:", source).dimmed(),
+        package.name.as_ref().bold().blue(),
+        version_str.dimmed()
     );
-    if let Some(version) = version_info {
-        print!(" {}", format!("v{}", version).dimmed());
-    }
-    if package.editable_install {
-        if let Some(ref source_uri) = package.source_uri {
-            print!(" {}", format!("({})", source_uri).dimmed());
-        } else {
-            print!(" {}", "[editable]".yellow());
-        }
-    }
-    println!();
     println!();
 
     // Filter plugins by module name if provided
