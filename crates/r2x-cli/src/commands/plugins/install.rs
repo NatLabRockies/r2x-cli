@@ -277,15 +277,24 @@ fn run_pip_install(
 
 fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::time::Duration) {
     let elapsed_ms = elapsed.as_millis();
-    logger::debug(&format!(
-        "Installed {} entry point(s) in {}ms",
-        count, elapsed_ms
-    ));
+    if count == 0 {
+        println!(
+            "{}",
+            format!("No plugins found in {}ms", elapsed_ms).bold().dimmed()
+        );
+        return;
+    }
     let disp = if version.is_empty() {
         format!("{}", pkg.bold())
     } else {
         format!("{}=={}", pkg.bold(), version)
     };
+    println!(
+        "{}",
+        format!("Installed {} plugin(s) in {}ms", count, elapsed_ms)
+            .bold()
+            .dimmed()
+    );
     println!(" {} {}", "+".bold().green(), disp);
 }
 

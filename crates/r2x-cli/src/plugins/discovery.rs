@@ -90,8 +90,8 @@ pub fn discover_and_register_entry_points_with_deps(
         ));
     }
 
-    // Update package in manifest (even if no plugins, so dependencies get tracked)
-    {
+    // Only save to manifest if the package has plugins (skip empty wrapper packages)
+    if total_plugins > 0 {
         let pkg = manifest.get_or_create_package(package_name_full);
         pkg.plugins = discovered_plugins;
         pkg.version = Arc::from(package_version);
@@ -101,8 +101,8 @@ pub fn discover_and_register_entry_points_with_deps(
             pkg.editable_install = true;
             pkg.source_uri = opts.source_path.map(Arc::from);
         }
+        manifest.mark_explicit(package_name_full);
     }
-    manifest.mark_explicit(package_name_full);
 
     // Filter dependencies that have r2x plugin entry points
     let r2x_dependencies: Vec<String> = dependencies

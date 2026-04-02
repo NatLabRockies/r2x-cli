@@ -39,6 +39,9 @@ pub fn list_plugins(
     // Otherwise, show the standard list view
     let mut packages: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for pkg in &manifest.packages {
+        if pkg.plugins.is_empty() {
+            continue;
+        }
         let mut names: Vec<String> = pkg.plugins.iter().map(|p| p.name.to_string()).collect();
         names.sort();
         packages.insert(pkg.name.to_string(), names);
