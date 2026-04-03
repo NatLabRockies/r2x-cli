@@ -19,12 +19,18 @@ fn fixture_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("r2x.toml")
+        .join("config.toml")
 }
 
 fn r2x_cmd() -> Command {
     let mut cmd = cargo_bin_cmd!("r2x");
     cmd.env("R2X_CONFIG", fixture_config_path());
+    cmd
+}
+
+fn r2x_cmd_with_config(config_path: &Path) -> Command {
+    let mut cmd = cargo_bin_cmd!("r2x");
+    cmd.env("R2X_CONFIG", config_path);
     cmd
 }
 
@@ -83,7 +89,74 @@ fn test_config_get() {
         .args(["config", "path"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("r2x.toml"));
+        .stdout(predicate::str::contains("config.toml"));
+}
+
+#[test]
+fn test_python_path_shortcut() {
+    r2x_cmd()
+        .args(["python", "path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("python"));
+}
+
+#[test]
+fn test_log_set_no_stdout() {
+    let Ok(temp_dir) = TempDir::new() else {
+        return;
+    };
+    let config_path = temp_dir.path().join("config.toml");
+
+    r2x_cmd_with_config(&config_path)
+        .args(["log", "set", "no-stdout", "true"])
+        .assert()
+        .success();
+
+    let Ok(contents) = fs::read_to_string(config_path) else {
+        return;
+    };
+    assert!(contents.contains("no_stdout = true"));
+}
+
+#[test]
+fn test_log_path_override_and_get() {
+    let Ok(temp_dir) = TempDir::new() else {
+        return;
+    };
+    let config_path = temp_dir.path().join("config.toml");
+    let custom_log_path = temp_dir.path().join("custom-r2x.log");
+    let expected_path = custom_log_path.to_string_lossy().to_string();
+
+    r2x_cmd_with_config(&config_path)
+        .args(["log", "path", &expected_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&expected_path));
+
+    r2x_cmd_with_config(&config_path)
+        .args(["log", "path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&expected_path));
+}
+
+#[test]
+fn test_log_set_max_size_bytes() {
+    let Ok(temp_dir) = TempDir::new() else {
+        return;
+    };
+    let config_path = temp_dir.path().join("config.toml");
+
+    r2x_cmd_with_config(&config_path)
+        .args(["log", "set", "max-size", "26214400"])
+        .assert()
+        .success();
+
+    let Ok(contents) = fs::read_to_string(config_path) else {
+        return;
+    };
+    assert!(contents.contains("log_max_size = 26214400"));
 }
 
 #[test]
@@ -135,7 +208,7 @@ impl PipelineHarness {
         let site_packages = default_site_packages_path(&venv_path);
         fs::create_dir_all(&site_packages)?;
 
-        let config_path = config_dir.join("r2x.toml");
+        let config_path = config_dir.join("config.toml");
 
         fs::write(
             &config_path,

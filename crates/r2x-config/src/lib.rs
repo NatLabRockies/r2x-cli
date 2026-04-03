@@ -18,6 +18,14 @@ pub struct Config {
     pub venv_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r2x_core_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_python: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_stdout: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_max_size: Option<u64>,
 }
 
 impl Config {
@@ -34,14 +42,14 @@ impl Config {
         // Default config file path (platform-appropriate).
         #[cfg(not(target_os = "windows"))]
         let Some(default) =
-            dirs::home_dir().map(|h| h.join(".config").join("r2x").join("r2x.toml"))
+            dirs::home_dir().map(|h| h.join(".config").join("r2x").join("config.toml"))
         else {
-            return PathBuf::from(".r2x.toml");
+            return PathBuf::from(".config.toml");
         };
 
         #[cfg(target_os = "windows")]
-        let Some(default) = dirs::config_dir().map(|c| c.join("r2x").join("r2x.toml")) else {
-            return PathBuf::from(".r2x.toml");
+        let Some(default) = dirs::config_dir().map(|c| c.join("r2x").join("config.toml")) else {
+            return PathBuf::from(".config.toml");
         };
 
         // Look for a pointer file next to the default config, e.g. ~/.config/r2x/.r2x_config_path
@@ -88,6 +96,10 @@ impl Config {
             "python-version" => self.python_version.clone(),
             "venv-path" => self.venv_path.clone(),
             "r2x-core-version" => self.r2x_core_version.clone(),
+            "log-python" => self.log_python.map(|v| v.to_string()),
+            "no-stdout" => self.no_stdout.map(|v| v.to_string()),
+            "log-path" => self.log_path.clone(),
+            "log-max-size" => self.log_max_size.map(|v| v.to_string()),
             _ => None,
         }
     }
@@ -99,6 +111,10 @@ impl Config {
             "python-version" => self.python_version = Some(value),
             "venv-path" => self.venv_path = Some(value),
             "r2x-core-version" => self.r2x_core_version = Some(value),
+            "log-python" => self.log_python = value.parse::<bool>().ok(),
+            "no-stdout" => self.no_stdout = value.parse::<bool>().ok(),
+            "log-path" => self.log_path = Some(value),
+            "log-max-size" => self.log_max_size = value.parse::<u64>().ok(),
             _ => {}
         }
     }
@@ -109,6 +125,10 @@ impl Config {
             && self.python_version.is_none()
             && self.venv_path.is_none()
             && self.r2x_core_version.is_none()
+            && self.log_python.is_none()
+            && self.no_stdout.is_none()
+            && self.log_path.is_none()
+            && self.log_max_size.is_none()
     }
 
     pub fn values_iter(&self) -> Vec<(&str, String)> {
@@ -127,6 +147,18 @@ impl Config {
         }
         if let Some(ref val) = self.r2x_core_version {
             values.push(("r2x-core-version", val.clone()));
+        }
+        if let Some(val) = self.log_python {
+            values.push(("log-python", val.to_string()));
+        }
+        if let Some(val) = self.no_stdout {
+            values.push(("no-stdout", val.to_string()));
+        }
+        if let Some(ref val) = self.log_path {
+            values.push(("log-path", val.clone()));
+        }
+        if let Some(val) = self.log_max_size {
+            values.push(("log-max-size", val.to_string()));
         }
         values
     }
@@ -408,5 +440,26 @@ mod tests {
         let cache_path = config.get_cache_path();
         assert!(!cache_path.is_empty());
         assert!(cache_path.contains("r2x"));
+    }
+
+    #[test]
+    fn test_config_set_get_bool_fields() {
+        let mut config = Config::default();
+        config.set("no-stdout", "true".to_string());
+        config.set("log-python", "false".to_string());
+        assert_eq!(config.get("no-stdout"), Some("true".to_string()));
+        assert_eq!(config.get("log-python"), Some("false".to_string()));
+    }
+
+    #[test]
+    fn test_config_set_get_log_fields() {
+        let mut config = Config::default();
+        config.set("log-path", "/tmp/r2x-custom.log".to_string());
+        config.set("log-max-size", "1048576".to_string());
+        assert_eq!(
+            config.get("log-path"),
+            Some("/tmp/r2x-custom.log".to_string())
+        );
+        assert_eq!(config.get("log-max-size"), Some("1048576".to_string()));
     }
 }

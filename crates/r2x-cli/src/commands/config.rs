@@ -148,6 +148,18 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                 if let Some(ref core_ver) = config.r2x_core_version {
                     println!("  {}: {}", "r2x-core-version".cyan(), core_ver);
                 }
+                if let Some(log_python) = config.log_python {
+                    println!("  {}: {}", "log-python".cyan(), log_python);
+                }
+                if let Some(no_stdout) = config.no_stdout {
+                    println!("  {}: {}", "no-stdout".cyan(), no_stdout);
+                }
+                if let Some(ref log_path) = config.log_path {
+                    println!("  {}: {}", "log-path".cyan(), log_path);
+                }
+                if let Some(log_max_size) = config.log_max_size {
+                    println!("  {}: {}", "log-max-size".cyan(), log_max_size);
+                }
 
                 // Show installed r2x-core version
                 let python_path = config.get_venv_python_path();
@@ -183,6 +195,10 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                             | "python-version"
                             | "venv-path"
                             | "r2x-core-version"
+                            | "log-python"
+                            | "no-stdout"
+                            | "log-path"
+                            | "log-max-size"
                     )
                 {
                     config.set(&key, value.clone());
@@ -200,7 +216,7 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                     );
                 } else {
                     logger::error(&format!(
-                        "Unknown config key: {}. Currently supported keys: cache-path, verbosity, python-version, venv-path, r2x-core-version",
+                        "Unknown config key: {}. Currently supported keys: cache-path, verbosity, python-version, venv-path, r2x-core-version, log-python, no-stdout, log-path, log-max-size",
                         key
                     ));
                 }
@@ -314,7 +330,7 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
 }
 
 /// Handle Python version management
-fn handle_python(action: PythonAction, opts: GlobalOpts) {
+pub fn handle_python(action: PythonAction, opts: GlobalOpts) {
     match action {
         PythonAction::Show => {
             handle_python_show(opts);
@@ -713,7 +729,7 @@ mod tests {
         let Ok(dir) = tempfile::tempdir() else {
             return;
         };
-        let config_path = dir.path().join("r2x.toml");
+        let config_path = dir.path().join("config.toml");
         std::env::set_var("R2X_CONFIG", &config_path);
         f();
         std::env::remove_var("R2X_CONFIG");

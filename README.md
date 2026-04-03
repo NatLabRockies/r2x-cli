@@ -224,19 +224,28 @@ r2x config reset -y
 <details>
 <summary>Python and virtual environment management</summary>
 
+The `r2x python` command provides shortcuts for Python runtime management:
+
 ```bash
 # Install a Python version
-r2x config python install 3.13
+r2x python install 3.13
+
+# Show installed Python versions
+r2x python show
 
 # Get the Python executable path
-r2x config python path
+r2x python path
 
 # Create or recreate the managed venv
 r2x config venv create -y
 
 # Install packages into the managed venv
-uv pip install <package> --python $(r2x config python path)
+uv pip install <package> --python $(r2x python path)
 ```
+
+> [!TIP]
+> The `r2x python` commands are shortcuts for `r2x config python <action>`.
+> Both work identically.
 
 </details>
 
@@ -249,6 +258,40 @@ r2x config cache clean
 
 </details>
 
+<details>
+<summary>Logging preferences</summary>
+
+```bash
+# Show current logging settings
+r2x log show
+
+# Keep Python/plugin stdout out of the log file by default
+r2x log set no-stdout true
+
+# Cap log file size (bytes)
+r2x log set max-size 26214400
+
+# Show Python log messages on console by default
+r2x log set log-python true
+
+# Override log file location
+r2x log path /tmp/r2x.log
+
+# Print the resolved log file path
+r2x log path
+
+# Command help
+r2x log --help
+r2x log set --help
+```
+
+</details>
+
+> [!NOTE]
+> Configuration is stored in `~/.config/r2x/config.toml` on Unix-like systems
+> or `%APPDATA%\r2x\config.toml` on Windows. Override with the `R2X_CONFIG`
+> environment variable.
+
 ## Verbosity
 
 | Flag | Effect |
@@ -258,6 +301,9 @@ r2x config cache clean
 | `-v` | Debug logging |
 | `-vv` | Trace logging |
 | `--log-python` | Show Python logs on console |
+| `--no-stdout` | Do not capture plugin stdout in logs |
+
+Persisted logging defaults can be set with `r2x log set ...`.
 
 ## Architecture
 

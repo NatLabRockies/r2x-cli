@@ -55,22 +55,66 @@ fn package_version(pkg: &Package, discovered_version: Option<String>) -> Option<
     })
 }
 
-fn format_package_header(
-    pkg: &Package,
-    version: Option<&str>,
-    locator: Option<&PackageLocator>,
-) -> String {
-    let mut header = format!(
-        "{}{}",
-        format!("{}:", format_source(pkg, locator)).dimmed(),
-        pkg.name.as_ref().bold().blue()
-    );
+fn format_package_header(pkg: &Package, version: Option<&str>, source_display: &str) -> String {
+    let mut header = format!("{}", pkg.name.as_ref().bold().blue());
 
     if let Some(version) = version {
-        header.push_str(&format!(" {}", format!("(v{})", version).dimmed()));
+        header.push_str(&format!("{}", format!(":v{}", version).cyan()));
     }
 
+    header.push_str(&format!(" {}", format!("[{}]", source_display).dimmed()));
+
     header
+}
+
+fn format_github_origin(source_uri: &str) -> Option<String> {
+    let prefixes = [
+        "git+https://github.com/",
+        "https://github.com/",
+        "git+http://github.com/",
+        "http://github.com/",
+        "git+ssh://git@github.com/",
+        "ssh://git@github.com/",
+        "git@github.com:",
+    ];
+
+    for prefix in prefixes {
+        if let Some(rest) = source_uri.strip_prefix(prefix) {
+            let (repo_path, git_ref) = match rest.rsplit_once('@') {
+                Some((path, reference)) if !path.is_empty() && !reference.is_empty() => {
+                    (path.to_string(), Some(reference.to_string()))
+                }
+                _ => (rest.to_string(), None),
+            };
+
+            let mut ssh = format!("git@github.com:{}", repo_path);
+            if let Some(reference) = git_ref {
+                ssh.push('@');
+                ssh.push_str(&reference);
+            }
+
+            return Some(ssh);
+        }
+    }
+
+    None
+}
+
+fn package_source_display(pkg: &Package, locator: &PackageLocator) -> String {
+    let kind = source_kind(pkg, Some(locator));
+    if kind == PackageSource::Github {
+        let origin_raw = pkg
+            .source_uri
+            .as_deref()
+            .map(ToString::to_string)
+            .or_else(|| locator.direct_url_origin(pkg.name.as_ref()));
+
+        if let Some(raw) = origin_raw {
+            return format_github_origin(&raw).unwrap_or(raw);
+        }
+    }
+
+    format_source(pkg, Some(locator))
 }
 
 pub fn list_plugins(
@@ -115,8 +159,6 @@ pub fn list_plugins(
     }
 
     if has_plugins {
-        println!("{}", "Plugins:".bold().green());
-
         // Get package version info
         let python_path = &ctx.python_path;
         let uv_path = &ctx.uv_path;
@@ -139,18 +181,16 @@ pub fn list_plugins(
                     .ok()
                     .and_then(|(v, _)| v),
             );
+            let source_display = package_source_display(pkg, &ctx.locator);
             println!(
-                "  {}",
-                format_package_header(pkg, version.as_deref(), Some(&ctx.locator))
+                "{}",
+                format_package_header(pkg, version.as_deref(), &source_display)
             );
 
             for plugin_name in plugin_names {
-                println!("    - {}", plugin_name);
+                println!("  - {}", plugin_name);
             }
-            println!();
         }
-
-        println!("{}: {}", "Total plugin packages".bold(), packages.len());
     }
 
     Ok(())
@@ -179,10 +219,11 @@ fn show_plugin_details(
             .ok()
             .and_then(|(v, _)| v),
     );
+    let source_display = package_source_display(package, &ctx.locator);
     println!(
         "{} {}",
         "Package:".bold().green(),
-        format_package_header(package, version.as_deref(), Some(&ctx.locator))
+        format_package_header(package, version.as_deref(), &source_display)
     );
     println!();
 
@@ -344,7 +385,8 @@ fn show_plugin_verbose(plugin: &Plugin) {
 #[cfg(test)]
 mod tests {
     use crate::commands::plugins::list::{
-        format_package_header, format_source, package_version, source_kind,
+        format_github_origin, format_package_header, format_source, package_source_display,
+        package_version, source_kind,
     };
     use colored::control::set_override;
     use r2x_manifest::package_discovery::PackageLocator;
@@ -444,8 +486,52 @@ mod tests {
         set_override(false);
         let package = package_with_source(PackageSource::Github);
         assert_eq!(
-            format_package_header(&package, Some("0.0.0"), None),
-            "github:r2x-plexos-to-sienna (v0.0.0)"
+            format_package_header(&package, Some("0.0.0"), "github"),
+            "r2x-plexos-to-sienna:v0.0.0 [github]"
+        );
+    }
+
+    #[test]
+    fn header_omits_version_when_missing() {
+        set_override(false);
+        let package = package_with_source(PackageSource::Pypi);
+        assert_eq!(
+            format_package_header(&package, None, "pypi"),
+            "r2x-plexos-to-sienna [pypi]"
+        );
+    }
+
+    #[test]
+    fn github_origin_is_rendered_in_ssh_style() {
+        assert_eq!(
+            format_github_origin("git+https://github.com/NREL/r2x-reeds.git"),
+            Some("git@github.com:NREL/r2x-reeds.git".to_string())
+        );
+    }
+
+    #[test]
+    fn github_origin_preserves_git_ref_suffix() {
+        assert_eq!(
+            format_github_origin("git+https://github.com/NREL/r2x-reeds.git@develop"),
+            Some("git@github.com:NREL/r2x-reeds.git@develop".to_string())
+        );
+    }
+
+    #[test]
+    fn github_source_display_uses_source_uri_when_present() {
+        let mut package = package_with_source(PackageSource::Github);
+        package.source_uri = Some(Arc::from("git+https://github.com/NREL/r2x-reeds.git@main"));
+
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            package_source_display(&package, &locator),
+            "git@github.com:NREL/r2x-reeds.git@main"
         );
     }
 }
