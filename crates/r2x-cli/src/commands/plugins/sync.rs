@@ -1,6 +1,5 @@
 use crate::commands::plugins::context::PluginContext;
 use crate::plugins::error::PluginError;
-use crate::plugins::install::get_package_info;
 use crate::plugins::package_spec::{build_package_spec, is_git_url};
 use colored::Colorize;
 use r2x_ast::AstDiscovery;
@@ -54,12 +53,7 @@ pub fn sync_manifest(ctx: &mut PluginContext, upgrade: bool) -> Result<(), Plugi
     let mut upgraded_count = 0usize;
 
     if upgrade {
-        baseline = Some(capture_package_states(
-            &packages_to_sync,
-            &ctx.uv_path,
-            &ctx.python_path,
-            &ctx.locator,
-        ));
+        baseline = Some(capture_package_states(&packages_to_sync, &ctx.locator));
         if let Some(state_before_upgrade) = baseline.as_ref() {
             upgraded_count = upgrade_packages(&packages_to_sync, state_before_upgrade, ctx)?;
         }
@@ -71,10 +65,36 @@ pub fn sync_manifest(ctx: &mut PluginContext, upgrade: bool) -> Result<(), Plugi
     let num_packages = packages_to_sync.len();
     logger::step(&format!("Syncing {} package(s)...", num_packages));
 
-    let mut total_plugins = 0usize;
-    let mut synced_packages = 0usize;
+    // Partition packages into "unchanged" (skip AST) and "stale" (need rediscovery).
+    //
+    // For non-editable installs: if the installed version matches the manifest version,
+    // the plugins are identical. Skip the entire AST parse.
+    // For editable installs: always rediscover because source can change without a version bump.
+    let mut unchanged_count = 0usize;
+    let mut unchanged_plugins = 0usize;
+    let mut needs_discovery: Vec<_> = Vec::new();
 
     for package in &packages_to_sync {
+        let installed_version = ctx.locator.read_version(&package.name);
+        let version_matches = installed_version
+            .as_deref()
+            .is_some_and(|v| v == package.manifest_version && !package.manifest_version.is_empty());
+
+        if !package.editable_install && version_matches {
+            // Version unchanged, skip expensive AST discovery.
+            let existing_plugins = ctx
+                .manifest
+                .get_package(&package.name)
+                .map_or(0, |p| p.plugins.len());
+            unchanged_plugins += existing_plugins;
+            unchanged_count += 1;
+            logger::debug(&format!(
+                "Skipping unchanged package '{}' v{}",
+                package.name, package.manifest_version
+            ));
+            continue;
+        }
+
         let package_path = match resolve_package_path(&ctx.locator, package) {
             Ok(path) => path,
             Err(e) => {
@@ -85,66 +105,97 @@ pub fn sync_manifest(ctx: &mut PluginContext, upgrade: bool) -> Result<(), Plugi
                 continue;
             }
         };
-
-        let version = package_version(&ctx.uv_path, &ctx.python_path, package);
+        let version = installed_version.unwrap_or_else(|| package.manifest_version.clone());
         let dist_info = ctx.locator.find_dist_info_path(&package.name);
-
-        let ast_plugins = match AstDiscovery::discover_plugins(
-            &package_path,
-            &package.name,
-            Some(&ctx.venv_path),
-            Some(version.as_str()),
-            dist_info.as_deref(),
-        ) {
-            Ok(result) => result,
-            Err(e) => {
-                logger::warn(&format!(
-                    "Failed to discover plugins for '{}': {}",
-                    package.name, e
-                ));
-                continue;
-            }
-        };
-
-        let plugin_count = ast_plugins.len();
-        if plugin_count == 0 {
-            logger::debug(&format!("No plugins found in package '{}'", package.name));
-            continue;
-        }
-
         let source_path = local_source_path(package);
         let source_kind = ctx
             .locator
             .detect_package_source(&package.name, source_path);
         let source_uri = resolve_source_uri(package, source_kind, source_path, &ctx.locator);
-
-        {
-            let pkg = ctx.manifest.get_or_create_package(&package.name);
-            pkg.plugins = ast_plugins;
-            pkg.editable_install = package.editable_install;
-            pkg.version = Arc::from(version.as_str());
-            pkg.source_kind = source_kind;
-            pkg.source_uri = source_uri.map(Arc::from);
-            pkg.install_type = package.install_type;
-        }
-
-        total_plugins += plugin_count;
-        synced_packages += 1;
-        logger::debug(&format!(
-            "Synced {} plugin(s) from '{}'",
-            plugin_count, package.name
+        needs_discovery.push((
+            package,
+            package_path,
+            version,
+            dist_info,
+            source_kind,
+            source_uri,
         ));
+    }
+
+    // Run AST discovery in parallel only for packages that actually changed.
+    let mut total_plugins = unchanged_plugins;
+    let mut synced_packages = unchanged_count;
+
+    if !needs_discovery.is_empty() {
+        let venv_path = ctx.venv_path.as_str();
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = needs_discovery
+                .iter()
+                .map(
+                    |(package, package_path, version, dist_info, source_kind, source_uri)| {
+                        s.spawn(move || {
+                            let ast_plugins = AstDiscovery::discover_plugins(
+                                package_path,
+                                &package.name,
+                                Some(venv_path),
+                                Some(version.as_str()),
+                                dist_info.as_deref(),
+                            );
+                            (package, version, *source_kind, source_uri, ast_plugins)
+                        })
+                    },
+                )
+                .collect();
+
+            handles.into_iter().map(|h| h.join()).collect()
+        });
+
+        for result in results {
+            let Ok((package, version, source_kind, source_uri, ast_result)) = result else {
+                logger::warn("A discovery thread panicked");
+                continue;
+            };
+
+            let ast_plugins = match ast_result {
+                Ok(plugins) => plugins,
+                Err(e) => {
+                    logger::warn(&format!(
+                        "Failed to discover plugins for '{}': {}",
+                        package.name, e
+                    ));
+                    continue;
+                }
+            };
+
+            let plugin_count = ast_plugins.len();
+            if plugin_count == 0 {
+                logger::debug(&format!("No plugins found in package '{}'", package.name));
+                continue;
+            }
+
+            {
+                let pkg = ctx.manifest.get_or_create_package(&package.name);
+                pkg.plugins = ast_plugins;
+                pkg.editable_install = package.editable_install;
+                pkg.version = Arc::from(version.as_str());
+                pkg.source_kind = source_kind;
+                pkg.source_uri = source_uri.as_ref().map(|u| Arc::from(u.as_str()));
+                pkg.install_type = package.install_type;
+            }
+
+            total_plugins += plugin_count;
+            synced_packages += 1;
+            logger::debug(&format!(
+                "Synced {} plugin(s) from '{}'",
+                plugin_count, package.name
+            ));
+        }
     }
 
     ctx.manifest.save()?;
 
     if upgrade && upgraded_count > 0 {
-        let after = capture_package_states(
-            &packages_to_sync,
-            &ctx.uv_path,
-            &ctx.python_path,
-            &ctx.locator,
-        );
+        let after = capture_package_states(&packages_to_sync, &ctx.locator);
         if let Some(before) = baseline.as_ref() {
             print_upgrade_changes(&packages_to_sync, before, &after, &ctx.locator);
         }
@@ -177,26 +228,25 @@ fn collect_packages_to_sync(packages: &[Package]) -> Vec<SyncPackage> {
         .collect()
 }
 
+/// Capture package versions and commit IDs using only filesystem reads.
+///
+/// Reads version from `.dist-info/METADATA` and commit from `direct_url.json`.
+/// Zero subprocess overhead (previously spawned N `uv pip show` calls at ~300ms each).
 fn capture_package_states(
     packages: &[SyncPackage],
-    uv_path: &str,
-    python_path: &str,
     locator: &r2x_manifest::package_discovery::PackageLocator,
 ) -> HashMap<String, PackageState> {
     packages
         .iter()
         .map(|pkg| {
-            let version = get_package_info(uv_path, python_path, &pkg.name)
-                .ok()
-                .and_then(|(v, _)| v)
-                .or_else(|| {
-                    let v = pkg.manifest_version.as_str();
-                    if v.is_empty() || v == "unknown" || v == "0.0.0" {
-                        None
-                    } else {
-                        Some(v.to_string())
-                    }
-                });
+            let version = locator.read_version(&pkg.name).or_else(|| {
+                let v = pkg.manifest_version.as_str();
+                if v.is_empty() || v == "unknown" || v == "0.0.0" {
+                    None
+                } else {
+                    Some(v.to_string())
+                }
+            });
 
             let commit_id = locator.direct_url_commit_id(&pkg.name);
             (pkg.name.clone(), PackageState { version, commit_id })
@@ -230,12 +280,20 @@ fn upgrade_packages(
         return Ok(0);
     }
 
+    // Cache git ls-remote results by (repo_url, reference) to avoid duplicate
+    // network round-trips for packages from the same repo (e.g. monorepo subdirectories).
+    let mut ls_remote_cache: HashMap<(String, Option<String>), Option<String>> = HashMap::new();
+
     let mut targets: Vec<String> = candidates
         .into_values()
         .filter_map(|candidate| {
             if is_git_url(&candidate.normalized_target) {
                 let local_commit = common_git_commit(&candidate.commit_samples);
-                if should_skip_git_upgrade(&candidate.normalized_target, local_commit.as_deref()) {
+                if should_skip_git_upgrade_cached(
+                    &candidate.normalized_target,
+                    local_commit.as_deref(),
+                    &mut ls_remote_cache,
+                ) {
                     return None;
                 }
             }
@@ -253,10 +311,13 @@ fn upgrade_packages(
     let target_count = targets.len();
     logger::step(&format!("Upgrading {} package(s)...", target_count));
 
-    for target in targets {
+    for target in &targets {
         logger::info(&format!("Upgrading: {}", target));
-        run_upgrade(&ctx.uv_path, &ctx.python_path, &target)?;
     }
+
+    // Batch all targets into a single uv pip install call.
+    // Single resolution pass, parallel downloads, one install transaction.
+    run_upgrade_batch(&ctx.uv_path, &ctx.python_path, &targets)?;
 
     Ok(target_count)
 }
@@ -272,7 +333,15 @@ fn common_git_commit(samples: &[Option<String>]) -> Option<String> {
     Some(first.to_string())
 }
 
-fn should_skip_git_upgrade(target: &str, local_commit: Option<&str>) -> bool {
+/// Like `should_skip_git_upgrade` but caches `git ls-remote` results by (repo_url, reference).
+///
+/// Monorepo subdirectory packages (e.g. 4 packages from the same R2X.git@v2.0.0) all resolve
+/// to the same remote commit, so we only need one network call instead of four.
+fn should_skip_git_upgrade_cached(
+    target: &str,
+    local_commit: Option<&str>,
+    cache: &mut HashMap<(String, Option<String>), Option<String>>,
+) -> bool {
     let Some(local_commit) = local_commit else {
         return false;
     };
@@ -281,12 +350,15 @@ fn should_skip_git_upgrade(target: &str, local_commit: Option<&str>) -> bool {
         return false;
     };
 
-    let remote_commit = match git_ls_remote_commit(&repo_url, reference.as_deref()) {
-        Some(commit) => commit,
-        None => return false,
-    };
+    let cache_key = (repo_url.clone(), reference.clone());
+    let remote_commit = cache
+        .entry(cache_key)
+        .or_insert_with(|| git_ls_remote_commit(&repo_url, reference.as_deref()));
 
-    remote_commit == local_commit
+    match remote_commit {
+        Some(commit) => commit == local_commit,
+        None => false,
+    }
 }
 
 fn split_git_target_for_remote(target: &str) -> Option<(String, Option<String>)> {
@@ -383,25 +455,42 @@ fn upgrade_target(
     Some(package.name.clone())
 }
 
-fn run_upgrade(uv_path: &str, python_path: &str, target: &str) -> Result<(), PluginError> {
-    let normalized_target = build_package_spec(target, None, None, None, None)?;
+/// Install/upgrade all targets in a single `uv pip install --upgrade` call.
+///
+/// uv handles multiple packages natively: single resolution pass, parallel downloads,
+/// one installation transaction. This is dramatically faster than N sequential calls.
+fn run_upgrade_batch(
+    uv_path: &str,
+    python_path: &str,
+    targets: &[String],
+) -> Result<(), PluginError> {
+    let normalized: Vec<String> = targets
+        .iter()
+        .map(|t| build_package_spec(t, None, None, None, None))
+        .collect::<Result<Vec<_>, _>>()?;
 
     logger::debug(&format!(
         "Running: {} pip install --upgrade --python {} {}",
-        uv_path, python_path, normalized_target
+        uv_path,
+        python_path,
+        normalized.join(" ")
     ));
 
-    let status = Command::new(uv_path)
-        .args([
-            "pip",
-            "install",
-            "--python",
-            python_path,
-            "--upgrade",
-            "--prerelease=allow",
-            "--no-progress",
-            normalized_target.as_str(),
-        ])
+    let mut cmd = Command::new(uv_path);
+    cmd.args([
+        "pip",
+        "install",
+        "--python",
+        python_path,
+        "--upgrade",
+        "--prerelease=allow",
+        "--no-progress",
+    ]);
+    for target in &normalized {
+        cmd.arg(target.as_str());
+    }
+
+    let status = cmd
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -410,7 +499,7 @@ fn run_upgrade(uv_path: &str, python_path: &str, target: &str) -> Result<(), Plu
 
     if !status.success() {
         return Err(PluginError::CommandFailed {
-            command: format!("{uv_path} pip install --upgrade {normalized_target}"),
+            command: format!("{uv_path} pip install --upgrade {}", normalized.join(" ")),
             status: status.code(),
         });
     }
@@ -440,13 +529,6 @@ fn local_source_path(package: &SyncPackage) -> Option<&str> {
         return None;
     }
     Some(uri)
-}
-
-fn package_version(uv_path: &str, python_path: &str, package: &SyncPackage) -> String {
-    get_package_info(uv_path, python_path, &package.name)
-        .ok()
-        .and_then(|(v, _)| v)
-        .unwrap_or_else(|| package.manifest_version.clone())
 }
 
 fn resolve_source_uri(
