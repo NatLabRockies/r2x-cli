@@ -1,8 +1,17 @@
+use crate::types::PackageSource;
 use anyhow::{anyhow, Result};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
+
+#[derive(Debug, Deserialize)]
+struct DirectUrlMetadata {
+    url: String,
+    #[serde(default)]
+    subdirectory: Option<String>,
+}
 
 /// Resolve installed package paths from site-packages (optionally using UV cache).
 #[derive(Debug, Clone)]
@@ -113,6 +122,27 @@ impl PackageLocator {
             }
         }
         false
+    }
+
+    /// Detect how a package was installed.
+    pub fn detect_package_source(
+        &self,
+        package_name: &str,
+        source_path: Option<&str>,
+    ) -> PackageSource {
+        if let Some(source) = self.source_from_direct_url(package_name) {
+            return source;
+        }
+
+        if source_path.is_some()
+            || self
+                .find_package_path_via_pth(&package_name.replace('-', "_"))
+                .is_some()
+        {
+            return PackageSource::Local;
+        }
+
+        PackageSource::Pypi
     }
 
     /// Locate a package root suitable for AST discovery.
@@ -234,6 +264,27 @@ impl PackageLocator {
             }
         }
         None
+    }
+
+    fn source_from_direct_url(&self, package_name: &str) -> Option<PackageSource> {
+        let dist_info = self.find_dist_info_path(package_name)?;
+        let direct_url_path = dist_info.join("direct_url.json");
+        let content = fs::read_to_string(&direct_url_path).ok()?;
+        let metadata: DirectUrlMetadata = serde_json::from_str(&content).ok()?;
+        Some(Self::classify_direct_url_source(&metadata))
+    }
+
+    fn classify_direct_url_source(metadata: &DirectUrlMetadata) -> PackageSource {
+        let url = metadata.url.to_ascii_lowercase();
+        if url.starts_with("file:") {
+            return PackageSource::Local;
+        }
+
+        if metadata.subdirectory.is_some() && url.contains("github.com") {
+            return PackageSource::Github;
+        }
+
+        PackageSource::Pypi
     }
 }
 
@@ -460,6 +511,7 @@ pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> 
 #[cfg(test)]
 mod tests {
     use crate::package_discovery::*;
+    use crate::types::PackageSource;
     use tempfile::TempDir;
 
     #[test]
@@ -931,5 +983,84 @@ my_transform = r2x_transforms.transform:MyTransform
         // Test non-existent package
         let not_found = locator.find_entry_points_txt("nonexistent");
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_detect_package_source_github_from_direct_url() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_plexos_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git" },
+  "subdirectory": "packages/r2x-plexos-to-sienna"
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-plexos-to-sienna", None),
+            PackageSource::Github
+        );
+    }
+
+    #[test]
+    fn test_detect_package_source_defaults_to_pypi_without_direct_url() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        if fs::create_dir(site_packages.join("r2x_sienna-0.1.0.dist-info")).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-sienna", None),
+            PackageSource::Pypi
+        );
+    }
+
+    #[test]
+    fn test_detect_package_source_standalone_git_direct_url_stays_pypi() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_sienna-0.1.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+  "vcs_info": { "vcs": "git" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-sienna", None),
+            PackageSource::Pypi
+        );
     }
 }

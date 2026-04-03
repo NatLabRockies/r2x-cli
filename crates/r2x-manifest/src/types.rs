@@ -57,6 +57,8 @@ pub struct Package {
     pub editable_install: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_uri: Option<Arc<str>>,
+    #[serde(default)]
+    pub source_kind: PackageSource,
     pub install_type: InstallType,
     #[serde(default)]
     pub installed_by: SmallVec<[Arc<str>; 2]>,
@@ -85,6 +87,7 @@ impl Default for Package {
             version: Arc::from("0.0.0"),
             editable_install: false,
             source_uri: None,
+            source_kind: PackageSource::default(),
             install_type: InstallType::Explicit,
             installed_by: SmallVec::new(),
             dependencies: SmallVec::new(),
@@ -93,6 +96,28 @@ impl Default for Package {
             configs: Vec::new(),
             content_hash: 0,
             plugin_index: AHashMap::new(),
+        }
+    }
+}
+
+/// Where a package was installed from
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Hash, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageSource {
+    #[default]
+    Pypi,
+    Github,
+    Git,
+    Local,
+}
+
+impl PackageSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pypi => "pypi",
+            Self::Github => "github",
+            Self::Git => "git",
+            Self::Local => "local",
         }
     }
 }
@@ -412,6 +437,9 @@ impl Package {
         let mut hasher = ahash::AHasher::default();
         self.name.hash(&mut hasher);
         self.version.hash(&mut hasher);
+        self.editable_install.hash(&mut hasher);
+        self.source_kind.hash(&mut hasher);
+        self.source_uri.hash(&mut hasher);
         for plugin in &self.plugins {
             plugin.name.hash(&mut hasher);
         }

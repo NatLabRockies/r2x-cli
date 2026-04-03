@@ -2,21 +2,75 @@ use crate::commands::plugins::context::PluginContext;
 use crate::common::GlobalOpts;
 use crate::plugins::error::PluginError;
 use crate::plugins::install::get_package_info;
+use crate::plugins::package_spec::is_git_url;
 use colored::Colorize;
-use r2x_manifest::types::{Manifest, Package, Plugin};
+use r2x_manifest::package_discovery::PackageLocator;
+use r2x_manifest::types::{Manifest, Package, PackageSource, Plugin};
 use std::collections::BTreeMap;
 
-/// Format the source origin for display: `pypi`, `file:///path`, or `ssh://...`
-fn format_source(pkg: &Package) -> String {
-    if pkg.editable_install {
-        pkg.source_uri
-            .as_ref()
-            .map_or_else(|| "local".to_string(), |uri| format!("file://{}", uri))
-    } else if let Some(ref uri) = pkg.source_uri {
-        uri.strip_prefix("git+").unwrap_or(uri).to_string()
-    } else {
-        "pypi".to_string()
+fn source_kind(pkg: &Package, locator: Option<&PackageLocator>) -> PackageSource {
+    if pkg.source_kind != PackageSource::Pypi {
+        return pkg.source_kind;
     }
+
+    if let Some(uri) = pkg.source_uri.as_deref() {
+        if is_git_url(uri) {
+            if uri.to_ascii_lowercase().contains("github.com") {
+                return PackageSource::Github;
+            }
+            return PackageSource::Git;
+        }
+
+        if pkg.editable_install {
+            return PackageSource::Local;
+        }
+    }
+
+    if let Some(locator) = locator {
+        let detected = locator.detect_package_source(pkg.name.as_ref(), pkg.source_uri.as_deref());
+        if detected != PackageSource::Pypi {
+            return detected;
+        }
+    }
+
+    if pkg.editable_install {
+        return PackageSource::Local;
+    }
+
+    PackageSource::Pypi
+}
+
+fn format_source(pkg: &Package, locator: Option<&PackageLocator>) -> String {
+    source_kind(pkg, locator).label().to_string()
+}
+
+fn package_version(pkg: &Package, discovered_version: Option<String>) -> Option<String> {
+    discovered_version.or_else(|| {
+        let version = pkg.version.as_ref();
+        if version.is_empty() || version == "unknown" {
+            None
+        } else {
+            Some(version.to_string())
+        }
+    })
+}
+
+fn format_package_header(
+    pkg: &Package,
+    version: Option<&str>,
+    locator: Option<&PackageLocator>,
+) -> String {
+    let mut header = format!(
+        "{}{}",
+        format!("{}:", format_source(pkg, locator)).dimmed(),
+        pkg.name.as_ref().bold().blue()
+    );
+
+    if let Some(version) = version {
+        header.push_str(&format!(" {}", format!("(v{})", version).dimmed()));
+    }
+
+    header
 }
 
 pub fn list_plugins(
@@ -69,28 +123,25 @@ pub fn list_plugins(
 
         for (package_name, plugin_names) in &packages {
             // Get package metadata
-            let pkg = manifest
+            let pkg = match manifest
                 .packages
                 .iter()
-                .find(|p| p.name.as_ref() == package_name);
+                .find(|p| p.name.as_ref() == package_name)
+            {
+                Some(pkg) => pkg,
+                None => continue,
+            };
 
             // Get version info
-            let version_info = get_package_info(uv_path, python_path, package_name)
-                .ok()
-                .and_then(|(v, _)| v);
-
-            let source = pkg.map_or_else(|| "pypi".to_string(), format_source);
-
-            let version_str = version_info
-                .as_ref()
-                .map(|v| format!(" (v{})", v))
-                .unwrap_or_default();
-
+            let version = package_version(
+                pkg,
+                get_package_info(uv_path, python_path, package_name)
+                    .ok()
+                    .and_then(|(v, _)| v),
+            );
             println!(
-                "  {}{}{}",
-                format!("{}:", source).dimmed(),
-                package_name.bold().blue(),
-                version_str.dimmed()
+                "  {}",
+                format_package_header(pkg, version.as_deref(), Some(&ctx.locator))
             );
 
             for plugin_name in plugin_names {
@@ -122,23 +173,16 @@ fn show_plugin_details(
         })?;
 
     // Build package header with version and editable info
-    let version_info = get_package_info(&ctx.uv_path, &ctx.python_path, package.name.as_ref())
-        .ok()
-        .and_then(|(v, _)| v);
-
-    let source = format_source(package);
-
-    let version_str = version_info
-        .as_ref()
-        .map(|v| format!(" (v{})", v))
-        .unwrap_or_default();
-
+    let version = package_version(
+        package,
+        get_package_info(&ctx.uv_path, &ctx.python_path, package.name.as_ref())
+            .ok()
+            .and_then(|(v, _)| v),
+    );
     println!(
-        "{} {}{}{}",
+        "{} {}",
         "Package:".bold().green(),
-        format!("{}:", source).dimmed(),
-        package.name.as_ref().bold().blue(),
-        version_str.dimmed()
+        format_package_header(package, version.as_deref(), Some(&ctx.locator))
     );
     println!();
 
@@ -294,5 +338,114 @@ fn show_plugin_verbose(plugin: &Plugin) {
             let req_marker = if field.required { "*" } else { "" };
             println!("    {}{}: {:?}", field_name, req_marker, field.field_type);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::commands::plugins::list::{
+        format_package_header, format_source, package_version, source_kind,
+    };
+    use colored::control::set_override;
+    use r2x_manifest::package_discovery::PackageLocator;
+    use r2x_manifest::types::{Package, PackageSource};
+    use std::fs;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn package_with_source(source_kind: PackageSource) -> Package {
+        Package {
+            name: Arc::from("r2x-plexos-to-sienna"),
+            version: Arc::from("0.0.0"),
+            source_kind,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn source_uses_manifest_source_kind() {
+        let package = package_with_source(PackageSource::Github);
+        assert_eq!(format_source(&package, None), "github");
+    }
+
+    #[test]
+    fn source_falls_back_to_git_uri_for_legacy_manifest_entries() {
+        let mut package = package_with_source(PackageSource::Pypi);
+        package.source_uri = Some(Arc::from("git+ssh://git@github.com/NatLabRockies/R2X.git"));
+        assert_eq!(format_source(&package, None), "github");
+    }
+
+    #[test]
+    fn source_falls_back_to_live_dist_info_for_legacy_manifest_entries() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_plexos_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+        if fs::write(
+            dist_info.join("direct_url.json"),
+            r#"{"url":"ssh://git@github.com/NatLabRockies/R2X.git","vcs_info":{"vcs":"git"},"subdirectory":"packages/r2x-plexos-to-sienna"}"#,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+        let package = package_with_source(PackageSource::Pypi);
+
+        assert_eq!(source_kind(&package, Some(&locator)), PackageSource::Github);
+    }
+
+    #[test]
+    fn standalone_git_direct_url_stays_pypi_without_manifest_source() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_sienna-0.1.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+        if fs::write(
+            dist_info.join("direct_url.json"),
+            r#"{"url":"ssh://git@github.com/NREL-Sienna/r2x-sienna","vcs_info":{"vcs":"git"}}"#,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+        let package = Package {
+            name: Arc::from("r2x-sienna"),
+            version: Arc::from("0.1.0"),
+            ..Default::default()
+        };
+
+        assert_eq!(source_kind(&package, Some(&locator)), PackageSource::Pypi);
+    }
+
+    #[test]
+    fn version_falls_back_to_manifest_when_pip_show_is_unavailable() {
+        let package = package_with_source(PackageSource::Pypi);
+        assert_eq!(package_version(&package, None).as_deref(), Some("0.0.0"));
+    }
+
+    #[test]
+    fn header_shows_source_prefix_and_version() {
+        set_override(false);
+        let package = package_with_source(PackageSource::Github);
+        assert_eq!(
+            format_package_header(&package, Some("0.0.0"), None),
+            "github:r2x-plexos-to-sienna (v0.0.0)"
+        );
     }
 }

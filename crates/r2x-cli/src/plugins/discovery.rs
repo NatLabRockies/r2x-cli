@@ -93,17 +93,18 @@ pub fn discover_and_register_entry_points_with_deps(
         ));
     }
 
+    let package_source =
+        locator.detect_package_source(package_name_full, opts.source_path.as_deref());
+
     // Only save to manifest if the package has plugins (skip empty wrapper packages)
     if total_plugins > 0 {
         let pkg = manifest.get_or_create_package(package_name_full);
         pkg.plugins = discovered_plugins;
         pkg.version = Arc::from(package_version);
         pkg.install_type = InstallType::Explicit;
+        pkg.source_kind = package_source;
+        pkg.editable_install = opts.editable;
         pkg.source_uri = opts.source_uri.as_deref().map(Arc::from);
-
-        if opts.editable {
-            pkg.editable_install = true;
-        }
         manifest.mark_explicit(package_name_full);
     }
 
@@ -175,8 +176,8 @@ pub fn discover_and_register_entry_points_with_deps(
         {
             let dep_pkg = manifest.get_or_create_package(&dep);
             dep_pkg.plugins = dep_plugins;
-            // Dependencies are installed from PyPI by uv, not from the parent's source
             dep_pkg.source_uri = None;
+            dep_pkg.source_kind = locator.detect_package_source(&dep, None);
         }
         manifest.mark_dependency(&dep, package_name_full);
         total_plugins += dep_count;

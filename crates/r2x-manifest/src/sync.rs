@@ -284,7 +284,7 @@ impl Default for StringInterner {
 #[cfg(test)]
 mod tests {
     use crate::sync::*;
-    use crate::types::{InstallType, Plugin, PluginType};
+    use crate::types::{InstallType, PackageSource, Plugin, PluginType};
 
     fn create_test_package(name: &str) -> Package {
         Package {
@@ -292,6 +292,7 @@ mod tests {
             version: Arc::from("1.0.0"),
             editable_install: false,
             source_uri: None,
+            source_kind: PackageSource::Pypi,
             install_type: InstallType::Explicit,
             installed_by: smallvec::SmallVec::new(),
             dependencies: smallvec::SmallVec::new(),

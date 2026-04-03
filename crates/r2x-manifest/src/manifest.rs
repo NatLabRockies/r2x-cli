@@ -4,7 +4,7 @@
 //! including CRUD operations, dependency tracking, and persistence.
 
 use crate::errors::ManifestError;
-use crate::types::{InstallType, Manifest, Package, Plugin};
+use crate::types::{InstallType, Manifest, Package, PackageSource, Plugin};
 use smallvec::SmallVec;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -117,6 +117,7 @@ impl Manifest {
                 version: Arc::from("0.0.0"),
                 editable_install: false,
                 source_uri: None,
+                source_kind: PackageSource::Pypi,
                 install_type: InstallType::Explicit,
                 installed_by: SmallVec::new(),
                 dependencies: SmallVec::new(),
