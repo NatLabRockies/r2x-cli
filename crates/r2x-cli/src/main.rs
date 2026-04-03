@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 use r2x::commands::{
-    config::{self, ConfigAction},
-    init, plugins, read, run,
+    config::{self, ConfigAction, PythonAction},
+    init,
+    log::{self, LogAction},
+    plugins, read, run,
 };
 use r2x::common::GlobalOpts;
 use r2x_config as config_manager;
@@ -29,6 +31,17 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
+    },
+    /// Python runtime management
+    Python {
+        #[command(subcommand)]
+        action: PythonAction,
+    },
+    /// Logging configuration
+    #[command(subcommand_required = false, arg_required_else_help = false)]
+    Log {
+        #[command(subcommand)]
+        action: Option<LogAction>,
     },
     /// List installed plugins
     List {
@@ -101,26 +114,53 @@ where
 fn main() {
     let cli = Cli::parse();
 
+    let mut startup_config = match config_manager::Config::load() {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            eprintln!("Warning: Failed to load config: {}", e);
+            None
+        }
+    };
+
+    let (saved_log_python, saved_no_stdout, saved_log_path, saved_log_max_size) =
+        match startup_config.as_ref() {
+            Some(cfg) => (
+                cfg.log_python.unwrap_or(false),
+                cfg.no_stdout.unwrap_or(false),
+                cfg.log_path.as_deref(),
+                cfg.log_max_size,
+            ),
+            None => (false, false, None, None),
+        };
+    let effective_log_python = cli.global.log_python || saved_log_python;
+    let effective_no_stdout = cli.global.no_stdout || saved_no_stdout;
+
     // Initialize logger with verbosity level, log_python flag, and no_stdout flag
-    if let Err(e) = logger::init_with_verbosity(
+    if let Err(e) = logger::init_with_config(
         cli.global.verbosity_level(),
-        cli.global.log_python,
-        cli.global.no_stdout,
+        effective_log_python,
+        effective_no_stdout,
+        saved_log_path,
+        saved_log_max_size,
     ) {
         eprintln!("Warning: Failed to initialize logger: {}", e);
     }
 
-    if let Err(e) = config_manager::Config::load().and_then(|mut cfg| {
-        cfg.ensure_uv_path()?;
-        cfg.ensure_cache_path()?;
-        Ok(())
-    }) {
-        logger::warn(&format!("Failed to setup CLI: {}", e));
+    if let Some(cfg) = startup_config.as_mut() {
+        if let Err(e) = cfg.ensure_uv_path().and_then(|_| cfg.ensure_cache_path()) {
+            logger::warn(&format!("Failed to setup CLI: {}", e));
+        }
     }
 
     match cli.command {
         Commands::Config { action } => {
             config::handle_config(action, cli.global);
+        }
+        Commands::Python { action } => {
+            config::handle_python(action, cli.global);
+        }
+        Commands::Log { action } => {
+            log::handle_log(action);
         }
         Commands::List { plugin, module } => {
             with_plugin_context(|ctx| {

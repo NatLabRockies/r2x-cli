@@ -130,8 +130,9 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     // Clear plugin context after execution
     logger::set_current_plugin(None);
 
+    let no_stdout = opts.no_stdout || logger::get_no_stdout();
     if !result.is_empty() && result != "null" {
-        if opts.suppress_stdout() || opts.no_stdout {
+        if opts.suppress_stdout() || no_stdout {
             logger::debug("Plugin output suppressed");
         } else {
             println!("{}", result);

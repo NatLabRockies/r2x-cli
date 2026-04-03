@@ -265,9 +265,10 @@ fn run_pipeline(
         logger::set_current_plugin(None);
 
         let result = invocation_result.output;
+        let no_stdout = opts.no_stdout || logger::get_no_stdout();
 
         if !result.is_empty() && result != "null" {
-            if opts.no_stdout {
+            if no_stdout {
                 logger::debug("Plugin produced output (suppressed by --no-stdout)");
             } else {
                 logger::debug(&format!("Plugin produced output ({} bytes)", result.len()));
@@ -289,12 +290,13 @@ fn run_pipeline(
     );
 
     if let Some(final_output) = current_stdin {
+        let no_stdout = opts.no_stdout || logger::get_no_stdout();
         if let Some(output_path) = output_file {
             logger::step(&format!("Writing output to: {}", output_path));
             std::fs::write(output_path, final_output.as_bytes())
                 .map_err(|e| RunError::Pipeline(PipelineError::Io(e)))?;
             logger::success(&format!("Output saved to: {}", output_path));
-        } else if opts.suppress_stdout() || opts.no_stdout {
+        } else if opts.suppress_stdout() || no_stdout {
             logger::debug("Pipeline output suppressed");
         } else {
             println!("{}", final_output);

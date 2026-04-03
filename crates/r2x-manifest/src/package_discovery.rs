@@ -7,10 +7,22 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
 #[derive(Debug, Deserialize)]
+struct DirectUrlVcsInfo {
+    #[allow(dead_code)]
+    vcs: String,
+    #[serde(default)]
+    requested_revision: Option<String>,
+    #[serde(default)]
+    commit_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DirectUrlMetadata {
     url: String,
     #[serde(default)]
     subdirectory: Option<String>,
+    #[serde(default)]
+    vcs_info: Option<DirectUrlVcsInfo>,
 }
 
 /// Resolve installed package paths from site-packages (optionally using UV cache).
@@ -145,6 +157,28 @@ impl PackageLocator {
         PackageSource::Pypi
     }
 
+    /// Return a displayable direct URL origin (including revision and subdirectory if present).
+    pub fn direct_url_origin(&self, package_name: &str) -> Option<String> {
+        let metadata = self.direct_url_metadata(package_name)?;
+
+        let mut origin = metadata.url;
+        if let Some(reference) = metadata
+            .vcs_info
+            .as_ref()
+            .and_then(|v| v.requested_revision.as_deref().or(v.commit_id.as_deref()))
+        {
+            origin.push('@');
+            origin.push_str(reference);
+        }
+
+        if let Some(subdirectory) = metadata.subdirectory.as_deref() {
+            origin.push_str("#subdirectory=");
+            origin.push_str(subdirectory);
+        }
+
+        Some(origin)
+    }
+
     /// Locate a package root suitable for AST discovery.
     pub fn find_package_path(&self, package_name_full: &str) -> Result<PathBuf> {
         let normalized = package_name_full.replace('-', "_");
@@ -267,11 +301,15 @@ impl PackageLocator {
     }
 
     fn source_from_direct_url(&self, package_name: &str) -> Option<PackageSource> {
+        let metadata = self.direct_url_metadata(package_name)?;
+        Some(Self::classify_direct_url_source(&metadata))
+    }
+
+    fn direct_url_metadata(&self, package_name: &str) -> Option<DirectUrlMetadata> {
         let dist_info = self.find_dist_info_path(package_name)?;
         let direct_url_path = dist_info.join("direct_url.json");
         let content = fs::read_to_string(&direct_url_path).ok()?;
-        let metadata: DirectUrlMetadata = serde_json::from_str(&content).ok()?;
-        Some(Self::classify_direct_url_source(&metadata))
+        serde_json::from_str(&content).ok()
     }
 
     fn classify_direct_url_source(metadata: &DirectUrlMetadata) -> PackageSource {
@@ -1061,6 +1099,39 @@ my_transform = r2x_transforms.transform:MyTransform
         assert_eq!(
             locator.detect_package_source("r2x-sienna", None),
             PackageSource::Pypi
+        );
+    }
+
+    #[test]
+    fn test_direct_url_origin_includes_requested_revision_and_subdirectory() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "git+ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git", "requested_revision": "v2.0.0", "commit_id": "abc123" },
+  "subdirectory": "packages/r2x-reeds-to-sienna"
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.direct_url_origin("r2x-reeds-to-sienna"),
+            Some(
+                "git+ssh://git@github.com/NatLabRockies/R2X.git@v2.0.0#subdirectory=packages/r2x-reeds-to-sienna"
+                    .to_string()
+            )
         );
     }
 }
