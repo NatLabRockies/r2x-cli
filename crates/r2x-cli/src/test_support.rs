@@ -5,7 +5,9 @@ pub(crate) fn with_temp_config(f: impl FnOnce()) {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    let _guard = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Ok(dir) = tempfile::tempdir() else {
         return;
     };

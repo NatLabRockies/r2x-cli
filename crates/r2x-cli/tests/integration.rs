@@ -58,6 +58,38 @@ fn test_list_plugins_no_plugins() {
 }
 
 #[test]
+fn test_list_plugins_setup_failure_exits_nonzero() {
+    let Ok(temp_dir) = TempDir::new() else {
+        return;
+    };
+    let invalid_venv_path = temp_dir.path().join("not-a-venv");
+    if fs::write(&invalid_venv_path, "not a directory").is_err() {
+        return;
+    }
+
+    let config_path = temp_dir.path().join("invalid-config.toml");
+    let cache_path = temp_dir.path().join("cache");
+    if fs::write(
+        &config_path,
+        format!(
+            "cache_path = \"{}\"\nvenv_path = \"{}\"\n",
+            cache_path.to_string_lossy(),
+            invalid_venv_path.to_string_lossy()
+        ),
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    r2x_cmd_with_config(&config_path)
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Failed to resolve site-packages"));
+}
+
+#[test]
 fn test_invalid_command() {
     r2x_cmd().arg("invalid").assert().failure();
 }
