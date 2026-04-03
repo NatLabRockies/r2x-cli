@@ -224,9 +224,14 @@ r2x config reset -y
 <details>
 <summary>Python and virtual environment management</summary>
 
+The `r2x python` command provides shortcuts for Python runtime management:
+
 ```bash
 # Install a Python version
 r2x python install 3.13
+
+# Show installed Python versions
+r2x python show
 
 # Get the Python executable path
 r2x python path
@@ -237,6 +242,10 @@ r2x config venv create -y
 # Install packages into the managed venv
 uv pip install <package> --python $(r2x python path)
 ```
+
+> [!TIP]
+> The `r2x python` commands are shortcuts for `r2x config python <action>`.
+> Both work identically.
 
 </details>
 
@@ -277,6 +286,12 @@ r2x log set --help
 ```
 
 </details>
+
+> [!NOTE]
+> Configuration is stored in `~/.config/r2x/config.toml` on Unix-like systems
+> or `%APPDATA%\r2x\config.toml` on Windows. Override with the `R2X_CONFIG`
+> environment variable.
+
 ## Verbosity
 
 | Flag | Effect |
