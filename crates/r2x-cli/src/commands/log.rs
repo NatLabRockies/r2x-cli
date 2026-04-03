@@ -163,21 +163,8 @@ fn format_max_size(max_size: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use crate::commands::log::{handle_log, LogAction, LogSetAction};
+    use crate::test_support::with_temp_config;
     use r2x_config::Config;
-
-    /// Serialize env-mutating tests to avoid races on R2X_CONFIG.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_temp_config(f: impl FnOnce()) {
-        let _guard = ENV_LOCK.lock();
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let config_path = dir.path().join("config.toml");
-        std::env::set_var("R2X_CONFIG", &config_path);
-        f();
-        std::env::remove_var("R2X_CONFIG");
-    }
 
     #[test]
     fn test_log_set_no_stdout() {

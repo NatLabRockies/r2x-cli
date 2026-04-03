@@ -75,7 +75,11 @@ enum Commands {
     /// Remove a plugin
     Remove { plugin: String },
     /// Sync plugin manifest (re-run plugin discovery for all installed packages)
-    Sync,
+    Sync {
+        /// Upgrade installed plugin packages before syncing metadata
+        #[arg(long)]
+        upgrade: bool,
+    },
     /// Clean the plugin manifest (removes all installed plugins)
     Clean {
         /// Skip confirmation prompt
@@ -94,20 +98,18 @@ enum Commands {
     Read(read::ReadCommand),
 }
 
-fn with_plugin_context<F>(action: F)
+fn with_plugin_context<F>(action: F) -> Result<(), r2x::plugins::error::PluginError>
 where
     F: FnOnce(&mut plugins::context::PluginContext) -> Result<(), r2x::plugins::error::PluginError>,
 {
-    let mut ctx = match plugins::context::PluginContext::load() {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            logger::error(&e.to_string());
-            return;
-        }
-    };
+    let mut ctx = plugins::context::PluginContext::load()?;
+    action(&mut ctx)
+}
 
-    if let Err(e) = action(&mut ctx) {
+fn exit_on_plugin_error(result: Result<(), r2x::plugins::error::PluginError>) {
+    if let Err(e) = result {
         logger::error(&e.to_string());
+        std::process::exit(1);
     }
 }
 
@@ -163,9 +165,9 @@ fn main() {
             log::handle_log(action);
         }
         Commands::List { plugin, module } => {
-            with_plugin_context(|ctx| {
+            exit_on_plugin_error(with_plugin_context(|ctx| {
                 plugins::list::list_plugins(&cli.global, plugin, module, ctx)
-            });
+            }));
         }
         Commands::Install {
             plugin,
@@ -177,7 +179,7 @@ fn main() {
             commit,
         } => match plugin {
             Some(pkg) => {
-                with_plugin_context(|ctx| {
+                exit_on_plugin_error(with_plugin_context(|ctx| {
                     plugins::install::install_plugin(
                         &pkg,
                         editable,
@@ -190,22 +192,29 @@ fn main() {
                         },
                         ctx,
                     )
-                });
+                }));
             }
             None => {
                 if let Err(e) = plugins::install::show_install_help() {
                     logger::error(&e.to_string());
+                    std::process::exit(1);
                 }
             }
         },
         Commands::Remove { plugin } => {
-            with_plugin_context(|ctx| plugins::remove::remove_plugin(&plugin, ctx));
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::remove::remove_plugin(&plugin, ctx)
+            }));
         }
-        Commands::Sync => {
-            with_plugin_context(plugins::sync::sync_manifest);
+        Commands::Sync { upgrade } => {
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::sync::sync_manifest(ctx, upgrade)
+            }));
         }
         Commands::Clean { yes } => {
-            with_plugin_context(|ctx| plugins::clean::clean_manifest(yes, ctx));
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::clean::clean_manifest(yes, ctx)
+            }));
         }
         Commands::Init { file } => {
             init::handle_init(file, cli.global);

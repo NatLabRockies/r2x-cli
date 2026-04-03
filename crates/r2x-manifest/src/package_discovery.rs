@@ -157,11 +157,61 @@ impl PackageLocator {
         PackageSource::Pypi
     }
 
+    /// Read the installed version of a package from its `.dist-info/METADATA` file.
+    ///
+    /// This is a pure filesystem read (~0.1ms) compared to spawning `uv pip show`
+    /// (~300ms per call). The version lives on a `Version:` line near the top of
+    /// the METADATA file, so we bail as soon as we find it.
+    pub fn read_version(&self, package_name: &str) -> Option<String> {
+        let dist_info = self.find_dist_info_path(package_name)?;
+        let metadata_path = dist_info.join("METADATA");
+        let content = fs::read_to_string(&metadata_path).ok()?;
+        for line in content.lines() {
+            // Version: is always in the first ~10 lines, stop at first blank line
+            // (which separates headers from the description body).
+            if line.is_empty() {
+                break;
+            }
+            if let Some(version) = line.strip_prefix("Version: ") {
+                return Some(version.trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// Read the installed dependencies of a package from its `.dist-info/METADATA` file.
+    ///
+    /// Parses `Requires-Dist:` lines and returns bare package names (no version specifiers).
+    pub fn read_dependencies(&self, package_name: &str) -> Vec<String> {
+        let Some(dist_info) = self.find_dist_info_path(package_name) else {
+            return Vec::new();
+        };
+        let metadata_path = dist_info.join("METADATA");
+        let Ok(content) = fs::read_to_string(&metadata_path) else {
+            return Vec::new();
+        };
+
+        let mut deps = Vec::new();
+        for line in content.lines() {
+            if let Some(req) = line.strip_prefix("Requires-Dist: ") {
+                // "numpy (>=1.20)" or "numpy>=1.20" or "numpy ; extra == ..."
+                let name = req
+                    .split([' ', '(', '>', '<', '=', '!', '~', ';', '['])
+                    .next()
+                    .unwrap_or(req)
+                    .trim();
+                if !name.is_empty() {
+                    deps.push(name.to_string());
+                }
+            }
+        }
+        deps
+    }
+
     /// Return a displayable direct URL origin (including revision and subdirectory if present).
     pub fn direct_url_origin(&self, package_name: &str) -> Option<String> {
         let metadata = self.direct_url_metadata(package_name)?;
-
-        let mut origin = metadata.url;
+        let mut origin = metadata.url.clone();
         if let Some(reference) = metadata
             .vcs_info
             .as_ref()
@@ -177,6 +227,15 @@ impl PackageLocator {
         }
 
         Some(origin)
+    }
+
+    /// Return the resolved VCS commit hash from direct_url.json, when available.
+    pub fn direct_url_commit_id(&self, package_name: &str) -> Option<String> {
+        self.direct_url_metadata(package_name)?
+            .vcs_info
+            .as_ref()?
+            .commit_id
+            .clone()
     }
 
     /// Locate a package root suitable for AST discovery.
@@ -1133,5 +1192,155 @@ my_transform = r2x_transforms.transform:MyTransform
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn test_direct_url_commit_id_returns_hash_when_present() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "git+ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git", "requested_revision": "main", "commit_id": "abc123def456" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.direct_url_commit_id("r2x-reeds-to-sienna"),
+            Some("abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_direct_url_commit_id_none_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+  "vcs_info": { "vcs": "git" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.direct_url_commit_id("r2x-sienna"), None);
+    }
+
+    #[test]
+    fn test_read_version_from_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds-1.2.3.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let metadata =
+            "Metadata-Version: 2.1\nName: r2x-reeds\nVersion: 1.2.3\nSummary: ReEDS plugin\n";
+        if fs::write(dist_info.join("METADATA"), metadata).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.read_version("r2x-reeds"), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_read_version_returns_none_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+        // No METADATA file
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.read_version("r2x-reeds"), None);
+    }
+
+    #[test]
+    fn test_read_version_returns_none_for_unknown_package() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.read_version("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_read_dependencies_from_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let metadata = "Metadata-Version: 2.1\nName: r2x-reeds\nVersion: 1.0.0\nRequires-Dist: numpy (>=1.20)\nRequires-Dist: pandas>=1.3\nRequires-Dist: r2x-core ; extra == \"dev\"\n";
+        if fs::write(dist_info.join("METADATA"), metadata).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        let deps = locator.read_dependencies("r2x-reeds");
+        assert_eq!(deps, vec!["numpy", "pandas", "r2x-core"]);
+    }
+
+    #[test]
+    fn test_read_dependencies_returns_empty_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert!(locator.read_dependencies("nonexistent").is_empty());
     }
 }
