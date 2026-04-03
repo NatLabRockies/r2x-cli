@@ -498,6 +498,21 @@ mod tests {
     }
 
     #[test]
+    fn test_spec_ssh_full_with_embedded_ref_and_subdirectory() {
+        let result = build_package_spec(
+            "ssh://git@github.com/NatLabRockies/R2X.git@v2.0.0#subdirectory=packages/r2x-plexos-to-sienna",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_ok_and(
+            |s| s
+                == "git+ssh://git@github.com/NatLabRockies/R2X.git@v2.0.0#subdirectory=packages/r2x-plexos-to-sienna"
+        ));
+    }
+
+    #[test]
     fn test_spec_git_plus_passthrough() {
         let result = build_package_spec(
             "git+https://github.com/org/repo.git",

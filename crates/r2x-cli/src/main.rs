@@ -75,7 +75,11 @@ enum Commands {
     /// Remove a plugin
     Remove { plugin: String },
     /// Sync plugin manifest (re-run plugin discovery for all installed packages)
-    Sync,
+    Sync {
+        /// Upgrade installed plugin packages before syncing metadata
+        #[arg(long)]
+        upgrade: bool,
+    },
     /// Clean the plugin manifest (removes all installed plugins)
     Clean {
         /// Skip confirmation prompt
@@ -201,8 +205,8 @@ fn main() {
         Commands::Remove { plugin } => {
             with_plugin_context(|ctx| plugins::remove::remove_plugin(&plugin, ctx));
         }
-        Commands::Sync => {
-            with_plugin_context(plugins::sync::sync_manifest);
+        Commands::Sync { upgrade } => {
+            with_plugin_context(|ctx| plugins::sync::sync_manifest(ctx, upgrade));
         }
         Commands::Clean { yes } => {
             with_plugin_context(|ctx| plugins::clean::clean_manifest(yes, ctx));

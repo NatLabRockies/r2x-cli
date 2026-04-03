@@ -93,7 +93,8 @@ minute.
 | `r2x list` | List all installed plugins |
 | `r2x list r2x-reeds` | Filter by package name |
 | `r2x list r2x-reeds break-gens` | Filter by package and module |
-| `r2x sync` | Re-run plugin discovery |
+| `r2x sync` | Re-run plugin discovery and refresh manifest metadata |
+| `r2x sync --upgrade` | Upgrade compatible installed plugins, then sync and show version/commit changes |
 | `r2x clean -y` | Wipe the plugin manifest |
 
 > [!TIP]

@@ -160,8 +160,7 @@ impl PackageLocator {
     /// Return a displayable direct URL origin (including revision and subdirectory if present).
     pub fn direct_url_origin(&self, package_name: &str) -> Option<String> {
         let metadata = self.direct_url_metadata(package_name)?;
-
-        let mut origin = metadata.url;
+        let mut origin = metadata.url.clone();
         if let Some(reference) = metadata
             .vcs_info
             .as_ref()
@@ -177,6 +176,15 @@ impl PackageLocator {
         }
 
         Some(origin)
+    }
+
+    /// Return the resolved VCS commit hash from direct_url.json, when available.
+    pub fn direct_url_commit_id(&self, package_name: &str) -> Option<String> {
+        self.direct_url_metadata(package_name)?
+            .vcs_info
+            .as_ref()?
+            .commit_id
+            .clone()
     }
 
     /// Locate a package root suitable for AST discovery.
@@ -1133,5 +1141,60 @@ my_transform = r2x_transforms.transform:MyTransform
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn test_direct_url_commit_id_returns_hash_when_present() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "git+ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git", "requested_revision": "main", "commit_id": "abc123def456" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.direct_url_commit_id("r2x-reeds-to-sienna"),
+            Some("abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_direct_url_commit_id_none_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+  "vcs_info": { "vcs": "git" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.direct_url_commit_id("r2x-sienna"), None);
     }
 }
