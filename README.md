@@ -86,8 +86,8 @@ minute.
 | Command | What it does |
 | --- | --- |
 | `r2x install <package>` | Install from PyPI |
-| `r2x install NatLabRockies/r2x-reeds` | Install from a GitHub repo |
-| `r2x install --branch dev NatLabRockies/r2x-reeds` | Install a specific branch (`--tag`, `--commit`) |
+| `r2x install gh:NatLabRockies/r2x-reeds` | Install from a GitHub repo |
+| `r2x install gh:NatLabRockies/r2x-reeds --branch dev` | Install a specific branch (`--tag`, `--commit`) |
 | `r2x install -e /path/to/plugin` | Install in editable mode for local dev |
 | `r2x remove <package>` | Uninstall a plugin |
 | `r2x list` | List all installed plugins |
@@ -95,7 +95,7 @@ minute.
 | `r2x list r2x-reeds break-gens` | Filter by package and module |
 | `r2x sync` | Re-run plugin discovery and refresh manifest metadata |
 | `r2x sync --upgrade` | Upgrade compatible installed plugins, then sync and show version/commit changes |
-| `r2x clean -y` | Wipe the plugin manifest |
+| `r2x clean -y` | Wipe the plugin manifest and clean cache |
 
 > [!TIP]
 > Plugin discovery uses static analysis (ast-grep) instead of

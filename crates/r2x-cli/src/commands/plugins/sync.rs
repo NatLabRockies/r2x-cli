@@ -1,4 +1,5 @@
 use crate::commands::plugins::context::PluginContext;
+use crate::commands::plugins::utils::short_commit;
 use crate::plugins::error::PluginError;
 use crate::plugins::package_spec::{build_package_spec, is_git_url};
 use colored::Colorize;
@@ -569,11 +570,15 @@ fn print_upgrade_changes(
         };
 
         let commit_delta = match (&previous.commit_id, &current.commit_id) {
-            (Some(old), Some(new)) if old != new => Some(format!("commit {} -> {}", old, new)),
+            (Some(old), Some(new)) if old != new => Some(format!(
+                "commit {} -> {}",
+                short_commit(old),
+                short_commit(new)
+            )),
             (None, Some(new))
                 if matches!(source_kind, PackageSource::Github | PackageSource::Git) =>
             {
-                Some(format!("commit <unknown> -> {}", new))
+                Some(format!("commit <unknown> -> {}", short_commit(new)))
             }
             _ => None,
         };

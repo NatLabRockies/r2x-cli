@@ -59,7 +59,7 @@ enum Commands {
         /// Skip metadata cache and force rebuild
         #[arg(long)]
         no_cache: bool,
-        /// Git host (default: github.com). Use with org/repo format or full URLs.
+        /// Git host (default: github.com). Use with gh:owner/repo or full URLs.
         #[arg(long)]
         host: Option<String>,
         /// Install from a git branch
@@ -80,7 +80,7 @@ enum Commands {
         #[arg(long)]
         upgrade: bool,
     },
-    /// Clean the plugin manifest (removes all installed plugins)
+    /// Clean plugins and cache (removes installed plugins and cleans cache folder)
     Clean {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]

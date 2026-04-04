@@ -661,20 +661,42 @@ fn handle_python_show(_opts: GlobalOpts) {
 }
 
 fn clean_cache(_opts: GlobalOpts) {
+    clean_cache_folder();
+}
+
+/// Clean the configured cache folder.
+///
+/// Shared by `r2x config cache clean` and `r2x clean`.
+pub fn clean_cache_folder() {
     match Config::load() {
         Ok(config) => {
             let cache_path = config.get_cache_path();
             let cache_dir = PathBuf::from(&cache_path);
 
             if !cache_dir.exists() {
-                logger::debug("Cache folder already clean");
+                println!(
+                    "No cache found at: {}",
+                    cache_dir.display().to_string().cyan()
+                );
+                return;
+            }
+
+            // PluginContext::load can create this directory proactively. If it is empty,
+            // treat it as "no cache" for user-facing clean output.
+            let is_empty = fs::read_dir(&cache_dir)
+                .ok()
+                .and_then(|mut entries| entries.next())
+                .is_none();
+            if is_empty {
+                println!(
+                    "No cache found at: {}",
+                    cache_dir.display().to_string().cyan()
+                );
                 return;
             }
 
             match fs::remove_dir_all(&cache_dir) {
-                Ok(()) => {
-                    logger::success("Cache folder cleaned");
-                }
+                Ok(()) => {}
                 Err(e) => {
                     logger::error(&format!("Failed to clean cache folder: {}", e));
                 }
@@ -719,6 +741,7 @@ fn handle_cache_path(new_path: Option<String>, _opts: GlobalOpts) {
 mod tests {
     use crate::commands::config::*;
     use crate::test_support::with_temp_config;
+    use std::fs;
 
     fn quiet_opts() -> GlobalOpts {
         GlobalOpts {
@@ -801,5 +824,31 @@ mod tests {
     #[test]
     fn test_config_no_action_tip() {
         handle_config(None, normal_opts());
+    }
+
+    #[test]
+    fn test_clean_cache_folder_removes_configured_cache_dir() {
+        with_temp_config(|| {
+            let temp_result = tempfile::tempdir();
+            assert!(temp_result.is_ok());
+            let Some(temp) = temp_result.ok() else {
+                return;
+            };
+            let cache_dir = temp.path().join("cache");
+            assert!(fs::create_dir_all(&cache_dir).is_ok());
+            assert!(fs::write(cache_dir.join("marker.txt"), "cache").is_ok());
+
+            let config_result = Config::load();
+            assert!(config_result.is_ok());
+            let Some(mut config) = config_result.ok() else {
+                return;
+            };
+            config.cache_path = Some(cache_dir.to_string_lossy().to_string());
+            assert!(config.save().is_ok());
+
+            assert!(cache_dir.exists());
+            clean_cache_folder();
+            assert!(!cache_dir.exists());
+        });
     }
 }
