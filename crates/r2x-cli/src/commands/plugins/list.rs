@@ -1,4 +1,5 @@
 use crate::commands::plugins::context::PluginContext;
+use crate::commands::plugins::utils::short_commit;
 use crate::common::GlobalOpts;
 use crate::plugins::error::PluginError;
 use crate::plugins::install::get_package_info;
@@ -102,7 +103,7 @@ fn format_github_origin(source_uri: &str) -> Option<String> {
 
 fn package_source_display(pkg: &Package, locator: &PackageLocator) -> String {
     let kind = source_kind(pkg, Some(locator));
-    if kind == PackageSource::Github {
+    let mut display = if matches!(kind, PackageSource::Github | PackageSource::Git) {
         let origin_raw = pkg
             .source_uri
             .as_deref()
@@ -110,11 +111,34 @@ fn package_source_display(pkg: &Package, locator: &PackageLocator) -> String {
             .or_else(|| locator.direct_url_origin(pkg.name.as_ref()));
 
         if let Some(raw) = origin_raw {
-            return format_github_origin(&raw).unwrap_or(raw);
+            if kind == PackageSource::Github {
+                format_github_origin(&raw).unwrap_or(raw)
+            } else {
+                raw
+            }
+        } else {
+            format_source(pkg, Some(locator))
+        }
+    } else if kind == PackageSource::Local {
+        pkg.source_uri
+            .as_deref()
+            .map(ToString::to_string)
+            .or_else(|| locator.direct_url_origin(pkg.name.as_ref()))
+            .unwrap_or_else(|| format_source(pkg, Some(locator)))
+    } else {
+        format_source(pkg, Some(locator))
+    };
+
+    if matches!(kind, PackageSource::Github | PackageSource::Git) {
+        if let Some(commit_id) = locator.direct_url_commit_id(pkg.name.as_ref()) {
+            let short = short_commit(&commit_id);
+            if !display.contains(short) {
+                display.push_str(&format!(" ({short})"));
+            }
         }
     }
 
-    format_source(pkg, Some(locator))
+    display
 }
 
 pub fn list_plugins(
@@ -532,6 +556,56 @@ mod tests {
         assert_eq!(
             package_source_display(&package, &locator),
             "git@github.com:NREL/r2x-reeds.git@main"
+        );
+    }
+
+    #[test]
+    fn local_source_display_uses_source_uri_when_present() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let local_path = temp_dir.path().join("my-plugin");
+        let path_str = local_path.to_string_lossy().to_string();
+
+        let mut package = package_with_source(PackageSource::Local);
+        package.source_uri = Some(Arc::from(path_str.as_str()));
+
+        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(package_source_display(&package, &locator), path_str);
+    }
+
+    #[test]
+    fn github_source_display_appends_resolved_commit_when_available() {
+        let mut package = package_with_source(PackageSource::Github);
+        package.name = Arc::from("r2x-reeds");
+        package.source_uri = Some(Arc::from("git+https://github.com/NREL/r2x-reeds.git@main"));
+
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let dist_info = temp_dir.path().join("r2x_reeds-0.4.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+        if fs::write(
+            dist_info.join("direct_url.json"),
+            r#"{"url":"https://github.com/NREL/r2x-reeds.git","vcs_info":{"vcs":"git","requested_revision":"main","commit_id":"417f798ae75db494077b142b129e4d54253f8a7a"}}"#,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            package_source_display(&package, &locator),
+            "git@github.com:NREL/r2x-reeds.git@main (417f798)"
         );
     }
 }

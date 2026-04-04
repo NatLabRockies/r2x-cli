@@ -126,10 +126,13 @@ fn init(log_path_override: Option<&str>) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create log directory: {}", e))?;
     }
 
-    // Truncate log file on each run (overwrite instead of append)
-    if log_file.exists() {
-        let _ = fs::remove_file(&log_file);
-    }
+    // Ensure log file exists so commands like `r2x log path` always reference
+    // a readable file, and preserve prior command history by appending.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .map_err(|e| format!("Failed to initialize log file: {}", e))?;
 
     let mut log_file_guard = LOG_FILE
         .lock()
@@ -275,6 +278,32 @@ pub fn capture_output(command_name: &str, output: &std::process::Output) {
 
     if !stderr.is_empty() {
         write_to_log(LogLevel::Debug, &format!("  STDERR:\n{}", stderr));
+    }
+}
+
+/// Capture command output and always persist it to log file at info level.
+///
+/// This is useful for noisy subprocesses where console output is suppressed
+/// by default but full output should remain available in logs.
+pub fn capture_output_always(command_name: &str, output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    write_to_log(
+        LogLevel::Info,
+        &format!(
+            "COMMAND: {} (exit code: {:?})",
+            command_name,
+            output.status.code()
+        ),
+    );
+
+    if !stdout.is_empty() {
+        write_to_log(LogLevel::Info, &format!("  STDOUT:\n{}", stdout));
+    }
+
+    if !stderr.is_empty() {
+        write_to_log(LogLevel::Info, &format!("  STDERR:\n{}", stderr));
     }
 }
 

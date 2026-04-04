@@ -22,6 +22,14 @@ pub fn is_git_url(s: &str) -> bool {
         || s.starts_with("http://")
 }
 
+/// Check if a string uses the `gh:owner/repo` shorthand.
+pub fn is_github_shorthand(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("gh:") else {
+        return false;
+    };
+    !rest.is_empty() && rest.contains('/') && !rest.contains('\\')
+}
+
 /// Normalize any git URL to the `git+{protocol}://...` form that pip/uv expects.
 ///
 /// | Input format                              | Output                                             |
@@ -101,6 +109,20 @@ fn strip_git_ref(url: &str) -> &str {
 pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
     let pkg = strip_git_ref(package);
 
+    if let Some(repo_path) = pkg.strip_prefix("gh:") {
+        if repo_path.is_empty() || !repo_path.contains('/') || repo_path.contains('\\') {
+            return Err(PluginError::PackageSpec(
+                "GitHub shorthand must use gh:owner/repo".to_string(),
+            ));
+        }
+        return Ok(repo_path
+            .split('/')
+            .next_back()
+            .unwrap_or(repo_path)
+            .trim_end_matches(".git")
+            .to_string());
+    }
+
     if is_git_url(pkg) {
         // For any git URL: extract last path component, strip .git suffix
         let normalized = if let Some(rest) = pkg.strip_prefix("git@") {
@@ -129,7 +151,7 @@ pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
 
 /// Build package specifier for pip install.
 ///
-/// Handles PyPI packages, local paths, git URLs (any format), and org/repo shorthand.
+/// Handles PyPI packages, local paths, git URLs (any format), and `gh:owner/repo` shorthand.
 pub fn build_package_spec(
     package: &str,
     host: Option<String>,
@@ -151,23 +173,33 @@ pub fn build_package_spec(
         return Ok(package.to_string());
     }
 
-    // 2. Any git URL (SSH, HTTPS, HTTP, git+, ssh://)
+    // 2. GitHub shorthand (gh:owner/repo)
+    if let Some(repo_path) = package.strip_prefix("gh:") {
+        if repo_path.is_empty() || !repo_path.contains('/') || repo_path.contains('\\') {
+            return Err(PluginError::PackageSpec(
+                "GitHub shorthand must use gh:owner/repo".to_string(),
+            ));
+        }
+        let git_host = host.as_deref().unwrap_or("github.com");
+        let url = format!("git+https://{git_host}/{repo_path}");
+        return Ok(add_git_ref(&url, branch, tag, commit));
+    }
+
+    // 3. Any git URL (SSH, HTTPS, HTTP, git+, ssh://)
     if is_git_url(package) {
         let url = normalize_git_url(package);
         return Ok(add_git_ref(&url, branch, tag, commit));
     }
 
-    // 3. org/repo shorthand (e.g. NREL/R2X) — only when git flags or host provided
-    if package.contains('/')
-        && !package.contains('\\')
-        && (host.is_some() || branch.is_some() || tag.is_some() || commit.is_some())
-    {
-        let git_host = host.as_deref().unwrap_or("github.com");
-        let url = format!("git+https://{git_host}/{package}");
-        return Ok(add_git_ref(&url, branch, tag, commit));
+    // 4. Bare owner/repo is no longer accepted: require explicit gh:owner/repo.
+    if package.contains('/') && !package.contains('\\') {
+        return Err(PluginError::PackageSpec(
+            "GitHub repositories must use gh:owner/repo (for example: gh:NatLabRockies/r2x-reeds)"
+                .to_string(),
+        ));
     }
 
-    // 4. PyPI package name
+    // 5. PyPI package name
     if branch.is_some() || tag.is_some() || commit.is_some() || host.is_some() {
         return Err(PluginError::PackageSpec(
             "Cannot use git flags with PyPI package name".to_string(),
@@ -283,6 +315,16 @@ mod tests {
     }
 
     #[test]
+    fn test_is_github_shorthand() {
+        assert!(is_github_shorthand("gh:NatLabRockies/r2x-reeds"));
+    }
+
+    #[test]
+    fn test_is_github_shorthand_invalid() {
+        assert!(!is_github_shorthand("gh:NatLabRockies"));
+    }
+
+    #[test]
     fn test_is_git_url_pypi_is_not() {
         assert!(!is_git_url("r2x-reeds"));
     }
@@ -384,6 +426,16 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_name_gh_shorthand() {
+        assert!(extract_package_name("gh:NatLabRockies/R2X").is_ok_and(|s| s == "R2X"));
+    }
+
+    #[test]
+    fn test_extract_name_gh_shorthand_with_ref() {
+        assert!(extract_package_name("gh:NatLabRockies/R2X@main").is_ok_and(|s| s == "R2X"));
+    }
+
+    #[test]
     fn test_extract_name_local_path() {
         let result = extract_package_name("./packages/r2x-reeds");
         assert!(result.is_ok() || result.is_err());
@@ -419,7 +471,49 @@ mod tests {
     }
 
     #[test]
-    fn test_spec_org_repo_with_branch() {
+    fn test_spec_gh_with_branch() {
+        let result = build_package_spec(
+            "gh:nrel/r2x-reeds",
+            None,
+            Some("develop".to_string()),
+            None,
+            None,
+        );
+        assert!(result.is_ok_and(|s| s == "git+https://github.com/nrel/r2x-reeds@develop"));
+    }
+
+    #[test]
+    fn test_spec_gh_with_custom_host() {
+        let result = build_package_spec(
+            "gh:acme/r2x-plugin",
+            Some("github.example.com".to_string()),
+            Some("main".to_string()),
+            None,
+            None,
+        );
+        assert!(result.is_ok_and(|s| s == "git+https://github.example.com/acme/r2x-plugin@main"));
+    }
+
+    #[test]
+    fn test_spec_gh_without_ref() {
+        let result = build_package_spec("gh:NatLabRockies/R2X", None, None, None, None);
+        assert!(result.is_ok_and(|s| s == "git+https://github.com/NatLabRockies/R2X"));
+    }
+
+    #[test]
+    fn test_spec_gh_rejects_invalid() {
+        assert!(build_package_spec(
+            "gh:NatLabRockies",
+            None,
+            Some("main".to_string()),
+            None,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_spec_org_repo_with_branch_rejected() {
         let result = build_package_spec(
             "nrel/r2x-reeds",
             None,
@@ -427,7 +521,13 @@ mod tests {
             None,
             None,
         );
-        assert!(result.is_ok_and(|s| s == "git+https://github.com/nrel/r2x-reeds@develop"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spec_org_repo_without_branch_rejected() {
+        let result = build_package_spec("nrel/r2x-reeds", None, None, None, None);
+        assert!(result.is_err());
     }
 
     #[test]

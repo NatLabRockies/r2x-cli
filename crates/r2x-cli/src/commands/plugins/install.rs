@@ -10,7 +10,7 @@ use r2x_logger as logger;
 use r2x_manifest::package_discovery::PackageDiscoverer;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// Options for git-based package installation
 pub struct GitOptions {
@@ -139,7 +139,7 @@ pub fn install_plugin(
     };
 
     // source_uri: display origin stored in manifest (git URL or local path)
-    let source_uri = if crate::plugins::package_spec::is_git_url(package) {
+    let source_uri = if crate::plugins::package_spec::is_git_url(&package_spec) {
         Some(package_spec.clone())
     } else {
         source_path.clone()
@@ -197,9 +197,11 @@ pub fn show_install_help() -> Result<(), PluginError> {
     println!("{}", "Examples:".bold());
     println!("  Install from PyPI:\n    r2x install r2x-reeds");
     println!("\n  Install from local path:\n    r2x install ./packages/r2x-reeds");
-    println!("\n  Install from GitHub (org/repo format):\n    r2x install NREL/r2x-reeds");
-    println!("\n  Install from specific branch:\n    r2x install NREL/r2x-reeds --branch develop");
-    println!("\n  Install from git tag:\n    r2x install NREL/r2x-reeds --tag v0.1.0");
+    println!("\n  Install from GitHub (gh:owner/repo):\n    r2x install gh:NREL/r2x-reeds");
+    println!(
+        "\n  Install from specific branch:\n    r2x install gh:NREL/r2x-reeds --branch develop"
+    );
+    println!("\n  Install from git tag:\n    r2x install gh:NREL/r2x-reeds --tag v0.1.0");
     println!(
         "\n  Install in editable mode for development:\n    r2x install -e ./packages/r2x-reeds"
     );
@@ -221,6 +223,55 @@ fn run_pip_install(
     editable: bool,
     no_cache: bool,
 ) -> Result<(), PluginError> {
+    let install_args = build_pip_install_args(python_path, package, editable, no_cache);
+
+    logger::debug(&format!("Running: {} {}", uv_path, install_args.join(" ")));
+
+    let output = Command::new(uv_path)
+        .args(&install_args)
+        .output()
+        .map_err(|e| {
+            logger::error(&format!("Failed to run pip install: {}", e));
+            PluginError::Io(e)
+        })?;
+
+    let command_for_log = format!("{} {}", uv_path, install_args.join(" "));
+    logger::capture_output_always(&command_for_log, &output);
+
+    if logger::get_verbosity() > 0 {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.trim().is_empty() {
+            print!("{stdout}");
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            eprint!("{stderr}");
+        }
+    }
+
+    if !output.status.success() {
+        if logger::get_verbosity() == 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.trim().is_empty() {
+                eprintln!("{stderr}");
+            }
+        }
+        logger::error(&format!("pip install failed for package '{}'", package));
+        return Err(PluginError::CommandFailed {
+            command: format!("{} pip install {}", uv_path, package),
+            status: output.status.code(),
+        });
+    }
+
+    Ok(())
+}
+
+fn build_pip_install_args(
+    python_path: &str,
+    package: &str,
+    editable: bool,
+    no_cache: bool,
+) -> Vec<String> {
     let mut install_args: Vec<String> = vec![
         "pip".to_string(),
         "install".to_string(),
@@ -239,43 +290,7 @@ fn run_pip_install(
     }
 
     install_args.push(package.to_string());
-
-    let debug_flags = if editable && no_cache {
-        "-e --no-cache"
-    } else if editable {
-        "-e"
-    } else if no_cache {
-        "--no-cache"
-    } else {
-        ""
-    };
-
-    logger::debug(&format!(
-        "Running: {} pip install {} --python {} {}",
-        uv_path, debug_flags, python_path, package
-    ));
-
-    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
-    let status = Command::new(uv_path)
-        .args(&install_args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| {
-            logger::error(&format!("Failed to run pip install: {}", e));
-            PluginError::Io(e)
-        })?;
-
-    if !status.success() {
-        logger::error(&format!("pip install failed for package '{}'", package));
-        return Err(PluginError::CommandFailed {
-            command: format!("{} pip install {}", uv_path, package),
-            status: status.code(),
-        });
-    }
-
-    Ok(())
+    install_args
 }
 
 fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::time::Duration) {
@@ -422,4 +437,16 @@ fn discover_all_installed_packages(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_pip_install_args;
+
+    #[test]
+    fn build_pip_install_args_supports_editable_and_no_cache() {
+        let args = build_pip_install_args("/tmp/python", "/tmp/plugin", true, true);
+        assert!(args.iter().any(|arg| arg == "-e"));
+        assert!(args.iter().any(|arg| arg == "--no-cache"));
+    }
 }

@@ -1,41 +1,46 @@
+use std::path::PathBuf;
 use std::process::Command;
 
-use colored::Colorize;
-
+use crate::commands::config::clean_cache_folder;
 use crate::plugins::error::PluginError;
+use colored::Colorize;
 use r2x_logger as logger;
 
 use crate::commands::plugins::context::PluginContext;
 
 pub fn clean_manifest(yes: bool, ctx: &mut PluginContext) -> Result<(), PluginError> {
-    let manifest = &mut ctx.manifest;
-
-    if manifest.is_empty() {
-        logger::warn("Manifest is empty.");
-        return Ok(());
-    }
-
-    let total = manifest.total_plugin_count();
-    logger::debug(&format!("Manifest has {total} plugin entries."));
-
     if !yes {
         println!("To actually clean, run with --yes flag.");
         return Ok(());
     }
 
-    let package_names: Vec<String> = manifest
-        .packages
-        .iter()
-        .map(|p| p.name.to_string())
-        .collect();
+    let manifest = &mut ctx.manifest;
 
-    for package_name in &package_names {
-        uninstall_package(&ctx.uv_path, &ctx.python_path, package_name);
+    if manifest.is_empty() {
+        let manifest_path = PathBuf::from(ctx.config.get_cache_path()).join("manifest.toml");
+        println!(
+            "No manifest found at: {}",
+            manifest_path.display().to_string().cyan()
+        );
+        clean_cache_folder();
+    } else {
+        let total = manifest.total_plugin_count();
+        logger::debug(&format!("Manifest has {total} plugin entries."));
+
+        let package_names: Vec<String> = manifest
+            .packages
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
+
+        for package_name in &package_names {
+            uninstall_package(&ctx.uv_path, &ctx.python_path, package_name);
+        }
+
+        manifest.clear()?;
+        clean_cache_folder();
+        println!("Removed {total} plugin(s)");
     }
-
-    manifest.clear()?;
-
-    println!("{}", format!("Removed {total} plugin(s)").dimmed());
     Ok(())
 }
 
