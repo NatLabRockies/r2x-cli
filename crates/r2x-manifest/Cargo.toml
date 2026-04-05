@@ -1,6 +1,6 @@
 [package]
 name = "r2x-manifest"
-version = "0.0.12"
+version = "0.1.0"
 edition = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
