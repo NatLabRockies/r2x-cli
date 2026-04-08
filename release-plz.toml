@@ -27,6 +27,9 @@ allow_dirty = false
 # disallow packaging with uncommitted changes
 publish_allow_dirty = false
 
+# only bump versions for meaningful changes, ignore chore/docs/ci/style
+release_commits = "^(feat|fix|refactor|perf|revert|test|build)"
+
 # disable running `cargo-semver-checks`
 semver_check = false
 
