@@ -7,7 +7,7 @@ power systems modeling ecosystem.
 <div align="center">
 
 [![CI](https://github.com/NatLabRockies/r2x-cli/actions/workflows/build.yml/badge.svg)](https://github.com/NatLabRockies/r2x-cli/actions/workflows/build.yml)
-[![Release](https://github.com/NatLabRockies/r2x-cli/actions/workflows/release.yml/badge.svg)](https://github.com/NatLabRockies/r2x-cli/actions/workflows/release.yml)
+[![Release](https://github.com/NatLabRockies/r2x-cli/actions/workflows/release.yml/badge.svg?event=push)](https://github.com/NatLabRockies/r2x-cli/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](./LICENSE.txt)
 
 </div>
