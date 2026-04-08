@@ -13,7 +13,7 @@ power systems modeling ecosystem.
 </div>
 
 <p align="center">
-<a href="#installation">Installation</a> · <a href="#quick-start">Quick Start</a> · <a href="#plugin-management">Plugins</a> · <a href="#running-pipelines">Pipelines</a> · <a href="#interactive-system-shell">Shell</a> · <a href="#architecture">Architecture</a> · <a href="#ecosystem">Ecosystem</a> · <a href="#building-from-source">Source</a> · <a href="#license">License</a>
+<a href="#installation">Installation</a> · <a href="#upgrading">Upgrading</a> · <a href="#quick-start">Quick Start</a> · <a href="#plugin-management">Plugins</a> · <a href="#running-pipelines">Pipelines</a> · <a href="#interactive-system-shell">Shell</a> · <a href="#architecture">Architecture</a> · <a href="#ecosystem">Ecosystem</a> · <a href="#building-from-source">Source</a> · <a href="#license">License</a>
 </p>
 
 ---
@@ -59,6 +59,22 @@ r2x --version
 > Pre-built binaries require Python shared libraries at runtime.
 > If `r2x --version` fails with a missing `libpython` error, run
 > `uv python install 3.12` to make the shared library available.
+
+## Upgrading
+
+If you installed via the shell/powershell installer, a standalone updater is included:
+
+```bash
+r2x-update
+```
+
+Alternatively, re-run the installer to get the latest version:
+
+```bash
+# macOS / Linux
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/NatLabRockies/r2x-cli/releases/latest/download/r2x-installer.sh | sh
+```
 
 ## Quick Start
 
