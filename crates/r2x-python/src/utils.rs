@@ -181,7 +181,6 @@ mod tests {
     use tempfile::TempDir;
 
     /// Helper to create a mock venv structure for testing
-    #[allow(dead_code)]
     fn create_mock_venv_unix(python_version: &str) -> Option<TempDir> {
         let temp_dir = TempDir::new().ok()?;
         let venv_path = temp_dir.path();
@@ -201,7 +200,7 @@ mod tests {
     }
 
     /// Helper to create a mock Windows venv structure for testing
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     fn create_mock_venv_windows() -> Option<TempDir> {
         let temp_dir = TempDir::new().ok()?;
         let venv_path = temp_dir.path();

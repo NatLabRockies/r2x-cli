@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::panic)] // panic is acceptable in test code for unreachable branches
+    #[expect(clippy::panic)] // panic is acceptable in test code for unreachable branches
     fn test_substitute_yaml_value() {
         let mut vars = HashMap::new();
         vars.insert("year".to_string(), serde_yaml::Value::Number(2032.into()));
