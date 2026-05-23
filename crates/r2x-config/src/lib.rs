@@ -510,7 +510,10 @@ mod tests {
         let mut config = Config::default();
         let result = config.set("unknown-key", "value".to_string());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown-key"));
+        if let Err(err) = result {
+            let msg = err.to_string();
+            assert!(msg.contains("unknown-key"), "error should mention the key: {msg}");
+        }
     }
 
     #[test]
