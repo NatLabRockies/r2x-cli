@@ -21,9 +21,9 @@ license = false
 eula = false
 
 [features]
-default = []
-# Adds self-update functionality. This feature is enabled for standalone
-# release binaries and should be left unselected for package-manager builds.
+default = ["self-update"]
+# Adds self-update functionality. Package-manager builds can disable this with
+# `--no-default-features`.
 self-update = ["dep:axoupdater", "dep:http", "dep:tokio"]
 
 [dependencies]
