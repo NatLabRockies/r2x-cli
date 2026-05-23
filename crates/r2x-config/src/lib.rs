@@ -148,23 +148,38 @@ impl Config {
             "venv-path" => self.venv_path = Some(value),
             "r2x-core-version" => self.r2x_core_version = Some(value),
             "log-python" => {
-                self.log_python = Some(value.parse::<bool>().map_err(|_| ConfigError::InvalidValue {
-                    key: key.to_string(),
-                    message: format!("expected 'true' or 'false', got '{}'", value),
-                })?);
+                self.log_python =
+                    Some(
+                        value
+                            .parse::<bool>()
+                            .map_err(|_| ConfigError::InvalidValue {
+                                key: key.to_string(),
+                                message: format!("expected 'true' or 'false', got '{}'", value),
+                            })?,
+                    );
             }
             "no-stdout" => {
-                self.no_stdout = Some(value.parse::<bool>().map_err(|_| ConfigError::InvalidValue {
-                    key: key.to_string(),
-                    message: format!("expected 'true' or 'false', got '{}'", value),
-                })?);
+                self.no_stdout =
+                    Some(
+                        value
+                            .parse::<bool>()
+                            .map_err(|_| ConfigError::InvalidValue {
+                                key: key.to_string(),
+                                message: format!("expected 'true' or 'false', got '{}'", value),
+                            })?,
+                    );
             }
             "log-path" => self.log_path = Some(value),
             "log-max-size" => {
-                self.log_max_size = Some(value.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
-                    key: key.to_string(),
-                    message: format!("expected a positive integer, got '{}'", value),
-                })?);
+                self.log_max_size =
+                    Some(
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| ConfigError::InvalidValue {
+                                key: key.to_string(),
+                                message: format!("expected a positive integer, got '{}'", value),
+                            })?,
+                    );
             }
             _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
@@ -372,7 +387,9 @@ impl Config {
             if let Ok(output) = Command::new("where.exe").arg("uv").output() {
                 if output.status.success() {
                     let path = String::from_utf8(output.stdout)
-                        .map_err(|e| ConfigError::UvNotFound(format!("Failed to parse uv path: {}", e)))?
+                        .map_err(|e| {
+                            ConfigError::UvNotFound(format!("Failed to parse uv path: {}", e))
+                        })?
                         .lines()
                         .next()
                         .unwrap_or("")
@@ -408,7 +425,9 @@ impl Config {
             if let Ok(output) = Command::new("which").arg("uv").output() {
                 if output.status.success() {
                     let path = String::from_utf8(output.stdout)
-                        .map_err(|e| ConfigError::UvNotFound(format!("Failed to parse uv path: {}", e)))?
+                        .map_err(|e| {
+                            ConfigError::UvNotFound(format!("Failed to parse uv path: {}", e))
+                        })?
                         .trim()
                         .to_string();
                     eprintln!("Found uv at: {}", path);
@@ -451,7 +470,10 @@ impl Config {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ConfigError::VenvCreation(format!("Failed to create venv: {}", stderr)));
+            return Err(ConfigError::VenvCreation(format!(
+                "Failed to create venv: {}",
+                stderr
+            )));
         }
 
         Ok(venv_path)
@@ -511,7 +533,9 @@ mod tests {
     #[test]
     fn test_config_set_get_log_fields() {
         let mut config = Config::default();
-        assert!(config.set("log-path", "/tmp/r2x-custom.log".to_string()).is_ok());
+        assert!(config
+            .set("log-path", "/tmp/r2x-custom.log".to_string())
+            .is_ok());
         assert!(config.set("log-max-size", "1048576".to_string()).is_ok());
         assert_eq!(
             config.get("log-path"),
