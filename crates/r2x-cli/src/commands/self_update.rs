@@ -99,6 +99,17 @@ fn format_install_hint() -> String {
 }
 
 #[cfg(feature = "self-update")]
+fn bail_not_standalone() -> Result<i32> {
+    eprintln!(
+        "{}{} Self-update is only available for r2x binaries installed via the standalone installation scripts.",
+        "error".red().bold(),
+        ":".bold(),
+    );
+    eprintln!("{}", format_install_hint());
+    Ok(1)
+}
+
+#[cfg(feature = "self-update")]
 async fn self_update(version: Option<String>, token: Option<String>, dry_run: bool) -> Result<i32> {
     use axoupdater::{AxoUpdater, AxoupdateError, UpdateRequest};
     use tracing::{debug, enabled};
@@ -119,13 +130,7 @@ async fn self_update(version: Option<String>, token: Option<String>, dry_run: bo
     // r2x was likely installed via a package manager.
     let Ok(updater) = updater.load_receipt() else {
         debug!("no receipt found; assuming r2x was installed via a package manager");
-        eprintln!(
-            "{}{} Self-update is only available for r2x binaries installed via the standalone installation scripts.",
-            "error".red().bold(),
-            ":".bold(),
-        );
-        eprintln!("{}", format_install_hint());
-        return Ok(1);
+        return bail_not_standalone();
     };
 
     // If we know what our version is, ignore whatever the receipt thinks it is.
@@ -140,22 +145,13 @@ async fn self_update(version: Option<String>, token: Option<String>, dry_run: bo
         debug!(
             "receipt is not for this executable; assuming r2x was installed via a package manager"
         );
-        eprintln!(
-            "{}{} Self-update is only available for r2x binaries installed via the standalone installation scripts.",
-            "error".red().bold(),
-            ":".bold(),
-        );
-        eprintln!("{}", format_install_hint());
-        return Ok(1);
+        return bail_not_standalone();
     }
 
     eprintln!(
-        "{}",
-        format_args!(
-            "{}{} Checking for updates...",
-            "info".cyan().bold(),
-            ":".bold()
-        )
+        "{}{} Checking for updates...",
+        "info".cyan().bold(),
+        ":".bold()
     );
 
     let update_request = if let Some(version) = version {
@@ -183,13 +179,10 @@ async fn self_update(version: Option<String>, token: Option<String>, dry_run: bo
             );
         } else {
             eprintln!(
-                "{}",
-                format_args!(
-                    "{}{} You're on the latest version of r2x ({})",
-                    "success".green().bold(),
-                    ":".bold(),
-                    format!("v{}", env!("CARGO_PKG_VERSION")).bold().white()
-                )
+                "{}{} You're on the latest version of r2x ({})",
+                "success".green().bold(),
+                ":".bold(),
+                format!("v{}", env!("CARGO_PKG_VERSION")).bold().white()
             );
         }
         return Ok(0);
@@ -218,42 +211,33 @@ async fn self_update(version: Option<String>, token: Option<String>, dry_run: bo
             };
 
             eprintln!(
-                "{}",
-                format_args!(
-                    "{}{} {direction} r2x {}! {}",
-                    "success".green().bold(),
-                    ":".bold(),
-                    version_information,
-                    format!(
-                        "https://github.com/NatLabRockies/r2x-cli/releases/tag/{}",
-                        result.new_version_tag
-                    )
-                    .cyan()
+                "{}{} {direction} r2x {}! {}",
+                "success".green().bold(),
+                ":".bold(),
+                version_information,
+                format!(
+                    "https://github.com/NatLabRockies/r2x-cli/releases/tag/{}",
+                    result.new_version_tag
                 )
+                .cyan()
             );
         }
         Ok(None) => {
             eprintln!(
-                "{}",
-                format_args!(
-                    "{}{} You're on the latest version of r2x ({})",
-                    "success".green().bold(),
-                    ":".bold(),
-                    format!("v{}", env!("CARGO_PKG_VERSION")).bold().white()
-                )
+                "{}{} You're on the latest version of r2x ({})",
+                "success".green().bold(),
+                ":".bold(),
+                format!("v{}", env!("CARGO_PKG_VERSION")).bold().white()
             );
         }
         Err(err) => {
             return if let AxoupdateError::Reqwest(err) = err {
                 if err.status() == Some(http::StatusCode::FORBIDDEN) && token.is_none() {
                     eprintln!(
-                        "{}",
-                        format_args!(
-                            "{}{} GitHub API rate limit exceeded. Please provide a GitHub token via the {} option.",
-                            "error".red().bold(),
-                            ":".bold(),
-                            "`--token`".green().bold()
-                        )
+                        "{}{} GitHub API rate limit exceeded. Please provide a GitHub token via the {} option.",
+                        "error".red().bold(),
+                        ":".bold(),
+                        "`--token`".green().bold()
                     );
                     Ok(1)
                 } else {

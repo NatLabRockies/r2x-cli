@@ -171,7 +171,7 @@ jobs:
           echo "Building dist-profile binaries first..."
           TARGETS="${{ join(matrix.targets, ' ') }}"
           for target in $TARGETS; do
-            cargo build --profile dist -p r2x --target "$target" --features self-update
+            cargo build --profile dist -p r2x --target "$target"
           done
 
           echo "Fixing Python library paths..."
@@ -186,7 +186,7 @@ jobs:
           echo "Building dist-profile binaries first..."
           TARGETS="${{ join(matrix.targets, ' ') }}"
           for target in $TARGETS; do
-            cargo build --profile dist -p r2x --target "$target" --features self-update
+            cargo build --profile dist -p r2x --target "$target"
           done
 
           echo "Fixing Python library paths..."
