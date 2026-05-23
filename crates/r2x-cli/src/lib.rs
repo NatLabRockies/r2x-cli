@@ -6,6 +6,7 @@ pub mod commands;
 pub mod common;
 pub mod errors;
 pub mod help;
+mod install_source;
 pub mod manifest_lookup;
 pub mod package_verification;
 pub mod pipeline_config;
