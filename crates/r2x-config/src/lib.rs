@@ -512,7 +512,10 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             let msg = err.to_string();
-            assert!(msg.contains("unknown-key"), "error should mention the key: {msg}");
+            assert!(
+                msg.contains("unknown-key"),
+                "error should mention the key: {msg}"
+            );
         }
     }
 
