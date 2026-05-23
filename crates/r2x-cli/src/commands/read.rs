@@ -1522,8 +1522,7 @@ fn module_exists(python_exe: &str, module_name: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+        .is_ok_and(|status| status.success())
 }
 
 fn install_package_with_spinner(

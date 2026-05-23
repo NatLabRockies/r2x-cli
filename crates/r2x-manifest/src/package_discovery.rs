@@ -8,7 +8,7 @@ use tracing::{debug, info};
 
 #[derive(Debug, Deserialize)]
 struct DirectUrlVcsInfo {
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     vcs: String,
     #[serde(default)]
     requested_revision: Option<String>,

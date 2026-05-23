@@ -81,12 +81,8 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
     let action = if let Some(action) = action {
         action
     } else {
-        println!(
-            "{}",
-            "Tip: run `r2x config show` to inspect settings or `r2x config set <key> <value>` to update them."
-                .dimmed()
-        );
-        return;
+        // Default to show when no subcommand provided (like git config)
+        ConfigAction::Show
     };
 
     match action {
@@ -201,7 +197,10 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                             | "log-max-size"
                     )
                 {
-                    config.set(&key, value.clone());
+                    if let Err(e) = config.set(&key, value.clone()) {
+                        logger::error(&format!("Failed to set config '{}': {}", key, e));
+                        return;
+                    }
                     match config.save() {
                         Ok(()) => {
                             logger::success(&format!("Set {} = {}", key, value));

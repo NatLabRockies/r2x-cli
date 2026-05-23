@@ -1,6 +1,42 @@
 pub mod venv_paths;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+// =============================================================================
+// ConfigError - typed error for configuration operations
+// =============================================================================
+
+/// Errors that can occur during configuration operations
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Failed to parse config TOML: {0}")]
+    TomlParse(#[from] toml::de::Error),
+
+    #[error("Failed to serialize config to TOML: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
+
+    #[error("uv not found: {0}")]
+    UvNotFound(String),
+
+    #[error("Failed to create venv: {0}")]
+    VenvCreation(String),
+
+    #[error("Unknown config key: '{0}'")]
+    UnknownKey(String),
+
+    #[error("Failed to parse config value for '{key}': {message}")]
+    InvalidValue { key: String, message: String },
+
+    #[error("Home directory not found")]
+    NoHomeDir,
+
+    #[error("Config directory not found")]
+    NoConfigDir,
+}
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -69,7 +105,7 @@ impl Config {
         default
     }
 
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load() -> Result<Self, ConfigError> {
         let path = Self::path();
         if path.exists() {
             let content = fs::read_to_string(&path)?;
@@ -79,7 +115,7 @@ impl Config {
         }
     }
 
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self) -> Result<(), ConfigError> {
         let path = Self::path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -104,19 +140,50 @@ impl Config {
         }
     }
 
-    pub fn set(&mut self, key: &str, value: String) {
+    pub fn set(&mut self, key: &str, value: String) -> Result<(), ConfigError> {
         match key {
             "cache-path" => self.cache_path = Some(value),
             "uv-path" => self.uv_path = Some(value),
             "python-version" => self.python_version = Some(value),
             "venv-path" => self.venv_path = Some(value),
             "r2x-core-version" => self.r2x_core_version = Some(value),
-            "log-python" => self.log_python = value.parse::<bool>().ok(),
-            "no-stdout" => self.no_stdout = value.parse::<bool>().ok(),
+            "log-python" => {
+                self.log_python =
+                    Some(
+                        value
+                            .parse::<bool>()
+                            .map_err(|_| ConfigError::InvalidValue {
+                                key: key.to_string(),
+                                message: format!("expected 'true' or 'false', got '{}'", value),
+                            })?,
+                    );
+            }
+            "no-stdout" => {
+                self.no_stdout =
+                    Some(
+                        value
+                            .parse::<bool>()
+                            .map_err(|_| ConfigError::InvalidValue {
+                                key: key.to_string(),
+                                message: format!("expected 'true' or 'false', got '{}'", value),
+                            })?,
+                    );
+            }
             "log-path" => self.log_path = Some(value),
-            "log-max-size" => self.log_max_size = value.parse::<u64>().ok(),
-            _ => {}
+            "log-max-size" => {
+                self.log_max_size =
+                    Some(
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| ConfigError::InvalidValue {
+                                key: key.to_string(),
+                                message: format!("expected a positive integer, got '{}'", value),
+                            })?,
+                    );
+            }
+            _ => return Err(ConfigError::UnknownKey(key.to_string())),
         }
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -163,7 +230,7 @@ impl Config {
         values
     }
 
-    pub fn reset() -> Result<(), Box<dyn std::error::Error>> {
+    pub fn reset() -> Result<(), ConfigError> {
         let path = Self::path();
         if path.exists() {
             fs::remove_file(&path)?;
@@ -276,7 +343,7 @@ impl Config {
         }
     }
 
-    pub fn ensure_uv_path(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn ensure_uv_path(&mut self) -> Result<String, ConfigError> {
         // Check if the stored path exists
         if let Some(ref path) = self.uv_path {
             if std::path::Path::new(path).exists() {
@@ -310,7 +377,7 @@ impl Config {
                 .status()?;
 
             if !status.success() {
-                return Err("Failed to install uv. Please install it manually from: https://docs.astral.sh/uv/getting-started/installation/".into());
+                return Err(ConfigError::UvNotFound("Failed to install uv. Please install it manually from: https://docs.astral.sh/uv/getting-started/installation/".to_string()));
             }
 
             eprintln!("\nuv installation completed. Verifying installation...");
@@ -319,7 +386,10 @@ impl Config {
             // Try to find it using where.exe
             if let Ok(output) = Command::new("where.exe").arg("uv").output() {
                 if output.status.success() {
-                    let path = String::from_utf8(output.stdout)?
+                    let path = String::from_utf8(output.stdout)
+                        .map_err(|e| {
+                            ConfigError::UvNotFound(format!("Failed to parse uv path: {}", e))
+                        })?
                         .lines()
                         .next()
                         .unwrap_or("")
@@ -334,7 +404,7 @@ impl Config {
                 }
             }
 
-            return Err("Failed to locate uv after installation. Please add %USERPROFILE%\\.local\\bin to your PATH and restart your terminal".into());
+            return Err(ConfigError::UvNotFound("Failed to locate uv after installation. Please add %USERPROFILE%\\.local\\bin to your PATH and restart your terminal".to_string()));
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -346,7 +416,7 @@ impl Config {
                 .status()?;
 
             if !status.success() {
-                return Err("Failed to install uv".into());
+                return Err(ConfigError::UvNotFound("Failed to install uv".to_string()));
             }
 
             eprintln!("\nuv installation completed. Verifying installation...");
@@ -354,7 +424,12 @@ impl Config {
             // Verify the installation
             if let Ok(output) = Command::new("which").arg("uv").output() {
                 if output.status.success() {
-                    let path = String::from_utf8(output.stdout)?.trim().to_string();
+                    let path = String::from_utf8(output.stdout)
+                        .map_err(|e| {
+                            ConfigError::UvNotFound(format!("Failed to parse uv path: {}", e))
+                        })?
+                        .trim()
+                        .to_string();
                     eprintln!("Found uv at: {}", path);
                     self.uv_path = Some(path.clone());
                     self.save()?;
@@ -362,17 +437,17 @@ impl Config {
                 }
             }
 
-            Err("Failed to locate uv after installation. Verify that ~/.local/bin or ~/.cargo/bin is in your PATH".into())
+            Err(ConfigError::UvNotFound("Failed to locate uv after installation. Verify that ~/.local/bin or ~/.cargo/bin is in your PATH".to_string()))
         }
     }
 
-    pub fn ensure_cache_path(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn ensure_cache_path(&mut self) -> Result<String, ConfigError> {
         let cache_path = self.get_cache_path();
         fs::create_dir_all(&cache_path)?;
         Ok(cache_path)
     }
 
-    pub fn ensure_venv_path(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn ensure_venv_path(&mut self) -> Result<String, ConfigError> {
         use std::process::Command;
 
         let venv_path = self.get_venv_path();
@@ -395,7 +470,10 @@ impl Config {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Failed to create venv: {}", stderr).into());
+            return Err(ConfigError::VenvCreation(format!(
+                "Failed to create venv: {}",
+                stderr
+            )));
         }
 
         Ok(venv_path)
@@ -415,23 +493,30 @@ mod tests {
     #[test]
     fn test_config_set_get() {
         let mut config = Config::default();
-        config.set("cache-path", "test-value".to_string());
+        assert!(config.set("cache-path", "test-value".to_string()).is_ok());
         assert_eq!(config.get("cache-path"), Some("test-value".to_string()));
     }
 
     #[test]
     fn test_config_multiple_fields() {
         let mut config = Config::default();
-        config.set("cache-path", "/tmp/cache".to_string());
+        assert!(config.set("cache-path", "/tmp/cache".to_string()).is_ok());
         assert_eq!(config.get("cache-path"), Some("/tmp/cache".to_string()));
         assert!(!config.is_empty());
     }
 
     #[test]
-    fn test_config_unknown_key() {
+    fn test_config_unknown_key_returns_error() {
         let mut config = Config::default();
-        config.set("unknown-key", "value".to_string());
-        assert_eq!(config.get("unknown-key"), None);
+        let result = config.set("unknown-key", "value".to_string());
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("unknown-key"),
+                "error should mention the key: {msg}"
+            );
+        }
     }
 
     #[test]
@@ -445,8 +530,8 @@ mod tests {
     #[test]
     fn test_config_set_get_bool_fields() {
         let mut config = Config::default();
-        config.set("no-stdout", "true".to_string());
-        config.set("log-python", "false".to_string());
+        assert!(config.set("no-stdout", "true".to_string()).is_ok());
+        assert!(config.set("log-python", "false".to_string()).is_ok());
         assert_eq!(config.get("no-stdout"), Some("true".to_string()));
         assert_eq!(config.get("log-python"), Some("false".to_string()));
     }
@@ -454,8 +539,10 @@ mod tests {
     #[test]
     fn test_config_set_get_log_fields() {
         let mut config = Config::default();
-        config.set("log-path", "/tmp/r2x-custom.log".to_string());
-        config.set("log-max-size", "1048576".to_string());
+        assert!(config
+            .set("log-path", "/tmp/r2x-custom.log".to_string())
+            .is_ok());
+        assert!(config.set("log-max-size", "1048576".to_string()).is_ok());
         assert_eq!(
             config.get("log-path"),
             Some("/tmp/r2x-custom.log".to_string())

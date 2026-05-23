@@ -114,6 +114,13 @@ fn exit_on_plugin_error(result: Result<(), r2x::plugins::error::PluginError>) {
 }
 
 fn main() {
+    // Respect NO_COLOR and TERM=dumb for accessibility and automation
+    if std::env::var_os("NO_COLOR").is_some()
+        || std::env::var("TERM").ok().as_deref() == Some("dumb")
+    {
+        colored::control::set_override(false);
+    }
+
     let cli = Cli::parse();
 
     let mut startup_config = match config_manager::Config::load() {

@@ -25,6 +25,10 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
           rustflags: ""
+      - name: Setup uv & Python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -46,5 +50,9 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           rustflags: ""
+      - name: Setup uv & Python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
       - name: Test
         run: cargo test --workspace --all-features

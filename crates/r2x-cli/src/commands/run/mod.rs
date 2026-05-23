@@ -75,7 +75,7 @@ pub struct RunCommand {
     pub list: bool,
     #[arg(long)]
     pub print: bool,
-    #[arg(long)]
+    #[arg(short = 'n', long)]
     pub dry_run: bool,
     #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<String>,
