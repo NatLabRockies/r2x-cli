@@ -107,6 +107,47 @@ fn test_plugins_help() {
 }
 
 #[test]
+fn test_self_update_help() {
+    r2x_cmd()
+        .args(["self", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: r2x self update"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn test_self_upgrade_alias() {
+    r2x_cmd()
+        .args(["self", "upgrade", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: r2x self update"));
+}
+
+#[cfg(feature = "self-update")]
+#[test]
+fn test_self_update_requires_standalone_receipt() {
+    r2x_cmd()
+        .args(["self", "update", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Self-update is only available for r2x binaries installed via the standalone installation scripts",
+        ));
+}
+
+#[cfg(not(feature = "self-update"))]
+#[test]
+fn test_self_update_requires_feature() {
+    r2x_cmd()
+        .args(["self", "update", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot self-update"));
+}
+
+#[test]
 fn test_config_show() {
     r2x_cmd()
         .args(["config", "show"])

@@ -3,7 +3,7 @@ use r2x::commands::{
     config::{self, ConfigAction, PythonAction},
     init,
     log::{self, LogAction},
-    plugins, read, run,
+    plugins, read, run, self_update,
 };
 use r2x::common::GlobalOpts;
 use r2x_config as config_manager;
@@ -96,6 +96,8 @@ enum Commands {
     Run(run::RunCommand),
     /// Read a system from JSON (stdin or file) and open an interactive IPython session
     Read(read::ReadCommand),
+    /// Manage the r2x executable
+    Self_(self_update::SelfNamespace),
 }
 
 fn with_plugin_context<F>(action: F) -> Result<(), r2x::plugins::error::PluginError>
@@ -155,9 +157,11 @@ fn main() {
         eprintln!("Warning: Failed to initialize logger: {}", e);
     }
 
-    if let Some(cfg) = startup_config.as_mut() {
-        if let Err(e) = cfg.ensure_uv_path().and_then(|_| cfg.ensure_cache_path()) {
-            logger::warn(&format!("Failed to setup CLI: {}", e));
+    if !matches!(cli.command, Commands::Self_(_)) {
+        if let Some(cfg) = startup_config.as_mut() {
+            if let Err(e) = cfg.ensure_uv_path().and_then(|_| cfg.ensure_cache_path()) {
+                logger::warn(&format!("Failed to setup CLI: {}", e));
+            }
         }
     }
 
@@ -239,5 +243,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Self_(args) => match self_update::handle_self_command(args) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                logger::error(&e.to_string());
+                std::process::exit(1);
+            }
+        },
     }
 }
