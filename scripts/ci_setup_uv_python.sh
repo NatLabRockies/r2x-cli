@@ -83,16 +83,17 @@ install_requested_python() {
 resolve_python() {
     local requested_version="$1"
     local requested_abi="$2"
-    local -n resolved_query_ref="$3"
-    local -n python_bin_ref="$4"
 
-    resolved_query_ref="${requested_version}"
-    python_bin_ref="$(uv python find "${resolved_query_ref}" 2>/dev/null || true)"
+    local resolved_query="${requested_version}"
+    local python_bin
+    python_bin="$(uv python find "${resolved_query}" 2>/dev/null || true)"
 
-    if [[ -z "${python_bin_ref}" && "${requested_abi}" != "${requested_version}" ]]; then
-        resolved_query_ref="${requested_abi}"
-        python_bin_ref="$(uv python find "${resolved_query_ref}" 2>/dev/null || true)"
+    if [[ -z "${python_bin}" && "${requested_abi}" != "${requested_version}" ]]; then
+        resolved_query="${requested_abi}"
+        python_bin="$(uv python find "${resolved_query}" 2>/dev/null || true)"
     fi
+
+    printf '%s\n%s\n' "${resolved_query}" "${python_bin}"
 }
 
 main() {
@@ -109,8 +110,10 @@ main() {
 
     install_requested_python "${requested_version}" "${requested_abi}" "${install_hint}"
 
-    local resolved_query python_bin
-    resolve_python "${requested_version}" "${requested_abi}" resolved_query python_bin
+    local resolved_python resolved_query python_bin
+    resolved_python="$(resolve_python "${requested_version}" "${requested_abi}")"
+    resolved_query="$(printf '%s\n' "${resolved_python}" | sed -n '1p')"
+    python_bin="$(printf '%s\n' "${resolved_python}" | sed -n '2p')"
     if [[ -z "${python_bin}" ]]; then
         gha_error "unable to resolve Python for requested version ${requested_version} (tried ABI ${requested_abi})"
         gha_error "Install it with: ${install_hint}"
