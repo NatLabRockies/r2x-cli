@@ -15,7 +15,7 @@ env:
 
 jobs:
   lint:
-    name: Lint (stable)
+    name: Lint (stable, Python 3.12)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -29,20 +29,29 @@ jobs:
         uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
+      - name: PyO3 diagnostics
+        shell: bash
+        run: bash scripts/ci_pyo3_diagnostics.sh
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    name: Tests (${{ matrix.toolchain }})
+    name: Tests (${{ matrix.toolchain }}, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        toolchain:
-          - stable
-          - beta
-          - nightly
+        include:
+          - toolchain: stable
+            python-version: "3.12"
+          - toolchain: stable
+            python-version: "3.13"
+          - toolchain: beta
+            python-version: "3.12"
+          - toolchain: nightly
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain
@@ -51,8 +60,16 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           rustflags: ""
       - name: Setup uv & Python
+        id: python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
+      - name: PyO3 diagnostics
+        shell: bash
+        run: bash scripts/ci_pyo3_diagnostics.sh
       - name: Test
-        run: cargo test --workspace --all-features
+        env:
+          PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
+        run: |
+          export LD_LIBRARY_PATH="${PYTHON_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          cargo test --workspace --all-features

@@ -224,6 +224,22 @@ pub fn debug(message: &str) {
     }
 }
 
+/// Return whether a debug message would be emitted anywhere.
+pub fn debug_enabled() -> bool {
+    get_verbosity() >= 1
+        || FILE_LOG_LEVEL
+            .lock()
+            .ok()
+            .is_some_and(|level| *level >= LogLevel::Debug)
+}
+
+/// Log a lazily-built debug message.
+pub fn debug_lazy(message: impl FnOnce() -> String) {
+    if debug_enabled() {
+        debug(&message());
+    }
+}
+
 /// Log a debug message to console only (not to file)
 pub fn debug_console_only(message: &str) {
     if get_verbosity() >= 1 {
@@ -384,5 +400,64 @@ pub fn spinner_stop() {
         if let Some(spinner) = spinner_guard.take() {
             spinner.finish_and_clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn debug_lazy_skips_message_construction_when_debug_is_disabled() {
+        let Ok(_guard) = TEST_LOCK.lock() else {
+            return;
+        };
+        {
+            let Ok(mut verbosity) = VERBOSITY.lock() else {
+                return;
+            };
+            let Ok(mut file_level) = FILE_LOG_LEVEL.lock() else {
+                return;
+            };
+            *verbosity = 0;
+            *file_level = LogLevel::Info;
+        }
+
+        let called = Cell::new(false);
+        debug_lazy(|| {
+            called.set(true);
+            "expensive debug message".to_string()
+        });
+
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn debug_lazy_builds_message_when_debug_is_enabled_for_file() {
+        let Ok(_guard) = TEST_LOCK.lock() else {
+            return;
+        };
+        {
+            let Ok(mut verbosity) = VERBOSITY.lock() else {
+                return;
+            };
+            let Ok(mut file_level) = FILE_LOG_LEVEL.lock() else {
+                return;
+            };
+            *verbosity = 0;
+            *file_level = LogLevel::Debug;
+        }
+
+        let called = Cell::new(false);
+        debug_lazy(|| {
+            called.set(true);
+            "expensive debug message".to_string()
+        });
+
+        assert!(called.get());
     }
 }

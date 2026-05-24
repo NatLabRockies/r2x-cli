@@ -12,15 +12,17 @@
 
 use crate::errors::BridgeError;
 use crate::utils::{resolve_python_path, resolve_site_package_path};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
-use r2x_config::Config;
+use r2x_config::{Config, PythonRuntimeVersion};
 use r2x_logger as logger;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 /// The Python bridge for plugin execution
 pub struct Bridge {
@@ -30,6 +32,8 @@ pub struct Bridge {
 
 /// Global bridge singleton
 static BRIDGE_INSTANCE: OnceCell<Result<Bridge, BridgeError>> = OnceCell::new();
+static POST_IMPORT_LOG_MODULES_ENABLED: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
 
 impl Bridge {
     /// Get or initialize the bridge singleton
@@ -69,14 +73,14 @@ impl Bridge {
         let venv_path = PathBuf::from(config.get_venv_path());
 
         if !venv_path.exists() {
-            // Create venv using the compiled Python version
+            // Create venv using the configured runtime Python version.
             Self::create_venv(&config, &venv_path)?;
         }
 
         // Resolve PYTHONHOME from venv's pyvenv.cfg
         let python_home = resolve_python_home(&venv_path)?;
         env::set_var("PYTHONHOME", &python_home);
-        logger::debug(&format!("Set PYTHONHOME={}", python_home.display()));
+        logger::debug_lazy(|| format!("Set PYTHONHOME={}", python_home.display()));
 
         // Get site-packages path
         let site_packages = resolve_site_package_path(&venv_path)?;
@@ -85,16 +89,14 @@ impl Bridge {
         Self::configure_python_path(&site_packages);
 
         // Check if Python library is available before initializing
-        check_python_library_available()?;
+        let python_version = runtime_python_version(&config)?;
+        check_python_library_available(&python_version)?;
 
         // Initialize PyO3
         logger::debug("Initializing PyO3...");
         let pyo3_start = std::time::Instant::now();
         pyo3::Python::initialize();
-        logger::debug(&format!(
-            "pyo3::Python::initialize took: {:?}",
-            pyo3_start.elapsed()
-        ));
+        logger::debug_lazy(|| format!("pyo3::Python::initialize took: {:?}", pyo3_start.elapsed()));
 
         // Enable bytecode generation
         pyo3::Python::attach(|py| {
@@ -127,24 +129,27 @@ impl Bridge {
             logger::warn(&format!("Python logging configuration failed: {}", e));
         }
 
-        logger::debug(&format!(
-            "Total bridge initialization took: {:?}",
-            start_time.elapsed()
-        ));
+        logger::debug_lazy(|| {
+            format!(
+                "Total bridge initialization took: {:?}",
+                start_time.elapsed()
+            )
+        });
 
         Ok(Bridge { _marker: () })
     }
 
     /// Create a virtual environment
     ///
-    /// Uses the compiled Python version to ensure compatibility with PyO3.
+    /// Uses the configured runtime Python version. PyO3 is built with abi3-py311,
+    /// so the embedded extension ABI supports Python 3.11 and newer runtimes.
     fn create_venv(config: &Config, venv_path: &PathBuf) -> Result<(), BridgeError> {
         logger::step(&format!(
             "Creating Python virtual environment at: {}",
             venv_path.display()
         ));
 
-        let python_version = get_compiled_python_version();
+        let python_version = runtime_python_version(config)?;
 
         // Try uv first
         if let Some(ref uv_path) = config.uv_path {
@@ -152,7 +157,7 @@ impl Bridge {
                 .arg("venv")
                 .arg(venv_path)
                 .arg("--python")
-                .arg(&python_version)
+                .arg(python_version.requested())
                 .output()?;
 
             if output.status.success() {
@@ -161,11 +166,11 @@ impl Bridge {
             }
 
             let stderr = String::from_utf8_lossy(&output.stderr);
-            logger::debug(&format!("uv venv failed: {}", stderr));
+            logger::debug_lazy(|| format!("uv venv failed: {}", stderr));
         }
 
         // Fallback to python3 -m venv
-        let python_cmd = format!("python{}", python_version);
+        let python_cmd = format!("python{}", python_version.requested());
         let output = Command::new(&python_cmd)
             .args(["-m", "venv"])
             .arg(venv_path)
@@ -206,10 +211,9 @@ impl Bridge {
         }
         if let Ok(joined) = env::join_paths(paths) {
             env::set_var("PYTHONPATH", &joined);
-            logger::debug(&format!(
-                "Updated PYTHONPATH to include {}",
-                site_packages.display()
-            ));
+            logger::debug_lazy(|| {
+                format!("Updated PYTHONPATH to include {}", site_packages.display())
+            });
         }
     }
 
@@ -281,10 +285,12 @@ def _r2x_cache_path_override():
         let log_python = logger::get_log_python();
         let log_file = logger::get_log_path_string();
 
-        logger::debug(&format!(
-            "Configuring Python logging with verbosity={}, log_python={}, log_file={}",
-            verbosity, log_python, log_file
-        ));
+        logger::debug_lazy(|| {
+            format!(
+                "Configuring Python logging with verbosity={}, log_python={}, log_file={}",
+                verbosity, log_python, log_file
+            )
+        });
 
         pyo3::Python::attach(|py| {
             let logger_module = PyModule::import(py, "r2x_core.logger").map_err(|e| {
@@ -326,23 +332,48 @@ def _r2x_cache_path_override():
         Ok(())
     }
 
-    /// Reconfigure Python logging for a specific plugin.
+    /// Enable loguru for plugin modules after Python has imported them.
     ///
-    /// Enables loguru for the plugin's Python module in addition to
-    /// the base set of packages. The plugin_name can be either a
-    /// fully-qualified ref like "r2x-nodal.zonal-to-nodal" (the
-    /// package prefix before the dot is used) or a bare name.
-    pub fn reconfigure_logging_for_plugin(plugin_name: &str) -> Result<(), BridgeError> {
-        Self::configure_python_logging()?;
+    /// Many plugin packages call `logger.disable(__name__)` from their
+    /// `__init__.py`; enabling before import can be overwritten. Once a package
+    /// has been imported and re-enabled, later plugin invocations from that same
+    /// package do not need to import loguru or call enable again.
+    pub(crate) fn enable_loguru_modules_after_import(
+        py: Python,
+        modules: &[&str],
+    ) -> Result<(), BridgeError> {
+        let pending = pending_post_import_log_modules(modules);
 
-        // Extract the package portion (before the first dot) and convert
-        // hyphens to underscores so "r2x-nodal.zonal-to-nodal" becomes
-        // "r2x_nodal", matching the Python module name.
-        let package_part = plugin_name.split('.').next().unwrap_or(plugin_name);
-        let module_name = package_part.replace('-', "_");
+        if pending.is_empty() {
+            return Ok(());
+        }
 
-        pyo3::Python::attach(|py| Self::enable_loguru_modules(py, &[&module_name]))
+        let pending_refs = pending.iter().map(String::as_str).collect::<Vec<_>>();
+        Self::enable_loguru_modules(py, &pending_refs)?;
+
+        mark_post_import_log_modules_enabled(&pending);
+
+        Ok(())
     }
+}
+
+fn pending_post_import_log_modules(modules: &[&str]) -> Vec<String> {
+    let enabled = POST_IMPORT_LOG_MODULES_ENABLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    modules
+        .iter()
+        .copied()
+        .filter(|module| !enabled.contains(*module))
+        .map(str::to_string)
+        .collect()
+}
+
+fn mark_post_import_log_modules_enabled(modules: &[String]) {
+    let mut enabled = POST_IMPORT_LOG_MODULES_ENABLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    enabled.extend(modules.iter().cloned());
 }
 
 /// Resolve PYTHONHOME from the venv's pyvenv.cfg file.
@@ -369,11 +400,13 @@ fn resolve_python_home(venv_path: &Path) -> Result<PathBuf, BridgeError> {
             if key.trim().eq_ignore_ascii_case("home") {
                 let home_value = PathBuf::from(value.trim());
                 let python_home = normalize_python_home(&home_value);
-                logger::debug(&format!(
-                    "Resolved PYTHONHOME from pyvenv.cfg home={} -> {}",
-                    home_value.display(),
-                    python_home.display()
-                ));
+                logger::debug_lazy(|| {
+                    format!(
+                        "Resolved PYTHONHOME from pyvenv.cfg home={} -> {}",
+                        home_value.display(),
+                        python_home.display()
+                    )
+                });
                 return Ok(python_home);
             }
         }
@@ -428,29 +461,25 @@ fn is_python_executable_name(name: &str) -> bool {
     false
 }
 
-/// Get the Python version that PyO3 was compiled against
-///
-/// Returns the version string (e.g., "3.12") based on PyO3's abi3 feature.
-/// This should match the PYO3_PYTHON environment variable used during build.
-fn get_compiled_python_version() -> String {
-    // PyO3 with abi3-py311 is compatible with Python 3.11+
-    // The actual version depends on PYO3_PYTHON at build time
-    // Default to 3.12 which is the version in the justfile
-    "3.12".to_string()
+/// Select the Python runtime version for venv creation and library discovery.
+fn runtime_python_version(config: &Config) -> Result<PythonRuntimeVersion, BridgeError> {
+    config.runtime_python_version().map_err(|error| {
+        BridgeError::Initialization(format!("Invalid configured Python version: {}", error))
+    })
 }
 
 /// Check if Python library is available before attempting to initialize PyO3.
 ///
 /// This provides better error messages than the cryptic dyld errors on macOS
 /// or DLL loading errors on Windows.
-fn check_python_library_available() -> Result<(), BridgeError> {
+fn check_python_library_available(
+    python_version: &PythonRuntimeVersion,
+) -> Result<(), BridgeError> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        let python_version = get_compiled_python_version();
-
         #[cfg(target_os = "macos")]
         let (lib_names, search_paths, env_var) = (
-            vec![format!("libpython{}.dylib", python_version)],
+            vec![format!("libpython{}.dylib", python_version.abi())],
             &[
                 "/opt/homebrew/lib",
                 "/usr/local/lib",
@@ -462,8 +491,8 @@ fn check_python_library_available() -> Result<(), BridgeError> {
         #[cfg(target_os = "linux")]
         let (lib_names, search_paths, env_var) = (
             vec![
-                format!("libpython{}.so", python_version),
-                format!("libpython{}.so.1.0", python_version),
+                format!("libpython{}.so", python_version.abi()),
+                format!("libpython{}.so.1.0", python_version.abi()),
             ],
             &[
                 "/usr/lib",
@@ -487,13 +516,9 @@ fn check_python_library_available() -> Result<(), BridgeError> {
         }
 
         // Try to find Python via uv and set up the library path
-        if let Some(lib_dir) = find_python_lib_via_uv(&python_version, &lib_names) {
+        if let Some(lib_dir) = find_python_lib_via_uv(python_version.requested(), &lib_names) {
             prepend_to_env_path(env_var, &lib_dir);
-            logger::debug(&format!(
-                "Set {} to include: {}",
-                env_var,
-                lib_dir.display()
-            ));
+            logger::debug_lazy(|| format!("Set {} to include: {}", env_var, lib_dir.display()));
             return Ok(());
         }
 
@@ -506,8 +531,8 @@ fn check_python_library_available() -> Result<(), BridgeError> {
     #[cfg(target_os = "windows")]
     {
         // On Windows, try to set up the DLL path (best effort)
-        if let Err(e) = setup_windows_dll_path() {
-            logger::debug(&format!("Windows DLL path setup note: {}", e));
+        if let Err(e) = setup_windows_dll_path(python_version) {
+            logger::debug_lazy(|| format!("Windows DLL path setup note: {}", e));
         }
         Ok(())
     }
@@ -531,7 +556,7 @@ where
         for lib_name in lib_names {
             let lib_path = PathBuf::from(path.as_ref()).join(lib_name);
             if lib_path.exists() {
-                logger::debug(&format!("Found Python library at: {}", lib_path.display()));
+                logger::debug_lazy(|| format!("Found Python library at: {}", lib_path.display()));
                 return true;
             }
         }
@@ -561,10 +586,7 @@ fn find_python_lib_via_uv(python_version: &str, lib_names: &[String]) -> Option<
     for lib_name in lib_names {
         let lib_path = lib_dir.join(lib_name);
         if lib_path.exists() {
-            logger::debug(&format!(
-                "Found Python library via uv: {}",
-                lib_path.display()
-            ));
+            logger::debug_lazy(|| format!("Found Python library via uv: {}", lib_path.display()));
             return Some(lib_dir);
         }
     }
@@ -588,13 +610,12 @@ fn prepend_to_env_path(env_var: &str, dir: &Path) {
 
 /// Setup Windows DLL search path for Python
 #[cfg(target_os = "windows")]
-fn setup_windows_dll_path() -> Result<(), BridgeError> {
-    let python_version = get_compiled_python_version();
-    let dll_name = format!("python{}.dll", python_version.replace(".", ""));
+fn setup_windows_dll_path(python_version: &PythonRuntimeVersion) -> Result<(), BridgeError> {
+    let dll_name = format!("python{}.dll", python_version.abi().replace('.', ""));
 
     // Try to find Python via uv first
     let output = Command::new("uv")
-        .args(["python", "find", &python_version])
+        .args(["python", "find", python_version.requested()])
         .output();
 
     if let Ok(output) = output {
@@ -609,10 +630,12 @@ fn setup_windows_dll_path() -> Result<(), BridgeError> {
                     if let Ok(current_path) = env::var("PATH") {
                         let new_path = format!("{};{}", parent.display(), current_path);
                         env::set_var("PATH", &new_path);
-                        logger::debug(&format!(
-                            "Added {} to PATH for Python DLL discovery",
-                            parent.display()
-                        ));
+                        logger::debug_lazy(|| {
+                            format!(
+                                "Added {} to PATH for Python DLL discovery",
+                                parent.display()
+                            )
+                        });
                         return Ok(());
                     }
                 }
@@ -628,7 +651,9 @@ fn setup_windows_dll_path() -> Result<(), BridgeError> {
                 if let Some(parent) = PathBuf::from(first_line.trim()).parent() {
                     let dll_path = parent.join(&dll_name);
                     if dll_path.exists() {
-                        logger::debug(&format!("Found Python DLL at: {}", dll_path.display()));
+                        logger::debug_lazy(|| {
+                            format!("Found Python DLL at: {}", dll_path.display())
+                        });
                         return Ok(());
                     }
                 }
@@ -645,7 +670,10 @@ fn setup_windows_dll_path() -> Result<(), BridgeError> {
         3. Ensure Python is in your PATH\n\n\
         If you installed Python via uv, try running:\n\
            uv python find {}",
-        dll_name, python_version, python_version, python_version
+        dll_name,
+        python_version.requested(),
+        python_version.requested(),
+        python_version.requested()
     )))
 }
 
@@ -675,6 +703,7 @@ pub struct PythonEnvCompat {
 #[cfg(test)]
 mod tests {
     use crate::python_bridge::*;
+    use r2x_config::default_python_version;
     use std::fs;
     use tempfile::TempDir;
 
@@ -685,9 +714,88 @@ mod tests {
     }
 
     #[test]
-    fn test_get_compiled_python_version() {
-        let version = get_compiled_python_version();
-        assert!(version.starts_with("3."));
+    fn test_runtime_python_version_defaults_to_build_python_version() {
+        let config = Config::default();
+        assert_eq!(
+            runtime_python_version(&config)
+                .ok()
+                .map(|version| (version.requested().to_string(), version.abi().to_string())),
+            Some((
+                default_python_version().to_string(),
+                default_python_version().to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_runtime_python_version_uses_configured_version() {
+        let config = Config {
+            python_version: Some("3.13".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            runtime_python_version(&config)
+                .ok()
+                .map(|version| (version.requested().to_string(), version.abi().to_string())),
+            Some(("3.13".to_string(), "3.13".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_runtime_python_version_keeps_patch_request_but_uses_minor_abi() {
+        let config = Config {
+            python_version: Some("3.13.1".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            runtime_python_version(&config)
+                .ok()
+                .map(|version| (version.requested().to_string(), version.abi().to_string())),
+            Some(("3.13.1".to_string(), "3.13".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_runtime_python_version_ignores_blank_config_value() {
+        let config = Config {
+            python_version: Some("  ".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            runtime_python_version(&config)
+                .ok()
+                .map(|version| (version.requested().to_string(), version.abi().to_string())),
+            Some((
+                default_python_version().to_string(),
+                default_python_version().to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_runtime_python_version_rejects_unsupported_configured_version() {
+        let config = Config {
+            python_version: Some("3.10".to_string()),
+            ..Config::default()
+        };
+
+        assert!(runtime_python_version(&config).is_err());
+    }
+
+    #[test]
+    fn test_post_import_log_module_cache_skips_previously_enabled_modules() {
+        let module_a = "r2x_test_cache_alpha";
+        let module_b = "r2x_test_cache_beta";
+
+        let pending = pending_post_import_log_modules(&[module_a, module_b]);
+        assert!(pending.contains(&module_a.to_string()));
+        assert!(pending.contains(&module_b.to_string()));
+
+        mark_post_import_log_modules_enabled(&[module_a.to_string()]);
+
+        let pending = pending_post_import_log_modules(&[module_a, module_b]);
+        assert!(!pending.contains(&module_a.to_string()));
+        assert!(pending.contains(&module_b.to_string()));
     }
 
     #[test]

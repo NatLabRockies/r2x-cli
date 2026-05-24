@@ -9,6 +9,38 @@ use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use std::time::{Duration, Instant};
 
+pub(crate) struct PythonJson<'py> {
+    loads: Bound<'py, PyAny>,
+    dumps: Bound<'py, PyAny>,
+}
+
+impl<'py> PythonJson<'py> {
+    pub(crate) fn import(py: pyo3::Python<'py>) -> Result<Self, BridgeError> {
+        let module = PyModule::import(py, "json")
+            .map_err(|e| BridgeError::Import("json".to_string(), format!("{}", e)))?;
+        let loads = module.getattr("loads")?;
+        let dumps = module.getattr("dumps")?;
+
+        Ok(Self { loads, dumps })
+    }
+
+    pub(crate) fn loads(&self, input: &str) -> PyResult<Bound<'py, PyAny>> {
+        self.loads.call1((input,))
+    }
+
+    pub(crate) fn dumps(&self, value: &Bound<'py, PyAny>) -> PyResult<String> {
+        self.dumps_with_kwargs(value, None)
+    }
+
+    pub(crate) fn dumps_with_kwargs(
+        &self,
+        value: &Bound<'py, PyAny>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<String> {
+        self.dumps.call((value,), kwargs)?.extract::<String>()
+    }
+}
+
 /// Guard that suppresses Python stdout and restores it on drop.
 pub(crate) struct StdoutGuard<'py> {
     py: pyo3::Python<'py>,
@@ -54,7 +86,7 @@ impl Bridge {
         pyo3::Python::attach(|py| {
             let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
 
-            logger::debug(&format!("Parsing target: {}", target));
+            logger::debug_lazy(|| format!("Parsing target: {}", target));
             let parts: Vec<&str> = target.split(':').collect();
             if parts.len() != 2 {
                 return Err(BridgeError::InvalidEntryPoint(target.to_string()));
@@ -62,32 +94,30 @@ impl Bridge {
             let module_path = parts[0];
             let callable_path = parts[1];
 
-            logger::debug(&format!("Importing module: {}", module_path));
+            logger::debug_lazy(|| format!("Importing module: {}", module_path));
             let module = PyModule::import(py, module_path)
                 .map_err(|e| BridgeError::Import(module_path.to_string(), format!("{}", e)))?;
 
             // Re-enable loguru for this module after import.
             // Python __init__.py files call logger.disable() by convention,
             // which overwrites any enables set before the import.
-            let _ = Bridge::enable_loguru_modules(
+            let _ = Bridge::enable_loguru_modules_after_import(
                 py,
                 &[module_path.split('.').next().unwrap_or(module_path)],
             );
 
-            let json_module = PyModule::import(py, "json")
-                .map_err(|e| BridgeError::Import("json".to_string(), format!("{}", e)))?;
-            let loads = json_module.getattr("loads")?;
+            let json = PythonJson::import(py)?;
 
             logger::debug("Parsing config JSON");
-            let config_dict = loads
-                .call1((config_json,))?
+            let config_dict = json
+                .loads(config_json)?
                 .cast::<pyo3::types::PyDict>()
                 .map_err(|e| BridgeError::Python(format!("Config must be a JSON object: {}", e)))?
                 .clone();
 
             let stdin_obj = if let Some(stdin) = stdin_json {
                 logger::debug("Parsing stdin JSON");
-                Some(loads.call1((stdin,))?)
+                Some(json.loads(stdin)?)
             } else {
                 None
             };
@@ -113,15 +143,17 @@ impl Bridge {
                     callable_path,
                     stdin_obj.as_ref(),
                     &kwargs,
-                    &json_module,
+                    &json,
                 )?
             };
             let call_elapsed = call_start.elapsed();
-            logger::debug(&format!(
-                "Python invocation for '{}' took {}",
-                callable_path,
-                format_duration(call_elapsed)
-            ));
+            logger::debug_lazy(|| {
+                format!(
+                    "Python invocation for '{}' took {}",
+                    callable_path,
+                    format_duration(call_elapsed)
+                )
+            });
             logger::debug("Plugin execution completed");
 
             // For exporters, skip serialization - they write their own output
@@ -176,26 +208,28 @@ impl Bridge {
                         BridgeError::Python(format!("Invalid UTF-8 in JSON output: {}", e))
                     })?
                 } else {
-                    let dumps = json_module.getattr("dumps")?;
-                    dumps.call1((&result_to_serialize,))?.extract::<String>()?
+                    json.dumps(&result_to_serialize)?
                 };
                 let ser_elapsed = ser_start.elapsed();
-                logger::debug(&format!(
-                    "Serialization for '{}' took {}",
-                    callable_path,
-                    format_duration(ser_elapsed)
-                ));
+                logger::debug_lazy(|| {
+                    format!(
+                        "Serialization for '{}' took {}",
+                        callable_path,
+                        format_duration(ser_elapsed)
+                    )
+                });
                 (json_str, ser_elapsed)
             } else {
                 let ser_start = Instant::now();
-                let dumps = json_module.getattr("dumps")?;
-                let json_str = dumps.call1((&result_to_serialize,))?.extract::<String>()?;
+                let json_str = json.dumps(&result_to_serialize)?;
                 let ser_elapsed = ser_start.elapsed();
-                logger::debug(&format!(
-                    "Serialization for '{}' took {}",
-                    callable_path,
-                    format_duration(ser_elapsed)
-                ));
+                logger::debug_lazy(|| {
+                    format!(
+                        "Serialization for '{}' took {}",
+                        callable_path,
+                        format_duration(ser_elapsed)
+                    )
+                });
                 (json_str, ser_elapsed)
             };
 
@@ -259,10 +293,12 @@ impl Bridge {
         let config_instance = if bindings.config.is_some() {
             Bridge::instantiate_config_class(py, &config_params, bindings.config.as_ref())?
         } else {
-            logger::debug(&format!(
-                "Config metadata missing for '{}', discovering from plugin class",
-                class_name
-            ));
+            logger::debug_lazy(|| {
+                format!(
+                    "Config metadata missing for '{}', discovering from plugin class",
+                    class_name
+                )
+            });
             discover_and_instantiate_config(py, &class, &config_params)?
         };
         logger::step(&format!("Config class instantiated for '{}'", class_name));
@@ -349,10 +385,12 @@ impl Bridge {
         } else {
             method_name
         };
-        logger::debug(&format!(
-            "Using method '{}' for plugin '{}'",
-            actual_method_name, class_name
-        ));
+        logger::debug_lazy(|| {
+            format!(
+                "Using method '{}' for plugin '{}'",
+                actual_method_name, class_name
+            )
+        });
         let method = instance.getattr(actual_method_name).map_err(|e| {
             BridgeError::Python(format_python_error(
                 instance.py(),
@@ -368,10 +406,12 @@ impl Bridge {
             match method_accepts_stdin(&method) {
                 Ok(result) => result,
                 Err(err) => {
-                    logger::debug(&format!(
-                        "Failed to inspect method '{}.{}' signature for stdin support: {}",
-                        class_name, method_name, err
-                    ));
+                    logger::debug_lazy(|| {
+                        format!(
+                            "Failed to inspect method '{}.{}' signature for stdin support: {}",
+                            class_name, method_name, err
+                        )
+                    });
                     false
                 }
             }
@@ -395,10 +435,12 @@ impl Bridge {
             })
         } else {
             if stdin_obj.is_some() {
-                logger::debug(&format!(
-                    "Method '{}.{}' does not declare 'system'/'stdin'; skipping stdin payload",
-                    class_name, method_name
-                ));
+                logger::debug_lazy(|| {
+                    format!(
+                        "Method '{}.{}' does not declare 'system'/'stdin'; skipping stdin payload",
+                        class_name, method_name
+                    )
+                });
             }
             method.call0().map_err(|e| {
                 BridgeError::Python(format_python_error(
@@ -416,9 +458,9 @@ impl Bridge {
         callable_path: &str,
         stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
         kwargs: &pyo3::Bound<'py, PyDict>,
-        json_module: &pyo3::Bound<'py, PyModule>,
+        json: &PythonJson<'py>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
-        logger::debug(&format!("Function pattern: {}", callable_path));
+        logger::debug_lazy(|| format!("Function pattern: {}", callable_path));
         let func = module.getattr(callable_path).map_err(|e| {
             BridgeError::Python(format_python_error(
                 module.py(),
@@ -430,8 +472,7 @@ impl Bridge {
         logger::step("Function kwargs prepared (before system injection)");
         if let Some(stdin) = stdin_obj {
             logger::step("Function has stdin - deserializing to System object");
-            let dumps = json_module.getattr("dumps")?;
-            let json_str = dumps.call1((stdin,))?.extract::<String>()?;
+            let json_str = json.dumps(stdin)?;
             let json_bytes = json_str.as_bytes();
 
             let system_module = PyModule::import(py, "r2x_core.system")?;
@@ -583,10 +624,12 @@ fn discover_and_instantiate_config<'py>(
                                     .and_then(|n| n.extract())
                                     .unwrap_or_default();
                                 if type_name.contains("Config") || type_name.contains("config") {
-                                    logger::debug(&format!(
-                                        "Discovered config class '{}' from __orig_bases__",
-                                        type_name
-                                    ));
+                                    logger::debug_lazy(|| {
+                                        format!(
+                                            "Discovered config class '{}' from __orig_bases__",
+                                            type_name
+                                        )
+                                    });
                                     return config_type
                                         .call((), Some(config_params))
                                         .map_err(|e| {
@@ -627,10 +670,12 @@ fn discover_and_instantiate_config<'py>(
                 .getattr("__name__")
                 .and_then(|n| n.extract())
                 .unwrap_or_default();
-            logger::debug(&format!(
-                "Discovered config class '{}' from config_class attribute",
-                type_name
-            ));
+            logger::debug_lazy(|| {
+                format!(
+                    "Discovered config class '{}' from config_class attribute",
+                    type_name
+                )
+            });
             return config_class.call((), Some(config_params)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     py,
@@ -661,4 +706,40 @@ fn discover_and_instantiate_config<'py>(
                 "Failed to instantiate PluginConfig",
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PythonJson;
+    use pyo3::types::{PyAnyMethods, PyDictMethods};
+
+    #[test]
+    fn python_json_reuses_loaded_callables_for_loads_and_dumps() -> Result<(), String> {
+        pyo3::Python::initialize();
+        let (python_version, dumped) =
+            pyo3::Python::attach(|py| -> Result<(String, String), String> {
+                let json = PythonJson::import(py).map_err(|error| error.to_string())?;
+                let value = json
+                    .loads(r#"{"python": "3.13", "ok": true}"#)
+                    .map_err(|error| error.to_string())?;
+                let dict = value
+                    .cast::<pyo3::types::PyDict>()
+                    .map_err(|error| error.to_string())?;
+                let python_version = dict
+                    .get_item("python")
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "missing python key".to_string())?
+                    .extract::<String>()
+                    .map_err(|error| error.to_string())?;
+                let dumped = json.dumps(&value).map_err(|error| error.to_string())?;
+
+                Ok((python_version, dumped))
+            })?;
+
+        assert_eq!(python_version, "3.13");
+        assert!(dumped.contains("\"python\""));
+        assert!(dumped.contains("\"3.13\""));
+
+        Ok(())
+    }
 }

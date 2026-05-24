@@ -2,7 +2,7 @@ use crate::common::GlobalOpts;
 use crate::plugins::install::get_package_info;
 use clap::Subcommand;
 use colored::Colorize;
-use r2x_config::Config;
+use r2x_config::{default_python_version, normalize_python_version, Config};
 use r2x_logger as logger;
 use r2x_python::python_bridge::configure_python_venv;
 use std::fs;
@@ -14,7 +14,7 @@ use std::process::Command;
 pub enum ConfigAction {
     /// Display the current configuration values.
     Show,
-    /// Update a configuration key (e.g. `r2x config set default-python-version 3.13`).
+    /// Update a configuration key (e.g. `r2x config set python-version 3.13`).
     Set { key: String, value: String },
     /// Show the config path or set it when `new_path` is provided.
     Path {
@@ -91,7 +91,10 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
                 println!("{}", "Configuration:".bold().green());
 
                 // Show Python version (explicit or default)
-                let python_version = config.python_version.as_deref().unwrap_or("3.12");
+                let python_version = config
+                    .python_version
+                    .as_deref()
+                    .map_or_else(|| default_python_version().to_string(), str::to_string);
                 let python_suffix = if config.python_version.is_none() {
                     " (default)"
                 } else {
@@ -372,11 +375,21 @@ fn handle_python_install(version: Option<String>, _opts: GlobalOpts) {
     logger::debug("Handling Python install command");
     match Config::load() {
         Ok(mut config) => {
-            let version_str = version
+            let requested_version = version
                 .or_else(|| config.python_version.clone())
-                .unwrap_or_else(|| "3.12".to_string());
+                .unwrap_or_else(|| default_python_version().to_string());
+            let version_str = match normalize_python_version(&requested_version) {
+                Ok(version) => version,
+                Err(e) => {
+                    logger::error(&format!("Invalid Python version: {}", e));
+                    return;
+                }
+            };
 
-            config.python_version = Some(version_str.clone());
+            if let Err(e) = config.set("python-version", version_str.clone()) {
+                logger::error(&format!("Failed to set Python version: {}", e));
+                return;
+            }
             if let Err(e) = config.save() {
                 logger::error(&format!("Failed to save config: {}", e));
                 return;
@@ -570,6 +583,13 @@ fn is_valid_venv(path: &Path) -> bool {
         return false;
     }
 
+    // Must have pyvenv.cfg (the defining marker of a Python venv)
+    let cfg_path = path.join("pyvenv.cfg");
+    if !cfg_path.is_file() {
+        logger::debug("pyvenv.cfg not found");
+        return false;
+    }
+
     let bin_dir = if cfg!(windows) {
         path.join("Scripts")
     } else {
@@ -695,7 +715,9 @@ pub fn clean_cache_folder() {
             }
 
             match fs::remove_dir_all(&cache_dir) {
-                Ok(()) => {}
+                Ok(()) => {
+                    logger::success(&format!("Cache cleaned at {}", cache_dir.display()));
+                }
                 Err(e) => {
                     logger::error(&format!("Failed to clean cache folder: {}", e));
                 }

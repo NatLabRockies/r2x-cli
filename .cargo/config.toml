@@ -1,2 +1,3 @@
-[env]
-PYO3_PYTHON = "python3.12"
+# Do not set PYO3_PYTHON here. The justfile, CI setup action, and
+# scripts/resolve_pyo3_python.sh choose the build interpreter so
+# R2X_PYTHON_VERSION can select different supported Python versions.

@@ -4,4 +4,7 @@
 - name: Setup uv & Python
   uses: ./.github/actions/setup-uv-python
   with:
-    python-version: "3.12"
+    python-version: ${{ env.R2X_PYTHON_VERSION }}
+- name: PyO3 diagnostics
+  shell: bash
+  run: bash scripts/ci_pyo3_diagnostics.sh

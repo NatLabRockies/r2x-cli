@@ -59,6 +59,8 @@ r2x --version
 > Pre-built binaries require Python shared libraries at runtime.
 > If `r2x --version` fails with a missing `libpython` error, run
 > `uv python install 3.12` to make the shared library available.
+> Source builds can target another supported Python version by setting
+> `PYO3_PYTHON=$(uv python find <version>)` at build time.
 
 ## Upgrading
 
@@ -371,7 +373,7 @@ models; and translation packages convert between formats.
 
 - Rust toolchain ([rustup](https://rustup.rs/))
 - [uv](https://docs.astral.sh/uv/) package manager
-- Python 3.11, 3.12, or 3.13
+- Python 3.11 or newer
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -390,6 +392,14 @@ git clone https://github.com/NatLabRockies/r2x-cli && cd r2x-cli
 PYO3_PYTHON=$(uv python find 3.12) cargo install --path crates/r2x-cli --force --locked
 ```
 
+To build against another supported Python version, install it with uv and
+point PyO3 at that interpreter:
+
+```bash
+uv python install 3.13
+PYO3_PYTHON=$(uv python find 3.13) cargo install --path crates/r2x-cli --force --locked
+```
+
 This places the `r2x` binary in `~/.cargo/bin/`.
 
 ```bash
@@ -405,6 +415,20 @@ PYO3_PYTHON=$(uv python find 3.12) cargo build --release
 
 The binary lands at `target/release/r2x`. Copy it wherever you
 like.
+
+The justfile also honors `R2X_PYTHON_VERSION`, for example
+`R2X_PYTHON_VERSION=3.13 just test`.
+
+`R2X_PYTHON_VERSION` and `r2x config set python-version` accept major.minor
+versions such as `3.13` and patch versions such as `3.13.1`. r2x uses the
+requested version for uv, then uses the matching major.minor ABI version for
+`libpython` paths.
+
+When `R2X_PYTHON_VERSION` is set for a just task, the requested interpreter must
+exist; install it first with `uv python install <version>`. This avoids
+accidentally building PyO3 against a different Python than the one requested.
+If you also set `PYO3_PYTHON` manually, it must point to an interpreter with the
+same major.minor ABI as `R2X_PYTHON_VERSION`.
 
 </details>
 
@@ -426,8 +450,8 @@ just all       # fmt + clippy + test
 <summary>Troubleshooting</summary>
 
 - If the build fails with a Python error, verify
-  `uv python find 3.12` returns a valid path. You may need
-  `uv python install 3.12` first.
+  `uv python find 3.12` or your chosen version returns a valid path. You may
+  need `uv python install 3.12` first.
 - If `r2x` is not found after install, check that `~/.cargo/bin`
   is in your `$PATH`.
 - On HPC systems with older glibc, building from source is

@@ -2,12 +2,19 @@
 
 use assert_cmd::{cargo::cargo_bin_cmd, Command};
 use predicates::prelude::*;
+use std::cell::RefCell;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tempfile::TempDir;
 use which::which;
+
+thread_local! {
+    /// Retain `TempDir` handles so isolated fixture directories are cleaned
+    /// up when the test thread exits, rather than leaking into `/tmp`.
+    static ISOLATED_FIXTURE_DIRS: RefCell<Vec<TempDir>> = const { RefCell::new(Vec::new()) };
+}
 
 #[cfg(unix)]
 const EXECUTABLE_NAME: &str = "r2x";
@@ -22,9 +29,21 @@ fn fixture_config_path() -> PathBuf {
         .join("config.toml")
 }
 
+fn isolated_fixture_config_path() -> PathBuf {
+    let Ok(dir) = tempfile::tempdir() else {
+        return fixture_config_path();
+    };
+    let config_path = dir.path().join("config.toml");
+    if fs::copy(fixture_config_path(), &config_path).is_err() {
+        return fixture_config_path();
+    }
+    ISOLATED_FIXTURE_DIRS.with(|dirs| dirs.borrow_mut().push(dir));
+    config_path
+}
+
 fn r2x_cmd() -> Command {
     let mut cmd = cargo_bin_cmd!("r2x");
-    cmd.env("R2X_CONFIG", fixture_config_path());
+    cmd.env("R2X_CONFIG", isolated_fixture_config_path());
     cmd
 }
 
@@ -163,6 +182,24 @@ fn test_config_get() {
         .assert()
         .success()
         .stdout(predicate::str::contains("config.toml"));
+}
+
+#[test]
+fn test_config_set_python_version_normalizes_value() {
+    let Ok(temp_dir) = TempDir::new() else {
+        return;
+    };
+    let config_path = temp_dir.path().join("config.toml");
+
+    r2x_cmd_with_config(&config_path)
+        .args(["config", "set", "python-version", " 3.14.1 "])
+        .assert()
+        .success();
+
+    let Ok(contents) = fs::read_to_string(config_path) else {
+        return;
+    };
+    assert!(contents.contains("python_version = \"3.14.1\""));
 }
 
 #[test]
@@ -366,7 +403,7 @@ fn create_real_venv(venv_path: &Path) -> io::Result<()> {
             .arg("venv")
             .arg(venv_path)
             .arg("--python")
-            .arg("3.12")
+            .arg(test_python_version())
             .status()?;
         if status.success() {
             return Ok(());
@@ -403,7 +440,7 @@ fn find_tool(candidates: &[&str]) -> Option<String> {
 fn default_site_packages_path(venv_path: &Path) -> PathBuf {
     venv_path
         .join("lib")
-        .join("python3.12")
+        .join(format!("python{}", test_python_version()))
         .join("site-packages")
 }
 
@@ -411,6 +448,43 @@ fn default_site_packages_path(venv_path: &Path) -> PathBuf {
 fn default_site_packages_path(venv_path: &Path) -> PathBuf {
     venv_path.join("Lib").join("site-packages")
 }
+
+fn test_python_version() -> String {
+    if let Ok(python) = std::env::var("PYO3_PYTHON") {
+        if let Some(version) = python_minor_version(&python) {
+            return version;
+        }
+    }
+
+    for python in ["python3", "python"] {
+        if let Some(version) = python_minor_version(python) {
+            return version;
+        }
+    }
+
+    "3.12".to_string()
+}
+
+fn python_minor_version(python: &str) -> Option<String> {
+    let output = StdCommand::new(python)
+        .args([
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?;
+    let version = version.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
 fn copy_python_stub(package: &str, site_packages: &Path) -> io::Result<()> {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

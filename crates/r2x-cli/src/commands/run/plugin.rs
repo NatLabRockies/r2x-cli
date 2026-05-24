@@ -106,14 +106,6 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     // Set current plugin context for logging
     logger::set_current_plugin(Some(plugin_name.to_string()));
 
-    // Reconfigure Python logging with plugin name
-    if let Err(e) = Bridge::reconfigure_logging_for_plugin(plugin_name) {
-        logger::warn(&format!(
-            "Failed to reconfigure Python logging for plugin {}: {}",
-            plugin_name, e
-        ));
-    }
-
     let start = Instant::now();
     // Pass None for plugin metadata since we don't have PluginSpec (execution type)
     let invocation_result = bridge.invoke_plugin(&target, &config_json, None, None)?;

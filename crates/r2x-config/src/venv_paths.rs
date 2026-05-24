@@ -28,7 +28,7 @@ pub const PYTHON_BIN_DIR: &str = "bin";
 #[cfg(not(windows))]
 const PYTHON_EXE_CANDIDATES: &[&str] = &["python3", "python"];
 #[cfg(windows)]
-const PYTHON_EXE_CANDIDATES: &[&str] = &["python.exe", "python3.exe", "python3.12.exe"];
+const PYTHON_EXE_CANDIDATES: &[&str] = &["python.exe", "python3.exe"];
 
 /// Error type for venv path resolution
 #[derive(Debug, Clone)]
@@ -214,6 +214,25 @@ mod tests {
         let result = resolve_python_exe(temp_venv.path());
         assert!(result.is_ok(), "Failed to resolve python exe");
         assert!(result.is_ok_and(|p| p.ends_with("bin/python3")));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_resolve_python_exe_unix_versioned_fallback() {
+        let Some(temp_venv) = create_mock_venv_unix("python3.13") else {
+            return;
+        };
+        let bin_dir = temp_venv.path().join("bin");
+        if fs::remove_file(bin_dir.join("python3")).is_err() {
+            return;
+        }
+        if fs::write(bin_dir.join("python3.13"), "").is_err() {
+            return;
+        }
+
+        let result = resolve_python_exe(temp_venv.path());
+        assert!(result.is_ok(), "Failed to resolve versioned python exe");
+        assert!(result.is_ok_and(|p| p.ends_with("bin/python3.13")));
     }
 
     #[test]

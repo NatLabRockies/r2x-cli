@@ -25,10 +25,7 @@ impl Bridge {
             .iter()
             .filter_map(|k| k.extract::<String>().ok())
             .collect();
-        logger::debug(&format!(
-            "build_kwargs: input config_dict keys: {:?}",
-            config_keys
-        ));
+        logger::debug_lazy(|| format!("build_kwargs: input config_dict keys: {:?}", config_keys));
 
         let Some(runtime) = runtime_bindings else {
             logger::debug(
@@ -45,10 +42,12 @@ impl Bridge {
 
         // Log the runtime parameters we're working with
         let param_names: Vec<&str> = runtime.parameters.iter().map(|p| p.name.as_ref()).collect();
-        logger::debug(&format!(
-            "build_kwargs: runtime parameters to process: {:?}",
-            param_names
-        ));
+        logger::debug_lazy(|| {
+            format!(
+                "build_kwargs: runtime parameters to process: {:?}",
+                param_names
+            )
+        });
 
         // For upgrader plugins without config metadata, pass all config values directly as kwargs.
         // Upgraders typically have simple constructors (path, folder_path, etc.) and don't use
@@ -92,10 +91,12 @@ impl Bridge {
                 if type_matches {
                     needs_config_class = true;
                     config_param_name = param.name.to_string();
-                    logger::debug(&format!(
-                        "Config parameter detected: '{}' (type matches config class '{}')",
-                        param.name, config_class_name
-                    ));
+                    logger::debug_lazy(|| {
+                        format!(
+                            "Config parameter detected: '{}' (type matches config class '{}')",
+                            param.name, config_class_name
+                        )
+                    });
                     break;
                 }
             }
@@ -217,10 +218,12 @@ impl Bridge {
             };
 
             if is_config_field {
-                logger::debug(&format!(
-                    "Skipping '{}' as separate kwarg - it's a config field",
-                    param.name
-                ));
+                logger::debug_lazy(|| {
+                    format!(
+                        "Skipping '{}' as separate kwarg - it's a config field",
+                        param.name
+                    )
+                });
                 skipped_args.push((
                     param.name.to_string(),
                     "already in config object".to_string(),
@@ -239,10 +242,12 @@ impl Bridge {
             } else if param.required {
                 let stdin_param = param.name.as_ref() == "stdin" || param.name.as_ref() == "system";
                 if stdin_param && stdin_obj.is_some() {
-                    logger::debug(&format!(
-                        "Required parameter '{}' will be provided via stdin",
-                        param.name
-                    ));
+                    logger::debug_lazy(|| {
+                        format!(
+                            "Required parameter '{}' will be provided via stdin",
+                            param.name
+                        )
+                    });
                     skipped_args.push((
                         param.name.to_string(),
                         "will be provided via stdin".to_string(),
@@ -285,18 +290,22 @@ impl Bridge {
         }
 
         // Log summary of argument reconstruction
-        logger::debug(&format!(
-            "build_kwargs: created {} arguments: {:?}",
-            created_args.len(),
-            created_args
-        ));
+        logger::debug_lazy(|| {
+            format!(
+                "build_kwargs: created {} arguments: {:?}",
+                created_args.len(),
+                created_args
+            )
+        });
         if !skipped_args.is_empty() {
-            logger::debug(&format!(
-                "build_kwargs: skipped {} arguments from pipeline:",
-                skipped_args.len()
-            ));
+            logger::debug_lazy(|| {
+                format!(
+                    "build_kwargs: skipped {} arguments from pipeline:",
+                    skipped_args.len()
+                )
+            });
             for (name, reason) in &skipped_args {
-                logger::debug(&format!("  - '{}': {}", name, reason));
+                logger::debug_lazy(|| format!("  - '{}': {}", name, reason));
             }
         }
 
@@ -374,10 +383,9 @@ impl Bridge {
                     logger::debug(
                         "DataStore.from_plugin_config failed; attempting targeted diagnostics",
                     );
-                    logger::debug(&format!(
-                        "Config metadata present: {}",
-                        config_metadata.is_some()
-                    ));
+                    logger::debug_lazy(|| {
+                        format!("Config metadata present: {}", config_metadata.is_some())
+                    });
                     if let Some(class_obj) = resolve_config_class(py, Some(config), config_metadata)
                     {
                         if let Some(missing) =
@@ -406,10 +414,12 @@ Verify the data folder contains all expected outputs (did you unpack the full `i
             match data_store_class.call1((path,)) {
                 Ok(store) => Ok(store),
                 Err(err) => {
-                    logger::debug(&format!(
-                        "DataStore(path) failed; config metadata present: {}",
-                        config_metadata.is_some()
-                    ));
+                    logger::debug_lazy(|| {
+                        format!(
+                            "DataStore(path) failed; config metadata present: {}",
+                            config_metadata.is_some()
+                        )
+                    });
                     if let Some(missing) =
                         detect_missing_data_file_from_metadata(py, config_metadata, &store_path)
                     {
@@ -452,7 +462,7 @@ fn extract_missing_data_file(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<
             break;
         }
         if let Ok(repr) = ctx.str() {
-            logger::debug(&format!("Python exception context[{}]: {}", depth, repr));
+            logger::debug_lazy(|| format!("Python exception context[{}]: {}", depth, repr));
         }
         if ctx.is_instance_of::<PyFileNotFoundError>() {
             if let Ok(text) = ctx.str() {
@@ -469,10 +479,7 @@ fn detect_missing_data_file_from_mapping(
     class_obj: &pyo3::Bound<'_, PyAny>,
     folder_path: &str,
 ) -> Option<String> {
-    logger::debug(&format!(
-        "Validating ReEDS data files under {}",
-        folder_path
-    ));
+    logger::debug_lazy(|| format!("Validating ReEDS data files under {}", folder_path));
     let loader = class_obj.getattr("load_file_mapping").ok()?;
     let records = loader.call0().ok()?;
     let records = records.cast::<PyList>().ok()?;
@@ -498,10 +505,12 @@ fn detect_missing_data_file_from_mapping(
         };
         let full_path = base.join(rel_path);
         if !full_path.exists() {
-            logger::debug(&format!(
-                "Detected missing data file during ReEDS run: {}",
-                full_path.display()
-            ));
+            logger::debug_lazy(|| {
+                format!(
+                    "Detected missing data file during ReEDS run: {}",
+                    full_path.display()
+                )
+            });
             return Some(full_path.to_string_lossy().to_string());
         }
     }
