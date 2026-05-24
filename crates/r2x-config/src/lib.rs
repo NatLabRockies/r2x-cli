@@ -1,10 +1,5 @@
 pub mod venv_paths;
 
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../../scripts/build_python_version.rs"]
-mod build_python_version_for_tests;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -696,11 +691,11 @@ mod tests {
     #[cfg(unix)]
     fn detect_python_version_with_retry(path: &std::path::Path) -> Result<String, String> {
         let path = path.to_string_lossy();
-        match crate::build_python_version_for_tests::detect_python_version(&path) {
+        match r2x_build_support::detect_python_version(&path) {
             Ok(version) => Ok(version),
             Err(error) if error.contains("Text file busy") => {
                 thread::sleep(Duration::from_millis(20));
-                crate::build_python_version_for_tests::detect_python_version(&path)
+                r2x_build_support::detect_python_version(&path)
             }
             Err(error) => Err(error),
         }
@@ -725,14 +720,25 @@ mod tests {
         requested: &str,
     ) -> Result<String, String> {
         let uv = uv.to_string_lossy();
-        match crate::build_python_version_for_tests::detect_requested_python_via_uv(&uv, requested)
-        {
+        match r2x_build_support::detect_requested_python_via_uv(&uv, requested) {
             Ok(version) => Ok(version),
             Err(error) if error.contains("Text file busy") => {
                 thread::sleep(Duration::from_millis(20));
-                crate::build_python_version_for_tests::detect_requested_python_via_uv(
-                    &uv, requested,
-                )
+                r2x_build_support::detect_requested_python_via_uv(&uv, requested)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(unix)]
+    fn ensure_venv_path_with_retry(config: &mut Config) -> Result<String, ConfigError> {
+        match config.ensure_venv_path() {
+            Ok(path) => Ok(path),
+            Err(ConfigError::Io(error))
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy =>
+            {
+                thread::sleep(Duration::from_millis(20));
+                config.ensure_venv_path()
             }
             Err(error) => Err(error),
         }
@@ -931,9 +937,7 @@ mod tests {
 
     #[test]
     fn test_build_python_version_reports_unusable_interpreter() {
-        let result = crate::build_python_version_for_tests::detect_python_version(
-            "/definitely/missing/python",
-        );
+        let result = r2x_build_support::detect_python_version("/definitely/missing/python");
 
         assert!(result.is_err());
         if let Err(error) = result {
@@ -973,22 +977,17 @@ mod tests {
     #[test]
     fn test_build_python_version_normalizes_requested_python_abi() {
         assert_eq!(
-            crate::build_python_version_for_tests::requested_python_abi_version(
-                "R2X_PYTHON_VERSION",
-                "3.13.1"
-            )
-            .ok()
-            .as_deref(),
+            r2x_build_support::requested_python_abi_version("R2X_PYTHON_VERSION", "3.13.1")
+                .ok()
+                .as_deref(),
             Some("3.13")
         );
     }
 
     #[test]
     fn test_build_python_version_rejects_invalid_requested_python_version() {
-        let result = crate::build_python_version_for_tests::requested_python_abi_version(
-            "R2X_PYTHON_VERSION",
-            "3.13-dev",
-        );
+        let result =
+            r2x_build_support::requested_python_abi_version("R2X_PYTHON_VERSION", "3.13-dev");
 
         assert!(result.is_err());
         if let Err(error) = result {
@@ -1001,10 +1000,7 @@ mod tests {
 
     #[test]
     fn test_build_python_version_rejects_empty_requested_python_version() {
-        let result = crate::build_python_version_for_tests::requested_python_abi_version(
-            "R2X_PYTHON_VERSION",
-            "  ",
-        );
+        let result = r2x_build_support::requested_python_abi_version("R2X_PYTHON_VERSION", "  ");
 
         assert!(result.is_err());
     }
@@ -1123,8 +1119,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_build_python_version_reports_missing_requested_uv_python() {
-        let result =
-            crate::build_python_version_for_tests::detect_requested_python_via_uv("false", "3.13");
+        let result = r2x_build_support::detect_requested_python_via_uv("false", "3.13");
 
         assert!(result.is_err());
         if let Err(error) = result {
@@ -1138,9 +1133,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_build_python_version_reports_missing_requested_patch_and_abi() {
-        let result = crate::build_python_version_for_tests::detect_requested_python_via_uv(
-            "false", "3.13.1",
-        );
+        let result = r2x_build_support::detect_requested_python_via_uv("false", "3.13.1");
 
         assert!(result.is_err());
         if let Err(error) = result {
@@ -1158,10 +1151,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_build_python_version_reports_missing_uv_binary_for_requested_python() {
-        let result = crate::build_python_version_for_tests::detect_requested_python_via_uv(
-            "/definitely/missing/uv",
-            "3.13",
-        );
+        let result =
+            r2x_build_support::detect_requested_python_via_uv("/definitely/missing/uv", "3.13");
 
         assert!(result.is_err());
         if let Err(error) = result {
@@ -1175,10 +1166,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_build_python_version_reports_patch_install_fallback_when_uv_is_missing() {
-        let result = crate::build_python_version_for_tests::detect_requested_python_via_uv(
-            "/definitely/missing/uv",
-            "3.13.1",
-        );
+        let result =
+            r2x_build_support::detect_requested_python_via_uv("/definitely/missing/uv", "3.13.1");
 
         assert!(result.is_err());
         if let Err(error) = result {
@@ -1218,7 +1207,7 @@ mod tests {
             ..Config::default()
         };
 
-        let result = config.ensure_venv_path();
+        let result = ensure_venv_path_with_retry(&mut config);
         let calls = fs::read_to_string(&calls_path).unwrap_or_default();
         assert!(
             matches!(result.as_deref(), Ok(path) if path == venv_path.to_string_lossy()),
@@ -1258,7 +1247,7 @@ mod tests {
             ..Config::default()
         };
 
-        let result = config.ensure_venv_path();
+        let result = ensure_venv_path_with_retry(&mut config);
         assert!(result.is_err());
         if let Err(error) = result {
             let message = error.to_string();
