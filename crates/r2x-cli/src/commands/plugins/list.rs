@@ -145,6 +145,7 @@ pub fn list_plugins(
     opts: &GlobalOpts,
     plugin_filter: Option<String>,
     module_filter: Option<String>,
+    json: bool,
     ctx: &PluginContext,
 ) -> Result<(), PluginError> {
     let manifest = &ctx.manifest;
@@ -152,11 +153,15 @@ pub fn list_plugins(
     let has_plugins = !manifest.is_empty();
 
     if !has_plugins {
-        println!("There are no current plugins installed.\n");
-        println!(
-            "To install a plugin, run:\n  {} install <package>",
-            "r2x".bold().cyan()
-        );
+        if json {
+            println!("{{\"packages\":[]}}");
+        } else {
+            println!("There are no current plugins installed.\n");
+            println!(
+                "To install a plugin, run:\n  {} install <package>",
+                "r2x".bold().cyan()
+            );
+        }
         return Ok(());
     }
 
@@ -183,36 +188,72 @@ pub fn list_plugins(
     }
 
     if has_plugins {
-        // Get package version info
         let python_path = &ctx.python_path;
         let uv_path = &ctx.uv_path;
 
-        for (package_name, plugin_names) in &packages {
-            // Get package metadata
-            let pkg = match manifest
-                .packages
-                .iter()
-                .find(|p| p.name.as_ref() == package_name)
-            {
-                Some(pkg) => pkg,
-                None => continue,
-            };
+        if json {
+            let mut json_packages: Vec<serde_json::Value> = Vec::new();
+            for (package_name, plugin_names) in &packages {
+                let pkg = match manifest
+                    .packages
+                    .iter()
+                    .find(|p| p.name.as_ref() == package_name)
+                {
+                    Some(pkg) => pkg,
+                    None => continue,
+                };
+                let version = package_version(
+                    pkg,
+                    get_package_info(uv_path, python_path, package_name)
+                        .ok()
+                        .and_then(|(v, _)| v),
+                );
+                let source_display = package_source_display(pkg, &ctx.locator);
 
-            // Get version info
-            let version = package_version(
-                pkg,
-                get_package_info(uv_path, python_path, package_name)
-                    .ok()
-                    .and_then(|(v, _)| v),
-            );
-            let source_display = package_source_display(pkg, &ctx.locator);
+                let plugins_json: Vec<serde_json::Value> = plugin_names
+                    .iter()
+                    .map(|name| serde_json::json!({"name": name}))
+                    .collect();
+
+                json_packages.push(serde_json::json!({
+                    "name": package_name,
+                    "version": version,
+                    "source": source_display,
+                    "plugins": plugins_json,
+                }));
+            }
             println!(
                 "{}",
-                format_package_header(pkg, version.as_deref(), &source_display)
+                match serde_json::to_string_pretty(&serde_json::json!({"packages": json_packages}))
+                {
+                    Ok(json_str) => json_str,
+                    Err(_) => return Ok(()),
+                }
             );
-
-            for plugin_name in plugin_names {
-                println!("  - {}", plugin_name);
+        } else {
+            for (package_name, plugin_names) in &packages {
+                let pkg = match manifest
+                    .packages
+                    .iter()
+                    .find(|p| p.name.as_ref() == package_name)
+                {
+                    Some(pkg) => pkg,
+                    None => continue,
+                };
+                let version = package_version(
+                    pkg,
+                    get_package_info(uv_path, python_path, package_name)
+                        .ok()
+                        .and_then(|(v, _)| v),
+                );
+                let source_display = package_source_display(pkg, &ctx.locator);
+                println!(
+                    "{}",
+                    format_package_header(pkg, version.as_deref(), &source_display)
+                );
+                for plugin_name in plugin_names {
+                    println!("  - {}", plugin_name);
+                }
             }
         }
     }
@@ -297,6 +338,11 @@ fn show_plugin_compact(plugin: &Plugin) {
     // Show module info
     println!("  {}: {}", "Module".dimmed(), plugin.module);
 
+    // Show description if available
+    if let Some(ref desc) = plugin.description {
+        println!("  {}: {}", "Description".dimmed(), desc);
+    }
+
     // Show class or function name
     if let Some(ref class_name) = plugin.class_name {
         println!("  {}: {}", "Class".dimmed(), class_name);
@@ -340,6 +386,11 @@ fn show_plugin_verbose(plugin: &Plugin) {
 
     println!("  {}: {:?}", "Type".dimmed(), plugin.plugin_type);
     println!("  {}: {}", "Module".dimmed(), plugin.module);
+
+    // Show description if available
+    if let Some(ref desc) = plugin.description {
+        println!("  {}: {}", "Description".dimmed(), desc);
+    }
 
     // Show class or function name
     if let Some(ref class_name) = plugin.class_name {

@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use r2x::commands::{
+    cache,
     config::{self, ConfigAction, PythonAction},
     init,
     log::{self, LogAction},
-    plugins, read, run, self_update,
+    plugins, read, run, self_update, venv,
 };
 use r2x::common::GlobalOpts;
 use r2x_config as config_manager;
@@ -29,6 +30,9 @@ enum Commands {
     /// Configure r2x tool
     #[command(subcommand_required = false, arg_required_else_help = false)]
     Config {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
@@ -40,6 +44,9 @@ enum Commands {
     /// Logging configuration
     #[command(subcommand_required = false, arg_required_else_help = false)]
     Log {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
         action: Option<LogAction>,
     },
@@ -49,6 +56,9 @@ enum Commands {
         plugin: Option<String>,
         /// Optional module/function name to filter by (e.g., break_gens)
         module: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
     },
     /// Install a plugin
     Install {
@@ -56,7 +66,7 @@ enum Commands {
         /// Install in editable mode (-e)
         #[arg(short, long)]
         editable: bool,
-        /// Skip metadata cache and force rebuild
+        /// Force re-discovery of plugins (ignore cached metadata)
         #[arg(long)]
         no_cache: bool,
         /// Git host (default: github.com). Use with gh:owner/repo or full URLs.
@@ -85,6 +95,16 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+    /// Virtual environment management
+    Venv {
+        #[command(subcommand)]
+        command: venv::VenvCommand,
+    },
+    /// Cache management
+    Cache {
+        #[command(subcommand)]
+        command: cache::CacheCommand,
     },
     /// Initialize a new pipeline file
     Init {
@@ -166,18 +186,22 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Config { action } => {
-            config::handle_config(action, cli.global);
+        Commands::Config { json, action } => {
+            config::handle_config(action, json, cli.global);
         }
         Commands::Python { action } => {
             config::handle_python(action, cli.global);
         }
-        Commands::Log { action } => {
-            log::handle_log(action);
+        Commands::Log { json, action } => {
+            log::handle_log(action, json);
         }
-        Commands::List { plugin, module } => {
+        Commands::List {
+            plugin,
+            module,
+            json,
+        } => {
             exit_on_plugin_error(with_plugin_context(|ctx| {
-                plugins::list::list_plugins(&cli.global, plugin, module, ctx)
+                plugins::list::list_plugins(&cli.global, plugin, module, json, ctx)
             }));
         }
         Commands::Install {
@@ -226,6 +250,12 @@ fn main() {
             exit_on_plugin_error(with_plugin_context(|ctx| {
                 plugins::clean::clean_manifest(yes, ctx)
             }));
+        }
+        Commands::Venv { command } => {
+            venv::handle_venv(command, cli.global);
+        }
+        Commands::Cache { command } => {
+            cache::handle_cache(command, cli.global);
         }
         Commands::Init { file } => {
             init::handle_init(file, cli.global);

@@ -41,27 +41,38 @@ pub enum LogSetAction {
     },
 }
 
-pub fn handle_log(action: Option<LogAction>) {
+pub fn handle_log(action: Option<LogAction>, json: bool) {
     let action = if let Some(action) = action {
         action
     } else {
-        println!(
-            "{}",
-            "Tip: run `r2x log show` or `r2x log set <key> <value>`.".dimmed()
-        );
-        return;
+        // Default to 'show' like 'r2x config' defaults to 'config show'
+        LogAction::Show
     };
 
     match action {
-        LogAction::Show => show_logging_config(),
+        LogAction::Show => show_logging_config(json),
         LogAction::Path { new_path } => handle_log_path(new_path),
         LogAction::Set { setting } => set_logging_config(setting),
     }
 }
 
-fn show_logging_config() {
+fn show_logging_config(json: bool) {
     match Config::load() {
         Ok(config) => {
+            if json {
+                let log_json = serde_json::json!({
+                    "log_python": config.log_python,
+                    "no_stdout": config.no_stdout,
+                    "max_size": config.log_max_size,
+                    "path": resolve_log_path(&config),
+                });
+                if let Ok(json_str) = serde_json::to_string_pretty(&log_json) {
+                    println!("{}", json_str);
+                } else {
+                    logger::error("Failed to serialize log config JSON");
+                }
+                return;
+            }
             println!("{}", "Logging Configuration:".bold().green());
             println!(
                 "  {}: {}",
@@ -169,9 +180,12 @@ mod tests {
     #[test]
     fn test_log_set_no_stdout() {
         with_temp_config(|| {
-            handle_log(Some(LogAction::Set {
-                setting: LogSetAction::NoStdout { enabled: true },
-            }));
+            handle_log(
+                Some(LogAction::Set {
+                    setting: LogSetAction::NoStdout { enabled: true },
+                }),
+                false,
+            );
 
             let Ok(config) = Config::load() else {
                 return;
@@ -183,11 +197,14 @@ mod tests {
     #[test]
     fn test_log_set_size() {
         with_temp_config(|| {
-            handle_log(Some(LogAction::Set {
-                setting: LogSetAction::MaxSize {
-                    bytes: 10 * 1024 * 1024,
-                },
-            }));
+            handle_log(
+                Some(LogAction::Set {
+                    setting: LogSetAction::MaxSize {
+                        bytes: 10 * 1024 * 1024,
+                    },
+                }),
+                false,
+            );
 
             let Ok(config) = Config::load() else {
                 return;

@@ -937,6 +937,7 @@ impl AstDiscovery {
             hooks: SmallVec::new(),
             parameters,
             config_schema,
+            description: None,
             content_hash: 0,
         }
     }

@@ -10,7 +10,16 @@ use crate::commands::plugins::context::PluginContext;
 
 pub fn clean_manifest(yes: bool, ctx: &mut PluginContext) -> Result<(), PluginError> {
     if !yes {
-        println!("To actually clean, run with --yes flag.");
+        let total = ctx.manifest.total_plugin_count();
+        if total > 0 {
+            println!(
+                "This will remove {} plugin(s) and clear the cache folder.",
+                total
+            );
+        } else {
+            println!("This will clear the cache folder.");
+        }
+        println!("Run with {} to confirm.", "--yes".bold().cyan());
         return Ok(());
     }
 

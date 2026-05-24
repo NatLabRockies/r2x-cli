@@ -15,10 +15,10 @@ pub enum PipelineError {
     #[error("Failed to parse pipeline YAML: {0}")]
     Parse(#[from] serde_yaml::Error),
 
-    #[error("Variable '{0}' not found in variables section")]
+    #[error("Variable '{0}' not found in variables section. Check the 'variables:' block in your pipeline YAML.")]
     VariableNotFound(String),
 
-    #[error("Pipeline '{0}' not found in YAML")]
+    #[error("Pipeline '{0}' not found in YAML. Use --list to see available pipelines.")]
     PipelineNotFound(String),
 
     #[error("Invalid configuration: {0}")]
@@ -34,7 +34,7 @@ mod tests {
         let err = PipelineError::PipelineNotFound("test-pipeline".to_string());
         assert_eq!(
             err.to_string(),
-            "Pipeline 'test-pipeline' not found in YAML"
+            "Pipeline 'test-pipeline' not found in YAML. Use --list to see available pipelines."
         );
     }
 }

@@ -157,6 +157,10 @@ pub struct Plugin {
     #[serde(default, skip_serializing_if = "SchemaFields::is_empty")]
     pub config_schema: SchemaFields,
 
+    /// Plugin description extracted from Python docstrings or entry point metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<Arc<str>>,
+
     /// Runtime only - content hash
     #[serde(skip)]
     pub content_hash: u64,
@@ -175,6 +179,7 @@ impl Default for Plugin {
             hooks: SmallVec::new(),
             parameters: SmallVec::new(),
             config_schema: SchemaFields::default(),
+            description: None,
             content_hash: 0,
         }
     }

@@ -66,6 +66,11 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     println!("\nType: {:?}", plugin.plugin_type);
     println!("Module: {}", plugin.module);
 
+    // Show description if available
+    if let Some(ref desc) = plugin.description {
+        println!("Description: {}", desc);
+    }
+
     // Show class or function name
     if let Some(ref class_name) = plugin.class_name {
         println!("Class: {}", class_name);
