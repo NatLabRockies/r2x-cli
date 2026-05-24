@@ -125,3 +125,25 @@ jobs:
             ${{ runner.temp }}/r2x-plugin-benchmark.md
             ${{ runner.temp }}/r2x-plugin-benchmark-delta.md
           if-no-files-found: error
+
+  release-readiness:
+    name: Release readiness (publish dry-run)
+    runs-on: ubuntu-latest
+    env:
+      R2X_PYTHON_VERSION: "3.12"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - name: Setup uv & Python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.R2X_PYTHON_VERSION }}
+      - name: PyO3 diagnostics
+        shell: bash
+        run: bash scripts/ci_pyo3_diagnostics.sh
+      - name: Cargo publish dry-run
+        run: cargo publish --workspace --dry-run

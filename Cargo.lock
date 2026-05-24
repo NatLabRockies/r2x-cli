@@ -1714,10 +1714,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "r2x-build-support"
+version = "0.1.0"
+
+[[package]]
 name = "r2x-config"
 version = "0.1.1"
 dependencies = [
  "dirs",
+ "r2x-build-support",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
@@ -1760,6 +1765,7 @@ version = "0.1.1"
 dependencies = [
  "once_cell",
  "pyo3",
+ "r2x-build-support",
  "r2x-config",
  "r2x-logger",
  "r2x-manifest",

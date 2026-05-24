@@ -1,0 +1,15 @@
+[package]
+name = "r2x-build-support"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+documentation = { workspace = true }
+rust-version = { workspace = true }
+
+description = "Build script helpers for the r2x workspace"
+
+[lints]
+workspace = true
