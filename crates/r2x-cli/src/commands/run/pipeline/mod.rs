@@ -40,7 +40,8 @@ pub(super) fn handle_pipeline_mode(
             print_pipeline_config(&config, &name)?;
         } else {
             return Err(RunError::InvalidArgs(
-                "Pipeline name required with --print".to_string(),
+                "Pipeline name required with --print. Use --list to see available pipelines."
+                    .to_string(),
             ));
         }
     } else if let Some(name) = pipeline_name {
@@ -51,7 +52,7 @@ pub(super) fn handle_pipeline_mode(
         }
     } else {
         return Err(RunError::InvalidArgs(
-            "Pipeline name required for execution".to_string(),
+            "Pipeline name required. Use --list to see available pipelines.".to_string(),
         ));
     }
 

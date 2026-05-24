@@ -9,7 +9,6 @@ use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_python::plugin_invoker::PluginInvocationResult;
 use r2x_python::python_bridge::Bridge;
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Result<(), RunError> {
@@ -36,35 +35,14 @@ pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Re
 }
 
 fn list_available_plugins() -> Result<(), RunError> {
-    let manifest = Manifest::load()?;
-
-    if manifest.is_empty() {
-        println!("No plugins installed.\n");
-        println!("To install a plugin, run:\n  r2x install <package>");
-        return Ok(());
-    }
-
-    println!("Available plugins:\n");
-    let mut packages: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for pkg in &manifest.packages {
-        let mut names: Vec<String> = pkg.plugins.iter().map(|p| p.name.to_string()).collect();
-        names.sort();
-        packages.insert(pkg.name.to_string(), names);
-    }
-
-    for (idx, (package_name, plugin_names)) in packages.iter().enumerate() {
-        if idx > 0 {
-            println!();
-        }
-        println!("{}:", package_name.bold());
-        for plugin_name in plugin_names {
-            println!("  - {}", plugin_name);
-        }
-    }
-
-    println!("Run a plugin with:\n  r2x run plugin <plugin-name> [args...]\n");
-    println!("Show plugin help:\n  r2x run plugin <plugin-name> --show-help");
-
+    println!("No plugin name provided.\n");
+    println!(
+        "  Use {} to list installed plugins, then:",
+        "r2x list".bold()
+    );
+    println!("  r2x run plugin <plugin-name> [args...]");
+    println!("  r2x run plugin <plugin-name> --show-help");
+    println!();
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod config;
 pub mod init;
 pub mod log;
@@ -5,3 +6,4 @@ pub mod plugins;
 pub mod read;
 pub mod run;
 pub mod self_update;
+pub mod venv;

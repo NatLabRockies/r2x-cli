@@ -1,6 +1,7 @@
 use colored::Colorize;
 use indicatif::ProgressBar;
 use std::fs::{self, OpenOptions};
+use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -354,6 +355,18 @@ pub fn show_log_path() {
 pub fn spinner_start(message: &str) {
     // Don't show spinner in verbose mode
     if get_verbosity() > 0 {
+        return;
+    }
+
+    // Skip spinner for non-TTY output (CI, pipes, redirects)
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+
+    // Respect NO_COLOR and TERM=dumb for accessibility and automation
+    if std::env::var_os("NO_COLOR").is_some()
+        || std::env::var("TERM").ok().as_deref() == Some("dumb")
+    {
         return;
     }
 

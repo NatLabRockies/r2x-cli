@@ -77,7 +77,7 @@ pub enum CacheAction {
     },
 }
 
-pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
+pub fn handle_config(action: Option<ConfigAction>, json: bool, opts: GlobalOpts) {
     let action = if let Some(action) = action {
         action
     } else {
@@ -88,6 +88,25 @@ pub fn handle_config(action: Option<ConfigAction>, opts: GlobalOpts) {
     match action {
         ConfigAction::Show => match Config::load() {
             Ok(config) => {
+                if json {
+                    let config_json = serde_json::json!({
+                        "python_version": config.python_version,
+                        "venv_path": config.venv_path,
+                        "cache_path": config.cache_path,
+                        "uv_path": config.uv_path,
+                        "r2x_core_version": config.r2x_core_version,
+                        "log_python": config.log_python,
+                        "no_stdout": config.no_stdout,
+                        "log_path": config.log_path,
+                        "log_max_size": config.log_max_size,
+                    });
+                    if let Ok(json_str) = serde_json::to_string_pretty(&config_json) {
+                        println!("{}", json_str);
+                    } else {
+                        logger::error("Failed to serialize config JSON");
+                    }
+                    return;
+                }
                 println!("{}", "Configuration:".bold().green());
 
                 // Show Python version (explicit or default)
@@ -347,7 +366,7 @@ pub fn handle_python(action: PythonAction, opts: GlobalOpts) {
 }
 
 /// Handle virtual environment management
-fn handle_venv(action: VenvAction, opts: GlobalOpts) {
+pub fn handle_venv(action: VenvAction, opts: GlobalOpts) {
     match action {
         VenvAction::Create { yes } => {
             handle_venv_create(yes);
@@ -359,7 +378,7 @@ fn handle_venv(action: VenvAction, opts: GlobalOpts) {
 }
 
 /// Handle cache management
-fn handle_cache(action: CacheAction, opts: GlobalOpts) {
+pub fn handle_cache(action: CacheAction, opts: GlobalOpts) {
     match action {
         CacheAction::Clean => {
             clean_cache(opts);
@@ -793,7 +812,7 @@ mod tests {
 
     #[test]
     fn test_config_show() {
-        handle_config(Some(ConfigAction::Show), normal_opts());
+        handle_config(Some(ConfigAction::Show), false, normal_opts());
     }
 
     #[test]
@@ -804,6 +823,7 @@ mod tests {
                     key: "cache-path".to_string(),
                     value: "test-value".to_string(),
                 }),
+                false,
                 normal_opts(),
             );
         });
@@ -817,6 +837,7 @@ mod tests {
                     key: "cache-path".to_string(),
                     value: "test-value".to_string(),
                 }),
+                false,
                 quiet_opts(),
             );
         });
@@ -830,6 +851,7 @@ mod tests {
                     key: "cache-path".to_string(),
                     value: "test-value".to_string(),
                 }),
+                false,
                 verbose_opts(),
             );
         });
@@ -838,13 +860,17 @@ mod tests {
     #[test]
     fn test_config_reset() {
         with_temp_config(|| {
-            handle_config(Some(ConfigAction::Reset { yes: true }), normal_opts());
+            handle_config(
+                Some(ConfigAction::Reset { yes: true }),
+                false,
+                normal_opts(),
+            );
         });
     }
 
     #[test]
     fn test_config_no_action_tip() {
-        handle_config(None, normal_opts());
+        handle_config(None, false, normal_opts());
     }
 
     #[test]

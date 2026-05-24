@@ -1,5 +1,6 @@
 use crate::common::GlobalOpts;
 use crate::errors::PipelineError;
+use crate::help;
 use clap::Parser;
 use pipeline::handle_pipeline_mode;
 use plugin::handle_plugin_command;
@@ -112,6 +113,14 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
     match cmd.command {
         Some(RunSubcommand::Plugin(plugin_cmd)) => handle_plugin_command(plugin_cmd, &opts),
         None => {
+            // No pipeline name and no flags → show friendly help
+            if cmd.pipeline_name.is_none() && !cmd.list && !cmd.print && !cmd.dry_run {
+                if let Err(e) = help::show_run_help() {
+                    logger::error(&e);
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             let yaml_path = cmd.yaml_path.unwrap_or_else(|| "pipeline.yaml".to_string());
             handle_pipeline_mode(
                 yaml_path,
