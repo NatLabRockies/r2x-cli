@@ -14,6 +14,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  script-tests:
+    name: Script tests (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Shell script syntax checks
+        shell: bash
+        run: |
+          bash -n scripts/python_version.sh
+          bash -n scripts/resolve_pyo3_python.sh
+          bash -n scripts/ci_pyo3_diagnostics.sh
+          bash -n scripts/patch_dist_installer.sh
+          bash -n scripts/fix_python_dylib.sh
+      - name: Python script tests
+        run: |
+          PYTHONPATH=scripts python3 -m unittest \
+            scripts.tests.test_python_version_sh \
+            scripts.tests.test_resolve_pyo3_python \
+            scripts.tests.test_ci_python_version \
+            scripts.tests.test_format_benchmark_summary \
+            scripts.tests.test_compare_benchmark_summary \
+            scripts.tests.test_patch_dist_installer \
+            scripts.tests.test_detect_uv_python \
+            scripts.tests.test_fix_python_dylib
+
   lint:
     name: Lint (stable, Python 3.12)
     runs-on: ubuntu-latest
@@ -73,3 +102,83 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="${PYTHON_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           cargo test --workspace --all-features
+      - name: Benchmark fixture (parser repeat)
+        if: matrix.toolchain == 'stable' && matrix.python-version == '3.12'
+        env:
+          PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
+          R2X_BENCHMARK_SUMMARY_PATH: ${{ runner.temp }}/r2x-plugin-benchmark.txt
+        run: |
+          export LD_LIBRARY_PATH="${PYTHON_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          cargo test -p r2x test_run_plugin_benchmark_repeat_outputs_summary -- --nocapture
+      - name: Format benchmark summary table
+        if: matrix.toolchain == 'stable' && matrix.python-version == '3.12'
+        run: |
+          python3 scripts/format_benchmark_summary.py \
+            --input "${{ runner.temp }}/r2x-plugin-benchmark.txt" \
+            --output "${{ runner.temp }}/r2x-plugin-benchmark.md" \
+            --append-summary
+      - name: Download baseline benchmark artifact
+        if: matrix.toolchain == 'stable' && matrix.python-version == '3.12'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          baseline_dir="${{ runner.temp }}/baseline-benchmark"
+          mkdir -p "$baseline_dir"
+          selected_run=""
+          for run_id in $(
+            gh api "/repos/${{ github.repository }}/actions/workflows/build.yml/runs" \
+              -f branch=main \
+              -f status=success \
+              -f per_page=30 \
+              --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | .id'
+          ); do
+            if gh run download "$run_id" -n r2x-plugin-benchmark-summary -D "$baseline_dir" >/dev/null 2>&1; then
+              if [[ -f "$baseline_dir/r2x-plugin-benchmark.txt" ]]; then
+                selected_run="$run_id"
+                break
+              fi
+            fi
+          done
+
+          if [[ -n "$selected_run" ]]; then
+            echo "BASELINE_BENCHMARK_PATH=$baseline_dir/r2x-plugin-benchmark.txt" >> "$GITHUB_ENV"
+            echo "BASELINE_BENCHMARK_RUN_ID=$selected_run" >> "$GITHUB_ENV"
+            echo "BASELINE_BENCHMARK_RUN_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/$selected_run" >> "$GITHUB_ENV"
+            echo "Using baseline benchmark artifact from run $selected_run."
+          else
+            echo "No baseline benchmark artifact found from recent successful main runs."
+            {
+              echo ""
+              echo "### Plugin Benchmark Delta"
+              echo ""
+              echo "No baseline artifact found from recent successful \`main\` runs."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Compare benchmark against baseline
+        if: matrix.toolchain == 'stable' && matrix.python-version == '3.12' && env.BASELINE_BENCHMARK_PATH != ''
+        run: |
+          threshold_args=()
+          if [[ -n "${R2X_BENCHMARK_REGRESSION_PCT:-}" ]]; then
+            threshold_args+=(--fail-on-regression-pct "${R2X_BENCHMARK_REGRESSION_PCT}")
+          fi
+          python3 scripts/compare_benchmark_summary.py \
+            --baseline "${BASELINE_BENCHMARK_PATH}" \
+            --current "${{ runner.temp }}/r2x-plugin-benchmark.txt" \
+            --baseline-run-id "${BASELINE_BENCHMARK_RUN_ID}" \
+            --baseline-run-url "${BASELINE_BENCHMARK_RUN_URL}" \
+            --output "${{ runner.temp }}/r2x-plugin-benchmark-delta.md" \
+            "${threshold_args[@]}" \
+            --print-status-line \
+            --write-github-output \
+            --append-summary
+      - name: Upload benchmark summary
+        if: matrix.toolchain == 'stable' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2x-plugin-benchmark-summary
+          path: |
+            ${{ runner.temp }}/r2x-plugin-benchmark.txt
+            ${{ runner.temp }}/r2x-plugin-benchmark.md
+            ${{ runner.temp }}/r2x-plugin-benchmark-delta.md
+          if-no-files-found: error

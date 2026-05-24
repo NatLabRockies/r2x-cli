@@ -122,7 +122,18 @@ fn test_plugins_help() {
         .stdout(predicate::str::contains(format!(
             "Usage: {} run plugin",
             EXECUTABLE_NAME
-        )));
+        )))
+        .stdout(predicate::str::contains("--repeat"))
+        .stdout(predicate::str::contains("--benchmark"));
+}
+
+#[test]
+fn test_plugins_repeat_rejects_zero() {
+    r2x_cmd()
+        .args(["run", "plugin", "--repeat", "0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value '0'"));
 }
 
 #[test]
@@ -293,6 +304,129 @@ fn test_pipeline_s2p_runs() {
         .arg("s2p")
         .assert()
         .success();
+}
+
+#[test]
+fn test_pipeline_function_plugin_ignores_stdin_when_not_declared() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let pipeline_path = env
+        .home_path()
+        .join("pipelines")
+        .join("function-no-stdin.yaml");
+    let output_dir = env.home_path().join("output").join("function-no-stdin");
+    if fs::create_dir_all(&output_dir).is_err() {
+        return;
+    }
+
+    let pipeline_yaml = format!(
+        r#"pipelines:
+  function-no-stdin:
+    - r2x_reeds.parser
+    - r2x_reeds.no_stdin_function
+
+config:
+  r2x_reeds.parser:
+    weather_year: 2012
+    solve_year: 2032
+
+output_folder: "{output}"
+"#,
+        output = output_dir.to_string_lossy()
+    );
+    if fs::write(&pipeline_path, pipeline_yaml).is_err() {
+        return;
+    }
+
+    env.command()
+        .arg("run")
+        .arg(pipeline_path.to_string_lossy().to_string())
+        .arg("function-no-stdin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("function-no-stdin"));
+}
+
+#[test]
+fn test_pipeline_function_plugin_receives_system_when_declared() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let pipeline_path = env
+        .home_path()
+        .join("pipelines")
+        .join("function-with-system.yaml");
+    let output_dir = env.home_path().join("output").join("function-with-system");
+    if fs::create_dir_all(&output_dir).is_err() {
+        return;
+    }
+
+    let pipeline_yaml = format!(
+        r#"pipelines:
+  function-with-system:
+    - r2x_reeds.parser
+    - r2x_reeds.with_system_function
+
+config:
+  r2x_reeds.parser:
+    weather_year: 2012
+    solve_year: 2032
+
+output_folder: "{output}"
+"#,
+        output = output_dir.to_string_lossy()
+    );
+    if fs::write(&pipeline_path, pipeline_yaml).is_err() {
+        return;
+    }
+
+    env.command()
+        .arg("run")
+        .arg(pipeline_path.to_string_lossy().to_string())
+        .arg("function-with-system")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("function-with-system"))
+        .stdout(predicate::str::contains("reeds"));
+}
+
+#[test]
+fn test_run_plugin_benchmark_repeat_outputs_summary() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let assert = env
+        .command()
+        .args([
+            "run",
+            "plugin",
+            "r2x_reeds.parser",
+            "--repeat",
+            "3",
+            "--benchmark",
+            "solve_year=2032",
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(stderr.contains("Benchmark r2x_reeds.parser: runs=3"));
+    assert!(stderr.contains("Benchmark r2x_reeds.parser breakdown:"));
+
+    if let Ok(path) = std::env::var("R2X_BENCHMARK_SUMMARY_PATH") {
+        let summary = stderr
+            .lines()
+            .filter(|line| line.starts_with("Benchmark "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !summary.is_empty() {
+            let _ = fs::write(path, format!("{summary}\n"));
+        }
+    }
 }
 
 struct PipelineHarness {
@@ -533,6 +667,18 @@ module = "r2x_reeds.parser"
 class_name = "ReEDSParser"
 config_class = "ReEDSConfig"
 config_module = "r2x_reeds.parser"
+
+[[packages.plugins]]
+name = "r2x_reeds.no_stdin_function"
+type = "function"
+module = "r2x_reeds.parser"
+function_name = "no_stdin_function"
+
+[[packages.plugins]]
+name = "r2x_reeds.with_system_function"
+type = "function"
+module = "r2x_reeds.parser"
+function_name = "with_system_function"
 
 [[packages]]
 name = "r2x-sienna"

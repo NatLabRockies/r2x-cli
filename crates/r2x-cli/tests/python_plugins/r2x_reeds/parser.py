@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -38,3 +39,20 @@ class ReEDSParser:
 
     def build_system(self) -> str:
         return '{"system": "reeds", "status": "ok"}'
+
+
+def no_stdin_function() -> dict[str, str]:
+    """Function plugin intentionally omits stdin/system params."""
+    return {"system": "reeds", "status": "function-no-stdin"}
+
+
+def with_system_function(system) -> dict[str, str]:
+    """Function plugin that requires system/stdin deserialization."""
+    data = getattr(system, "data", {})
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = {}
+    source = data.get("system", "unknown")
+    return {"system": source, "status": "function-with-system"}
