@@ -16,6 +16,8 @@
 name: Release
 permissions:
   "contents": "write"
+env:
+  R2X_PYTHON_VERSION: "3.12"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -134,7 +136,13 @@ jobs:
       - name: Install uv & python
         uses: ./.github/actions/setup-uv-python
         with:
-          python-version: "3.12"
+          python-version: ${{ env.R2X_PYTHON_VERSION }}
+
+      - name: PyO3 diagnostics
+        shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ join(matrix.targets, ' ') }}
+        run: bash scripts/ci_pyo3_diagnostics.sh
 
       - name: Install Rust toolchain
         if: ${{ matrix.container }}

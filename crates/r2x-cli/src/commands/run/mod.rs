@@ -9,6 +9,7 @@ use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use r2x_manifest::types::PluginType;
 use r2x_python::errors::BridgeError;
 use r2x_python::plugin_invoker::PluginInvocationTimings;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 mod pipeline;
@@ -91,6 +92,18 @@ pub struct PluginCommand {
     pub plugin_name: Option<String>,
     #[arg(long)]
     pub show_help: bool,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value = "1",
+        help = "Repeat plugin invocation N times"
+    )]
+    pub repeat: NonZeroUsize,
+    #[arg(
+        long,
+        help = "Print benchmark summary (also implied when --repeat > 1)"
+    )]
+    pub benchmark: bool,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }

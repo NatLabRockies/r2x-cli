@@ -1,260 +1,103 @@
-//! Utility constants and functions for platform-specific Python venv path handling
+//! Utility adapters for Python virtual environment path handling.
 //!
-//! This module provides compile-time constants for directories and files that differ
-//! between Windows and Unix-like systems in Python virtual environments.
+//! The actual platform-specific resolver lives in `r2x-config` so the CLI,
+//! manifest/discovery code, and PyO3 bridge do not drift apart on Python
+//! version or platform assumptions.
 
 use crate::errors::BridgeError;
-use r2x_logger as logger;
-use std::fs;
+use r2x_config::venv_paths::{resolve_python_exe, resolve_site_packages, VenvPathError};
 use std::path::{Path, PathBuf};
 
-/// The name of the library directory in a Python venv (e.g., "Lib" on Windows, "lib" on Unix)
-#[cfg(windows)]
-pub const PYTHON_LIB_DIR: &str = "Lib";
-#[cfg(unix)]
-pub const PYTHON_LIB_DIR: &str = "lib";
-
-/// The name of the binaries/scripts directory in a Python venv (e.g., "Scripts" on Windows, "bin" on Unix)
-#[cfg(windows)]
-const PYTHON_BIN_DIR: &str = "Scripts";
-#[cfg(unix)]
-const PYTHON_BIN_DIR: &str = "bin";
-
-/// Candidate executable names in a venv
-#[cfg(unix)]
-const PYTHON_EXE_CANDIDATES: &[&str] = &["python3", "python"];
-#[cfg(windows)]
-const PYTHON_EXE_CANDIDATES: &[&str] = &["python.exe", "python3.exe", "python3.12.exe"];
-
-// Site Packages differences.
-//
-// MacOS
-// .venv/lib/python {version}/site-packages
-//
-// Windows
-// .venv/Lib/site-packages
+pub const PYTHON_LIB_DIR: &str = r2x_config::venv_paths::PYTHON_LIB_DIR;
+pub const PYTHON_BIN_DIR: &str = r2x_config::venv_paths::PYTHON_BIN_DIR;
 
 pub fn resolve_site_package_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
-    logger::debug(&format!(
-        "Resolving site-packages path for venv: {}",
-        venv_path.display()
-    ));
-
-    // Verify the venv_path exists and is a directory.
-    if !venv_path.is_dir() {
-        logger::debug(&format!(
-            "Venv path does not exist or is not a directory: {}",
-            venv_path.display()
-        ));
-        return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
-    }
-
-    #[cfg(windows)]
-    {
-        let site_packages = venv_path.join(PYTHON_LIB_DIR).join("site-packages");
-        logger::debug(&format!(
-            "Windows: Looking for site-packages at: {}",
-            site_packages.display()
-        ));
-
-        // verify site_package_path exists
-        if !site_packages.is_dir() {
-            logger::debug(&format!(
-                "Windows: site-packages directory not found at: {}",
-                site_packages.display()
-            ));
-            return Err(BridgeError::Initialization(format!(
-                "unable to locate package directory: {}",
-                site_packages.display()
-            )));
-        }
-        logger::debug(&format!(
-            "Windows: Successfully resolved site-packages: {}",
-            site_packages.display()
-        ));
-        Ok(site_packages)
-    }
-
-    #[cfg(not(windows))]
-    {
-        let lib_dir = venv_path.join(PYTHON_LIB_DIR);
-        logger::debug(&format!(
-            "Unix: Looking for lib directory at: {}",
-            lib_dir.display()
-        ));
-
-        if !lib_dir.is_dir() {
-            logger::debug(&format!(
-                "Unix: lib directory not found at: {}",
-                lib_dir.display()
-            ));
-            return Err(BridgeError::Initialization(format!(
-                "unable to locate lib directory: {}",
-                lib_dir.display()
-            )));
-        }
-
-        let python_version_dir = fs::read_dir(&lib_dir)
-            .map_err(|e| {
-                logger::debug(&format!("Unix: Failed to read lib directory: {}", e));
-                BridgeError::Initialization(format!("Failed to read lib directory: {}", e))
-            })?
-            .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().starts_with("python"))
-            .ok_or_else(|| {
-                logger::debug("Unix: No python3.X directory found in venv/lib");
-                BridgeError::Initialization("No python3.X directory found in venv/lib".to_string())
-            })?;
-
-        logger::debug(&format!(
-            "Unix: Found python version directory: {}",
-            python_version_dir.path().display()
-        ));
-
-        let site_packages = python_version_dir.path().join("site-packages");
-        logger::debug(&format!(
-            "Unix: Looking for site-packages at: {}",
-            site_packages.display()
-        ));
-
-        if !site_packages.is_dir() {
-            logger::debug(&format!(
-                "Unix: site-packages directory not found at: {}",
-                site_packages.display()
-            ));
-            return Err(BridgeError::Initialization(format!(
-                "unable to locate package directory: {}",
-                site_packages.display()
-            )));
-        }
-
-        logger::debug(&format!(
-            "Unix: Successfully resolved site-packages: {}",
-            site_packages.display()
-        ));
-        Ok(site_packages)
-    }
+    resolve_site_packages(venv_path).map_err(venv_path_error_to_bridge_error)
 }
 
 pub fn resolve_python_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
-    // validate venv path is a valid directory
-    if !venv_path.is_dir() {
-        return Err(BridgeError::VenvNotFound(venv_path.to_path_buf()));
-    }
+    resolve_python_exe(venv_path).map_err(venv_path_error_to_bridge_error)
+}
 
-    let bin_dir = venv_path.join(PYTHON_BIN_DIR);
-    if !bin_dir.is_dir() {
-        return Err(BridgeError::Initialization(format!(
-            "Python bin directory missing: {}",
-            bin_dir.display()
-        )));
+fn venv_path_error_to_bridge_error(error: VenvPathError) -> BridgeError {
+    match error {
+        VenvPathError::VenvNotFound(path) => BridgeError::VenvNotFound(path),
+        VenvPathError::PathResolution(message) => BridgeError::Initialization(message),
     }
-
-    for exe in PYTHON_EXE_CANDIDATES {
-        let candidate = bin_dir.join(exe);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    if let Ok(entries) = fs::read_dir(&bin_dir) {
-        if let Some(candidate) = entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|name| name.contains("python"))
-                && p.is_file()
-        }) {
-            return Ok(candidate);
-        }
-    }
-
-    Err(BridgeError::Initialization(format!(
-        "Path to python binary is not valid in {}",
-        venv_path.display()
-    )))
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::errors::BridgeError;
     use crate::utils::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// Helper to create a mock venv structure for testing
+    #[cfg(not(windows))]
     fn create_mock_venv_unix(python_version: &str) -> Option<TempDir> {
         let temp_dir = TempDir::new().ok()?;
         let venv_path = temp_dir.path();
 
-        // Create Unix structure: .venv/lib/python3.X/site-packages
-        let lib_dir = venv_path.join("lib");
-        let python_dir = lib_dir.join(python_version);
-        let site_packages = python_dir.join("site-packages");
+        let site_packages = venv_path
+            .join(PYTHON_LIB_DIR)
+            .join(python_version)
+            .join("site-packages");
         fs::create_dir_all(&site_packages).ok()?;
 
-        // Create bin directory with python executable
-        let bin_dir = venv_path.join("bin");
+        let bin_dir = venv_path.join(PYTHON_BIN_DIR);
         fs::create_dir_all(&bin_dir).ok()?;
         fs::write(bin_dir.join("python3"), "").ok()?;
 
         Some(temp_dir)
     }
 
-    /// Helper to create a mock Windows venv structure for testing
-    #[expect(dead_code)]
-    fn create_mock_venv_windows() -> Option<TempDir> {
+    #[cfg(windows)]
+    fn create_mock_venv_windows(python_exe: &str) -> Option<TempDir> {
         let temp_dir = TempDir::new().ok()?;
         let venv_path = temp_dir.path();
 
-        // Create Windows structure: .venv/Lib/site-packages
-        let lib_dir = venv_path.join("Lib");
-        let site_packages = lib_dir.join("site-packages");
+        let site_packages = venv_path.join(PYTHON_LIB_DIR).join("site-packages");
         fs::create_dir_all(&site_packages).ok()?;
 
-        // Create Scripts directory with python executable
-        let scripts_dir = venv_path.join("Scripts");
+        let scripts_dir = venv_path.join(PYTHON_BIN_DIR);
         fs::create_dir_all(&scripts_dir).ok()?;
-        fs::write(scripts_dir.join("python.exe"), "").ok()?;
+        fs::write(scripts_dir.join(python_exe), "").ok()?;
 
         Some(temp_dir)
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn test_resolve_site_package_path_unix() {
         let Some(temp_venv) = create_mock_venv_unix("python3.12") else {
             return;
         };
-        let venv_path = temp_venv.path().to_path_buf();
 
-        let result = resolve_site_package_path(&venv_path);
-        assert!(result.is_ok());
-        assert!(result.is_ok_and(|sp| sp.ends_with("lib/python3.12/site-packages") && sp.exists()));
+        let result = resolve_site_package_path(temp_venv.path());
+        assert!(result.is_ok_and(|sp| sp.ends_with("lib/python3.12/site-packages")));
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn test_resolve_site_package_path_unix_different_version() {
         let Some(temp_venv) = create_mock_venv_unix("python3.11") else {
             return;
         };
-        let venv_path = temp_venv.path().to_path_buf();
 
-        let result = resolve_site_package_path(&venv_path);
-        assert!(result.is_ok());
+        let result = resolve_site_package_path(temp_venv.path());
         assert!(result.is_ok_and(|sp| sp.ends_with("lib/python3.11/site-packages")));
     }
 
     #[test]
     #[cfg(windows)]
     fn test_resolve_site_package_path_windows() {
-        let Some(temp_venv) = create_mock_venv_windows() else {
+        let Some(temp_venv) = create_mock_venv_windows("python.exe") else {
             return;
         };
-        let venv_path = temp_venv.path().to_path_buf();
 
-        let result = resolve_site_package_path(&venv_path);
-        assert!(result.is_ok());
-        assert!(result.is_ok_and(|sp| sp.ends_with("Lib\\site-packages") && sp.exists()));
+        let result = resolve_site_package_path(temp_venv.path());
+        assert!(result.is_ok_and(|sp| sp.ends_with("Lib\\site-packages")));
     }
 
     #[test]
@@ -262,8 +105,6 @@ mod tests {
         let non_existent_path = PathBuf::from("/tmp/non_existent_venv_12345");
 
         let result = resolve_site_package_path(&non_existent_path);
-        assert!(result.is_err());
-
         assert!(matches!(
             result,
             Err(BridgeError::VenvNotFound(path)) if path == non_existent_path
@@ -271,54 +112,76 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn test_resolve_site_package_path_missing_python_dir() {
         let Ok(temp_dir) = TempDir::new() else {
             return;
         };
-        let venv_path = temp_dir.path();
-
-        // Create lib dir but no python3.X subdirectory
-        let lib_dir = venv_path.join("lib");
+        let lib_dir = temp_dir.path().join(PYTHON_LIB_DIR);
         if fs::create_dir_all(&lib_dir).is_err() {
             return;
         }
 
-        let result = resolve_site_package_path(venv_path);
-        assert!(result.is_err());
-        assert!(result.is_err_and(|e| matches!(e, BridgeError::Initialization(msg) if msg.contains("No python3.X directory found"))));
+        let result = resolve_site_package_path(temp_dir.path());
+        assert!(result.is_err_and(|e| {
+            matches!(e, BridgeError::Initialization(msg) if msg.contains("No python3.X directory found"))
+        }));
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn test_resolve_python_path_unix() {
         let Some(temp_venv) = create_mock_venv_unix("python3.12") else {
             return;
         };
-        let venv_path = temp_venv.path().to_path_buf();
 
-        let result = resolve_python_path(&venv_path);
-        assert!(result.is_ok());
+        let result = resolve_python_path(temp_venv.path());
         assert!(result.is_ok_and(|pp| pp.ends_with("bin/python3")));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_resolve_python_path_unix_versioned_fallback() {
+        let Some(temp_venv) = create_mock_venv_unix("python3.13") else {
+            return;
+        };
+        let bin_dir = temp_venv.path().join(PYTHON_BIN_DIR);
+        if fs::remove_file(bin_dir.join("python3")).is_err() {
+            return;
+        }
+        if fs::write(bin_dir.join("python3.13"), "").is_err() {
+            return;
+        }
+
+        let result = resolve_python_path(temp_venv.path());
+        assert!(result.is_ok_and(|pp| pp.ends_with("bin/python3.13")));
     }
 
     #[test]
     #[cfg(windows)]
     fn test_resolve_python_path_windows() {
-        let Some(temp_venv) = create_mock_venv_windows() else {
+        let Some(temp_venv) = create_mock_venv_windows("python.exe") else {
             return;
         };
-        let venv_path = temp_venv.path().to_path_buf();
 
-        let result = resolve_python_path(&venv_path);
-        assert!(result.is_ok());
+        let result = resolve_python_path(temp_venv.path());
         assert!(result.is_ok_and(|pp| pp.ends_with("Scripts\\python.exe")));
     }
 
     #[test]
+    #[cfg(windows)]
+    fn test_resolve_python_path_windows_versioned_fallback() {
+        let Some(temp_venv) = create_mock_venv_windows("python3.13.exe") else {
+            return;
+        };
+
+        let result = resolve_python_path(temp_venv.path());
+        assert!(result.is_ok_and(|pp| pp.ends_with("Scripts\\python3.13.exe")));
+    }
+
+    #[test]
     fn test_python_lib_dir_constant() {
-        // Test that the compile-time constant is correct for the platform
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         assert_eq!(PYTHON_LIB_DIR, "lib");
 
         #[cfg(windows)]
@@ -327,8 +190,7 @@ mod tests {
 
     #[test]
     fn test_python_bin_dir_constant() {
-        // Test that the compile-time constant is correct for the platform
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         assert_eq!(PYTHON_BIN_DIR, "bin");
 
         #[cfg(windows)]
@@ -336,36 +198,24 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn test_resolve_site_package_path_with_multiple_python_versions() {
         let Ok(temp_dir) = TempDir::new() else {
             return;
         };
-        let venv_path = temp_dir.path();
-
-        // Create lib dir with multiple python versions
-        let lib_dir = venv_path.join("lib");
+        let lib_dir = temp_dir.path().join(PYTHON_LIB_DIR);
         if fs::create_dir_all(&lib_dir).is_err() {
             return;
         }
 
-        // Create python3.11
-        let python_311 = lib_dir.join("python3.11");
-        let site_packages_311 = python_311.join("site-packages");
-        if fs::create_dir_all(&site_packages_311).is_err() {
-            return;
+        for python_version in ["python3.11", "python3.12"] {
+            let site_packages = lib_dir.join(python_version).join("site-packages");
+            if fs::create_dir_all(&site_packages).is_err() {
+                return;
+            }
         }
 
-        // Create python3.12 (should find the first one)
-        let python_312 = lib_dir.join("python3.12");
-        let site_packages_312 = python_312.join("site-packages");
-        if fs::create_dir_all(&site_packages_312).is_err() {
-            return;
-        }
-
-        let result = resolve_site_package_path(venv_path);
-        assert!(result.is_ok());
-        // Should find one of them (implementation finds first match)
+        let result = resolve_site_package_path(temp_dir.path());
         assert!(result.is_ok_and(
             |sp| sp.to_string_lossy().contains("python3.1") && sp.ends_with("site-packages")
         ));

@@ -5,30 +5,29 @@ inputs:
     description: 'Python version to install (e.g., "3.12")'
     required: true
     default: "3.12"
+outputs:
+  python-path:
+    description: "Path to the uv-managed Python interpreter used for PyO3"
+    value: ${{ steps.python.outputs.python-path }}
+  resolved-version:
+    description: "Full Python version reported by the selected interpreter"
+    value: ${{ steps.python.outputs.resolved-version }}
+  python-abi-version:
+    description: "Major.minor Python ABI version used in libpython names"
+    value: ${{ steps.python.outputs.python-abi-version }}
+  python-prefix:
+    description: "Prefix of the uv-managed Python installation"
+    value: ${{ steps.python.outputs.python-prefix }}
 runs:
   using: "composite"
   steps:
     - name: Install uv
       uses: astral-sh/setup-uv@v3
     - name: Install Python via uv and set PYO3_PYTHON
+      id: python
       shell: bash
-      run: |
-        uv python install ${{ inputs.python-version }}
-        UV_PYTHON_BIN=$(uv python find ${{ inputs.python-version }})
-        echo "PYO3_PYTHON=$UV_PYTHON_BIN" >> $GITHUB_ENV
-        echo "Setting PYO3_PYTHON => $UV_PYTHON_BIN"
+      run: bash scripts/ci_setup_uv_python.sh "${{ inputs.python-version }}"
     - name: Fix libpython install name for portable builds
       if: runner.os == 'macOS'
       shell: bash
-      run: |
-        UV_PYTHON_BIN=$(uv python find ${{ inputs.python-version }})
-        PYTHON_PREFIX=$(dirname "$(dirname "$UV_PYTHON_BIN")")
-        LIBPYTHON="$PYTHON_PREFIX/lib/libpython${{ inputs.python-version }}.dylib"
-        if [ -f "$LIBPYTHON" ]; then
-          echo "Fixing libpython install name for portable binary linking"
-          echo "  Before: $(otool -D "$LIBPYTHON" | tail -1)"
-          install_name_tool -id "@rpath/libpython${{ inputs.python-version }}.dylib" "$LIBPYTHON"
-          echo "  After:  $(otool -D "$LIBPYTHON" | tail -1)"
-        else
-          echo "libpython not found at $LIBPYTHON (skipping install name fix)"
-        fi
+      run: bash scripts/ci_fix_libpython_install_name.sh "${{ steps.python.outputs.python-prefix }}" "${{ steps.python.outputs.python-abi-version }}"

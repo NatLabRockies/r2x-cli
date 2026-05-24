@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/python_version.sh
+source "$script_dir/python_version.sh"
+
 installer_path="${1:-}"
+python_request_version="${R2X_PYTHON_VERSION:-${PYTHON_VERSION:-3.12}}"
 
 if [[ -z "${installer_path}" ]]; then
     echo "Usage: $0 <path-to-cargo-dist-installer.sh>"
@@ -13,6 +18,10 @@ if [[ ! -f "${installer_path}" ]]; then
     exit 1
 fi
 
+python_abi_version="$(r2x_python_abi_version "R2X_PYTHON_VERSION" "${python_request_version}")"
+python_install_hint="$(r2x_python_install_hint "${python_request_version}")"
+python_find_hint="$(r2x_python_find_hint "${python_request_version}")"
+
 if grep -q "ensure_python_runtime_for_r2x()" "${installer_path}"; then
     echo "Installer already patched: ${installer_path}"
     exit 0
@@ -21,7 +30,7 @@ fi
 tmp_file="$(mktemp)"
 trap 'rm -f "${tmp_file}"' EXIT
 
-awk '
+awk -v python_request_version="${python_request_version}" -v python_abi_version="${python_abi_version}" -v python_install_hint="${python_install_hint}" -v python_find_hint="${python_find_hint}" '
 BEGIN {
     inserted_function = 0
     inserted_call = 0
@@ -38,13 +47,15 @@ BEGIN {
         print ""
         print "    case \"$_arch\" in"
         print "        *-unknown-linux-gnu)"
-        print "            local _python_version=\"3.12\""
-        print "            local _primary_lib=\"libpython3.12.so.1.0\""
-        print "            local _secondary_lib=\"libpython3.12.so\""
+        print "            local _python_request_version=\"" python_request_version "\""
+        print "            local _python_abi_version=\"" python_abi_version "\""
+        print "            local _primary_lib=\"libpython${_python_abi_version}.so.1.0\""
+        print "            local _secondary_lib=\"libpython${_python_abi_version}.so\""
         print "            ;;"
         print "        *-apple-darwin)"
-        print "            local _python_version=\"3.12\""
-        print "            local _primary_lib=\"libpython3.12.dylib\""
+        print "            local _python_request_version=\"" python_request_version "\""
+        print "            local _python_abi_version=\"" python_abi_version "\""
+        print "            local _primary_lib=\"libpython${_python_abi_version}.dylib\""
         print "            local _secondary_lib=\"\""
         print "            ;;"
         print "        *)"
@@ -57,16 +68,22 @@ BEGIN {
         print "    fi"
         print ""
         print "    if ! command -v uv >/dev/null 2>&1; then"
-        print "        say \"warning: $APP_NAME requires Python ${_python_version} shared libraries.\""
-        print "        say \"Install uv and run: uv python install ${_python_version}\""
+        print "        say \"warning: $APP_NAME requires Python ${_python_abi_version} shared libraries.\""
+        print "        say \"Install uv and run: " python_install_hint "\""
+        print "        say \"Then re-run this installer or copy libpython into the install directory.\""
         print "        return 0"
         print "    fi"
         print ""
-        print "    uv python install \"$_python_version\" >/dev/null 2>&1 || true"
+        print "    uv python install \"$_python_request_version\" >/dev/null 2>&1 || true"
         print "    local _python_bin"
-        print "    _python_bin=\"$(uv python find \"$_python_version\" 2>/dev/null || true)\""
+        print "    _python_bin=\"$(uv python find \"$_python_request_version\" 2>/dev/null || true)\""
+        print "    if [ -z \"$_python_bin\" ] && [ \"$_python_abi_version\" != \"$_python_request_version\" ]; then"
+        print "        _python_bin=\"$(uv python find \"$_python_abi_version\" 2>/dev/null || true)\""
+        print "    fi"
         print "    if [ -z \"$_python_bin\" ]; then"
-        print "        say \"warning: unable to locate Python ${_python_version} via uv\""
+        print "        say \"warning: unable to locate Python ${_python_request_version} via uv\""
+        print "        say \"Run: " python_install_hint "\""
+        print "        say \"Verify with: " python_find_hint "\""
         print "        return 0"
         print "    fi"
         print ""
@@ -76,6 +93,7 @@ BEGIN {
         print ""
         print "    if [ ! -f \"$_python_lib_dir/$_primary_lib\" ]; then"
         print "        say \"warning: expected Python library not found at $_python_lib_dir/$_primary_lib\""
+        print "        say \"$APP_NAME may not work until libpython is available.\""
         print "        return 0"
         print "    fi"
         print ""

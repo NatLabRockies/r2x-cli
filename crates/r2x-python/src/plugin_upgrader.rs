@@ -2,27 +2,27 @@
 
 use crate::errors::BridgeError;
 use crate::plugin_invoker::PluginInvocationResult;
-use crate::plugin_regular::{format_err_result, format_python_error, StdoutGuard};
+use crate::plugin_regular::{format_err_result, format_python_error, PythonJson, StdoutGuard};
 use crate::python_bridge::Bridge;
-use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule, PyString};
+use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
 use r2x_logger as logger;
 use r2x_manifest::runtime::RuntimeBindings;
 use r2x_manifest::types::Plugin;
 use std::path::{Path, PathBuf};
 
 impl Bridge {
-    #[expect(clippy::unused_self)] // kept for API consistency with other invoke methods
+    #[allow(clippy::unused_self)] // kept for API consistency with other invoke methods
     pub(crate) fn invoke_upgrader_plugin(
         &self,
         target: &str,
         config_json: &str,
         runtime_bindings: Option<&RuntimeBindings>,
-        plugin_metadata: Option<&Plugin>,
+        _plugin_metadata: Option<&Plugin>, // kept for API consistency across invoke methods
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
             let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
 
-            logger::debug(&format!("Invoking upgrader plugin: {}", target));
+            logger::debug_lazy(|| format!("Invoking upgrader plugin: {}", target));
             let parts: Vec<&str> = target.split(':').collect();
             if parts.len() != 2 {
                 return Err(BridgeError::InvalidEntryPoint(target.to_string()));
@@ -32,11 +32,13 @@ impl Bridge {
 
             let module = PyModule::import(py, module_path)
                 .map_err(|e| BridgeError::Import(module_path.to_string(), format!("{}", e)))?;
-            let json_module = PyModule::import(py, "json")
-                .map_err(|e| BridgeError::Import("json".to_string(), format!("{}", e)))?;
-            let loads = json_module.getattr("loads")?;
-            let config_dict = loads
-                .call1((config_json,))?
+            let _ = Bridge::enable_loguru_modules_after_import(
+                py,
+                &[module_path.split('.').next().unwrap_or(module_path)],
+            );
+            let json = PythonJson::import(py)?;
+            let config_dict = json
+                .loads(config_json)?
                 .cast::<PyDict>()
                 .map_err(|e| BridgeError::Python(format!("Config must be a JSON object: {}", e)))?
                 .clone();
@@ -49,18 +51,6 @@ impl Bridge {
                     &format!("Failed to get upgrader class '{}'", callable_path),
                 ))
             })?;
-
-            if let Some(plugin) = plugin_metadata {
-                if let Some(strategy) = find_arg_value(plugin, "version_strategy") {
-                    kwargs.set_item("version_strategy", strategy)?;
-                }
-                if let Some(reader) = find_arg_value(plugin, "version_reader") {
-                    kwargs.set_item("version_reader", reader)?;
-                }
-                if let Some(steps) = find_arg_value(plugin, "upgrade_steps") {
-                    kwargs.set_item("upgrade_steps", steps)?;
-                }
-            }
 
             let instance = upgrader_class.call((), Some(&kwargs)).map_err(|e| {
                 BridgeError::Python(format_python_error(
@@ -99,12 +89,6 @@ impl Bridge {
             }
         })
     }
-}
-
-fn find_arg_value(_plugin: &Plugin, _name: &str) -> Option<&'static str> {
-    // Upgrade-specific metadata was removed in the manifest cleanup.
-    // Upgrader plugins now rely on their runtime configuration.
-    None
 }
 
 impl Bridge {
@@ -149,10 +133,7 @@ impl Bridge {
             ))
         })?;
 
-        let json_module = PyModule::import(py, "json")
-            .map_err(|e| BridgeError::Import("json".to_string(), format!("{}", e)))?;
-        let loads = json_module.getattr("loads")?;
-        let dumps = json_module.getattr("dumps")?;
+        let json = PythonJson::import(py)?;
 
         let mut system_data: Option<pyo3::Py<PyAny>> = None;
         let mut system_json_path: Option<PathBuf> = None;
@@ -169,22 +150,21 @@ impl Bridge {
                 .or_else(|_| Ok(upgrade_type_obj.clone()))
                 .and_then(|obj| obj.str().map(|s| s.to_string()))
                 .map_err(|e| BridgeError::Python(format!("Invalid upgrade type: {}", e)))?;
-            logger::debug(&format!(
-                "Upgrade step type for current step: {}",
-                upgrade_value
-            ));
+            logger::debug_lazy(|| format!("Upgrade step type for current step: {}", upgrade_value));
             let upgrade_is_system =
                 upgrade_value.eq_ignore_ascii_case("SYSTEM") || upgrade_value.ends_with(".SYSTEM");
             let upgrade_is_file =
                 upgrade_value.eq_ignore_ascii_case("FILE") || upgrade_value.ends_with(".FILE");
 
-            logger::debug(&format!(
-                "Executing upgrade step: {}",
-                step_obj
-                    .getattr("name")
-                    .and_then(|n| n.extract::<String>())
-                    .unwrap_or_else(|_| "<unknown>".to_string())
-            ));
+            logger::debug_lazy(|| {
+                format!(
+                    "Executing upgrade step: {}",
+                    step_obj
+                        .getattr("name")
+                        .and_then(|n| n.extract::<String>())
+                        .unwrap_or_else(|_| "<unknown>".to_string())
+                )
+            });
 
             let data_arg = if upgrade_is_system {
                 saw_system_step = true;
@@ -193,7 +173,7 @@ impl Bridge {
                 } else {
                     let resolved =
                         resolve_system_json_path(&path_buf).map_err(BridgeError::Python)?;
-                    let data = load_system_data(py, &loads, &resolved)?;
+                    let data = load_system_data(py, &json, &resolved)?;
                     system_data = Some(data);
                     system_json_path = Some(resolved);
                     system_data.as_ref().ok_or_else(|| {
@@ -255,7 +235,7 @@ impl Bridge {
 
         let final_json_path = if let Some(json_path) = system_json_path {
             if let Some(ref data) = system_data {
-                write_system_data(py, &dumps, data, &json_path)?;
+                write_system_data(py, &json, data, &json_path)?;
             }
             json_path
         } else {
@@ -263,15 +243,9 @@ impl Bridge {
         };
 
         if let Some(data) = system_data {
-            let json_str: String = dumps
-                .call1((data.bind(py),))
-                .map_err(|e| {
-                    BridgeError::Python(format!("Failed to serialize upgraded system: {}", e))
-                })?
-                .extract()
-                .map_err(|e| {
-                    BridgeError::Python(format!("Failed to extract upgraded system JSON: {}", e))
-                })?;
+            let json_str: String = json.dumps(data.bind(py)).map_err(|e| {
+                BridgeError::Python(format!("Failed to serialize upgraded system: {}", e))
+            })?;
             Ok(json_str)
         } else {
             let contents = std::fs::read_to_string(&final_json_path).map_err(|e| {
@@ -315,7 +289,7 @@ fn resolve_system_json_path(path: &Path) -> Result<PathBuf, String> {
 
 fn load_system_data<'py>(
     py: pyo3::Python<'py>,
-    loads: &pyo3::Bound<'py, pyo3::PyAny>,
+    json: &PythonJson<'py>,
     json_path: &Path,
 ) -> Result<pyo3::Py<PyAny>, BridgeError> {
     let content = std::fs::read_to_string(json_path).map_err(|e| {
@@ -325,8 +299,7 @@ fn load_system_data<'py>(
             e
         ))
     })?;
-    let py_str = PyString::new(py, &content);
-    let data = loads.call1((py_str,)).map_err(|e| {
+    let data = json.loads(&content).map_err(|e| {
         BridgeError::Python(format_python_error(
             py,
             e,
@@ -338,32 +311,21 @@ fn load_system_data<'py>(
 
 fn write_system_data<'py>(
     py: pyo3::Python<'py>,
-    dumps: &pyo3::Bound<'py, pyo3::PyAny>,
+    json: &PythonJson<'py>,
     data: &pyo3::Py<PyAny>,
     json_path: &Path,
 ) -> Result<(), BridgeError> {
     let kwargs = PyDict::new(py);
     kwargs.set_item("indent", 2)?;
     kwargs.set_item("ensure_ascii", false)?;
-    let json_str: String = dumps
-        .call((data.bind(py),), Some(&kwargs))
+    let json_str: String = json
+        .dumps_with_kwargs(data.bind(py), Some(&kwargs))
         .map_err(|e| {
             BridgeError::Python(format_python_error(
                 py,
                 e,
                 &format!(
                     "Failed to serialize upgraded system JSON {}",
-                    json_path.display()
-                ),
-            ))
-        })?
-        .extract()
-        .map_err(|e| {
-            BridgeError::Python(format_python_error(
-                py,
-                e,
-                &format!(
-                    "Failed to convert upgraded system JSON {}",
                     json_path.display()
                 ),
             ))

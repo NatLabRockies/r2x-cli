@@ -11,29 +11,73 @@
 
 set -euo pipefail
 
-BINARY="${1:-}"
-
-if [[ -z "$BINARY" ]]; then
-    echo "Usage: $0 <binary_path>"
-    echo "Example: $0 target/debug/r2x"
-    exit 1
-fi
-
-if [[ ! -f "$BINARY" ]]; then
-    echo "Error: Binary not found: $BINARY"
-    exit 1
-fi
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/python_version.sh
+source "$script_dir/python_version.sh"
 
 # Add rpath entry, ignoring "already exists" errors
 add_rpath() {
     install_name_tool -add_rpath "$1" "$2" 2>/dev/null || true
 }
 
+python_abi_version() {
+    r2x_python_abi_version "PYTHON_VERSION" "$1"
+}
+
+detect_pyo3_python_abi() {
+    local python_bin="$1"
+
+    if [[ ! -x "$python_bin" ]]; then
+        echo "PYO3_PYTHON is set but not executable: $python_bin" >&2
+        return 1
+    fi
+
+    local python_version
+    python_version=$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+    if [[ -z "$python_version" ]]; then
+        echo "PYO3_PYTHON is set but did not report a Python version: $python_bin" >&2
+        return 1
+    fi
+
+    r2x_python_abi_version "PYO3_PYTHON" "$python_version"
+}
+
+validate_pyo3_python_matches_configured_version() {
+    local python_bin="${PYO3_PYTHON:-}"
+    local configured_version="$1"
+
+    if [[ -z "$configured_version" || -z "$python_bin" ]]; then
+        return 0
+    fi
+
+    local requested_abi pyo3_abi
+    requested_abi=$(r2x_python_abi_version "R2X_PYTHON_VERSION" "$configured_version")
+    pyo3_abi=$(detect_pyo3_python_abi "$python_bin")
+
+    if [[ "$pyo3_abi" != "$requested_abi" ]]; then
+        echo "PYO3_PYTHON resolves to Python $pyo3_abi but R2X_PYTHON_VERSION requests $requested_abi" >&2
+        return 1
+    fi
+}
+
 resolve_uv_python_tag() {
     local python_bin="${PYO3_PYTHON:-}"
+    local configured_version="${R2X_PYTHON_VERSION:-${PYTHON_VERSION:-}}"
+    local python_version="${configured_version:-3.12}"
+
+    if [[ -n "$configured_version" ]]; then
+        r2x_validate_python_version "R2X_PYTHON_VERSION" "$configured_version"
+        validate_pyo3_python_matches_configured_version "$configured_version"
+    elif [[ -n "$python_bin" ]]; then
+        detect_pyo3_python_abi "$python_bin" >/dev/null
+    fi
 
     if [[ -z "$python_bin" ]] && command -v uv &> /dev/null; then
-        python_bin=$(uv python find 3.12 2>/dev/null || true)
+        if [[ -n "$configured_version" ]]; then
+            python_bin=$(r2x_find_uv_python "$python_version" || true)
+        else
+            python_bin=$(r2x_find_uv_python "$python_version" || r2x_find_uv_python 3.11 || true)
+        fi
     fi
 
     if [[ -z "$python_bin" ]]; then
@@ -49,6 +93,29 @@ resolve_uv_python_tag() {
     fi
 
     echo "$uv_tag"
+}
+
+resolve_python_version() {
+    local python_bin="${PYO3_PYTHON:-}"
+    local configured_version="${R2X_PYTHON_VERSION:-${PYTHON_VERSION:-}}"
+
+    if [[ -n "$configured_version" ]]; then
+        r2x_validate_python_version "R2X_PYTHON_VERSION" "$configured_version"
+        validate_pyo3_python_matches_configured_version "$configured_version"
+        python_abi_version "$configured_version"
+        return 0
+    fi
+
+    if [[ -z "$python_bin" ]] && command -v uv &> /dev/null; then
+        python_bin=$(uv python find 3.12 2>/dev/null || uv python find 3.11 2>/dev/null || true)
+    fi
+
+    if [[ -n "$python_bin" && -x "$python_bin" ]]; then
+        detect_pyo3_python_abi "$python_bin"
+        return 0
+    fi
+
+    echo "3.12"
 }
 
 fix_macos() {
@@ -152,7 +219,9 @@ fix_linux() {
         uv_rpath=":\$ORIGIN/../share/uv/python/$uv_tag/lib"
     fi
 
-    local new_rpath='$ORIGIN/../lib:$ORIGIN:$ORIGIN/../lib/python3.12/config-3.12-x86_64-linux-gnu:/usr/local/lib:/usr/lib:/usr/lib64'"$uv_rpath"
+    local python_version
+    python_version=$(resolve_python_version)
+    local new_rpath="\$ORIGIN/../lib:\$ORIGIN:\$ORIGIN/../lib/python${python_version}/config-${python_version}-x86_64-linux-gnu:/usr/local/lib:/usr/lib:/usr/lib64${uv_rpath}"
 
     echo "Setting rpath to: $new_rpath"
     patchelf --set-rpath "$new_rpath" "$binary"
@@ -168,16 +237,34 @@ fix_linux() {
     echo "Done! Users need libpython accessible via rpath or LD_LIBRARY_PATH."
 }
 
-# Call the appropriate fix function based on platform
-case "$(uname -s)" in
-    Darwin)
-        fix_macos "$BINARY"
-        ;;
-    Linux)
-        fix_linux "$BINARY"
-        ;;
-    *)
-        echo "Unsupported platform: $(uname -s)"
+main() {
+    local binary="${1:-}"
+
+    if [[ -z "$binary" ]]; then
+        echo "Usage: $0 <binary_path>"
+        echo "Example: $0 target/debug/r2x"
         exit 1
-        ;;
-esac
+    fi
+
+    if [[ ! -f "$binary" ]]; then
+        echo "Error: Binary not found: $binary"
+        exit 1
+    fi
+
+    case "$(uname -s)" in
+        Darwin)
+            fix_macos "$binary"
+            ;;
+        Linux)
+            fix_linux "$binary"
+            ;;
+        *)
+            echo "Unsupported platform: $(uname -s)"
+            exit 1
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
