@@ -69,10 +69,7 @@ fn requested_build_python_version() -> Option<String> {
 pub fn detect_requested_python_via_uv(uv: &str, requested_version: &str) -> Result<String, String> {
     let requested_abi = requested_python_abi_version("R2X_PYTHON_VERSION", requested_version)?;
     let mut selected_python =
-        match uv_python_find(uv, requested_version, requested_version, &requested_abi)? {
-            Some(path) => Some(path),
-            None => None,
-        };
+        uv_python_find(uv, requested_version, requested_version, &requested_abi)?;
 
     if selected_python.is_none() && is_patch_version(requested_version) {
         selected_python = uv_python_find(uv, &requested_abi, requested_version, &requested_abi)?;

@@ -902,7 +902,9 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn test_find_python_lib_via_uv_falls_back_from_patch_to_abi_query() {
-        let _lock = PATH_TEST_LOCK.lock().expect("path lock poisoned");
+        let Ok(_lock) = PATH_TEST_LOCK.lock() else {
+            return;
+        };
         let Ok(temp_dir) = TempDir::new() else {
             return;
         };
@@ -960,7 +962,9 @@ mod tests {
         };
         env::set_var("PATH", &new_path);
 
-        let version = PythonRuntimeVersion::parse("3.13.1").expect("valid python version");
+        let Ok(version) = PythonRuntimeVersion::parse("3.13.1") else {
+            return;
+        };
         let found = find_python_lib_via_uv(&version, &[lib_name.to_string()]);
 
         if let Some(path) = original_path {

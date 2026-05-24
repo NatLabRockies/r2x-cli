@@ -362,6 +362,7 @@ impl Bridge {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn invoke_class_callable<'py>(
         _bridge: &Bridge,
         module: &pyo3::Bound<'py, PyModule>,
@@ -589,6 +590,7 @@ impl Bridge {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn invoke_function_callable<'py>(
         py: pyo3::Python<'py>,
         module: &pyo3::Bound<'py, PyModule>,
@@ -787,7 +789,7 @@ fn method_stdin_support(method: &pyo3::Bound<'_, PyAny>) -> PyResult<StdinSignat
         .getattr("__self__")
         .ok()
         .is_some_and(|bound_self| !bound_self.is_none());
-    let start_index = if start_index { 1 } else { 0 };
+    let start_index = usize::from(start_index);
 
     if usable <= start_index {
         return Ok(StdinSignatureSupport::default());

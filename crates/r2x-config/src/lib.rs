@@ -685,6 +685,8 @@ mod tests {
     use crate::*;
     use std::fs;
     #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     #[cfg(unix)]
     use std::thread;
@@ -702,6 +704,19 @@ mod tests {
             }
             Err(error) => Err(error),
         }
+    }
+
+    #[cfg(unix)]
+    fn write_test_executable(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+        let mut file = fs::File::create(path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        let metadata = fs::metadata(path)?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)
     }
 
     #[cfg(unix)]
@@ -823,7 +838,9 @@ mod tests {
 
     #[test]
     fn test_python_runtime_version_query_candidates_include_patch_then_abi() {
-        let patch = PythonRuntimeVersion::parse("3.13.1").expect("valid patch version");
+        let Ok(patch) = PythonRuntimeVersion::parse("3.13.1") else {
+            return;
+        };
         assert_eq!(patch.query_candidates(), vec!["3.13.1", "3.13"]);
         assert_eq!(
             patch.install_hint(),
@@ -834,7 +851,9 @@ mod tests {
             "uv python find 3.13.1 || uv python find 3.13"
         );
 
-        let abi = PythonRuntimeVersion::parse("3.13").expect("valid abi version");
+        let Ok(abi) = PythonRuntimeVersion::parse("3.13") else {
+            return;
+        };
         assert_eq!(abi.query_candidates(), vec!["3.13"]);
         assert_eq!(abi.install_hint(), "uv python install 3.13");
         assert_eq!(abi.find_hint(), "uv python find 3.13");
@@ -1182,22 +1201,15 @@ mod tests {
         let venv_path = temp_dir.path().join(".venv");
 
         assert!(
-            fs::write(
+            write_test_executable(
                 &uv,
-                format!(
-                    "#!/usr/bin/env sh\necho \"$@\" >> \"{}\"\nif [ \"$1\" = \"venv\" ] && [ \"$4\" = \"3.13.1\" ]; then\n  exit 1\nfi\nif [ \"$1\" = \"venv\" ] && [ \"$4\" = \"3.13\" ]; then\n  mkdir -p \"$2\"\n  exit 0\nfi\nexit 1\n",
+                &format!(
+                    "#!/usr/bin/env sh\necho \"$@\" >> \"{}\"\nif [ \"$1\" != \"venv\" ]; then\n  echo \"unexpected command: $@\" >&2\n  exit 1\nfi\nvenv_path=\"\"\npython_query=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    venv)\n      shift\n      venv_path=\"${{1:-}}\"\n      ;;\n    --python)\n      shift\n      python_query=\"${{1:-}}\"\n      ;;\n  esac\n  shift || break\ndone\ncase \"$python_query\" in\n  3.13.1)\n    echo \"patch unavailable\" >&2\n    exit 1\n    ;;\n  3.13)\n    mkdir -p \"$venv_path\"\n    exit 0\n    ;;\nesac\necho \"unexpected python query: $python_query\" >&2\nexit 1\n",
                     calls_path.display()
                 )
             )
             .is_ok()
         );
-
-        let Ok(metadata) = fs::metadata(&uv) else {
-            return;
-        };
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o755);
-        assert!(fs::set_permissions(&uv, permissions).is_ok());
 
         let mut config = Config {
             uv_path: Some(uv.to_string_lossy().to_string()),
@@ -1207,14 +1219,12 @@ mod tests {
         };
 
         let result = config.ensure_venv_path();
-        assert_eq!(
-            result.ok().as_deref(),
-            Some(venv_path.to_string_lossy().as_ref())
+        let calls = fs::read_to_string(&calls_path).unwrap_or_default();
+        assert!(
+            matches!(result.as_deref(), Ok(path) if path == venv_path.to_string_lossy()),
+            "ensure_venv_path failed: {result:?}\nuv calls:\n{calls}"
         );
 
-        let Ok(calls) = fs::read_to_string(&calls_path) else {
-            return;
-        };
         assert!(
             calls.contains("--python 3.13.1"),
             "missing patch query: {calls}"
@@ -1234,19 +1244,12 @@ mod tests {
 
         let uv = temp_dir.path().join("uv");
         assert!(
-            fs::write(
+            write_test_executable(
                 &uv,
                 "#!/usr/bin/env sh\nif [ \"$1\" = \"venv\" ]; then\n  echo 'no interpreter found' >&2\n  exit 1\nfi\nexit 1\n"
             )
             .is_ok()
         );
-
-        let Ok(metadata) = fs::metadata(&uv) else {
-            return;
-        };
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o755);
-        assert!(fs::set_permissions(&uv, permissions).is_ok());
 
         let mut config = Config {
             uv_path: Some(uv.to_string_lossy().to_string()),

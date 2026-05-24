@@ -205,13 +205,11 @@ impl Bridge {
                     if collect_debug_details {
                         created_args.push(format!("{} (DataStore)", param.name));
                     }
-                } else {
-                    if collect_debug_details {
-                        skipped_args.push((
-                            param.name.to_string(),
-                            "no store path found in config".to_string(),
-                        ));
-                    }
+                } else if collect_debug_details {
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "no store path found in config".to_string(),
+                    ));
                 }
                 continue;
             }
@@ -290,13 +288,11 @@ impl Bridge {
                         ));
                     }
                 }
-            } else {
-                if collect_debug_details {
-                    skipped_args.push((
-                        param.name.to_string(),
-                        "not found in config (optional)".to_string(),
-                    ));
-                }
+            } else if collect_debug_details {
+                skipped_args.push((
+                    param.name.to_string(),
+                    "not found in config (optional)".to_string(),
+                ));
             }
         }
 
@@ -474,6 +470,7 @@ Verify the data folder contains all expected outputs (did you unpack the full `i
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::snapshot_config_field_names;
     use crate::python_bridge::Bridge;
@@ -487,12 +484,12 @@ mod tests {
         pyo3::Python::initialize();
         pyo3::Python::attach(|py| -> Result<(), String> {
             let code = CString::new(
-                r#"
+                r"
 class Config:
     def __init__(self):
         self.alpha = 1
         self.beta = 2
-"#,
+",
             )
             .map_err(|error| error.to_string())?;
             let file =
