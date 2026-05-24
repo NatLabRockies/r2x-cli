@@ -126,6 +126,8 @@ minute.
 Pipelines chain plugins together in a named sequence defined in
 a YAML file. See [Pipeline File Format](#pipeline-file-format)
 for the full spec.
+For ready-to-use translation examples across ReEDS, Sienna, and
+PLEXOS, see [Translation Pipeline Configurations](docs/translation-pipeline-configs.md).
 
 ```bash
 # List available pipelines
