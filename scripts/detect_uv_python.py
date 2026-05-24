@@ -40,6 +40,12 @@ def validate_python_version(version: str) -> str:
     return version
 
 
+def python_abi_version(version: str) -> str:
+    """Normalize 3.x(.patch) to 3.x ABI form."""
+    parts = version.strip().split(".")
+    return f"{parts[0]}.{parts[1]}"
+
+
 def load_uv_python_list(version: str) -> Iterable[Dict[str, Any]]:
     """Invoke `uv python list` and return parsed JSON entries."""
     result = subprocess.run(
@@ -52,10 +58,15 @@ def load_uv_python_list(version: str) -> Iterable[Dict[str, Any]]:
             "json",
             version,
         ],
-        check=True,
+        check=False,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"uv python list failed for {version}: {result.stderr.strip() or f'exit {result.returncode}'}"
+        )
     data = json.loads(result.stdout)
     if not isinstance(data, list):
         raise RuntimeError("uv python list returned unexpected JSON payload")
@@ -108,9 +119,36 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
-    entries = load_uv_python_list(version)
-    prefix = choose_uv_prefix(entries)
+    is_patch_request = version.count(".") == 2
+    fallback_error: Optional[Exception] = None
+    try:
+        entries = load_uv_python_list(version)
+        prefix = choose_uv_prefix(entries)
+    except Exception as error:
+        entries = []
+        prefix = None
+        fallback_error = error
+
+    if (not prefix) and is_patch_request:
+        requested_abi = python_abi_version(version)
+        if requested_abi != version:
+            try:
+                entries = load_uv_python_list(requested_abi)
+                prefix = choose_uv_prefix(entries)
+            except Exception:
+                prefix = None
+
+    if not prefix and fallback_error is not None and not is_patch_request:
+        print(f"error: {fallback_error}", file=sys.stderr)
+        return 1
+
     if not prefix:
+        if fallback_error is not None and is_patch_request:
+            print(
+                f"error: unable to determine uv-managed python path (requested {version}, fallback ABI {python_abi_version(version)})",
+                file=sys.stderr,
+            )
+            return 1
         print("error: unable to determine uv-managed python path", file=sys.stderr)
         return 1
 

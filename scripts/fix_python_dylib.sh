@@ -74,9 +74,9 @@ resolve_uv_python_tag() {
 
     if [[ -z "$python_bin" ]] && command -v uv &> /dev/null; then
         if [[ -n "$configured_version" ]]; then
-            python_bin=$(uv python find "$python_version" 2>/dev/null || true)
+            python_bin=$(r2x_find_uv_python "$python_version" || true)
         else
-            python_bin=$(uv python find "$python_version" 2>/dev/null || uv python find 3.11 2>/dev/null || true)
+            python_bin=$(r2x_find_uv_python "$python_version" || r2x_find_uv_python 3.11 || true)
         fi
     fi
 

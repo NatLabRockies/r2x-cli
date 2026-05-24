@@ -34,8 +34,37 @@ runs:
           echo "::error::$REQUESTED_PYTHON_ABI"
           exit 1
         fi
-        uv python install "$REQUESTED_PYTHON_VERSION"
-        UV_PYTHON_BIN=$(uv python find "$REQUESTED_PYTHON_VERSION")
+        INSTALL_HINT="uv python install $REQUESTED_PYTHON_VERSION"
+        FIND_HINT="uv python find $REQUESTED_PYTHON_VERSION"
+        if [ "$REQUESTED_PYTHON_ABI" != "$REQUESTED_PYTHON_VERSION" ]; then
+          INSTALL_HINT="$INSTALL_HINT || uv python install $REQUESTED_PYTHON_ABI"
+          FIND_HINT="$FIND_HINT || uv python find $REQUESTED_PYTHON_ABI"
+        fi
+        if ! uv python install "$REQUESTED_PYTHON_VERSION"; then
+          if [ "$REQUESTED_PYTHON_ABI" != "$REQUESTED_PYTHON_VERSION" ]; then
+            if ! uv python install "$REQUESTED_PYTHON_ABI"; then
+              echo "::error::unable to install requested Python version $REQUESTED_PYTHON_VERSION (fallback ABI $REQUESTED_PYTHON_ABI also failed)"
+              echo "::error::Install it with: $INSTALL_HINT"
+              exit 1
+            fi
+          else
+            echo "::error::unable to install requested Python version $REQUESTED_PYTHON_VERSION"
+            echo "::error::Install it with: $INSTALL_HINT"
+            exit 1
+          fi
+        fi
+        UV_PYTHON_QUERY="$REQUESTED_PYTHON_VERSION"
+        UV_PYTHON_BIN=$(uv python find "$UV_PYTHON_QUERY" 2>/dev/null || true)
+        if [ -z "$UV_PYTHON_BIN" ] && [ "$REQUESTED_PYTHON_ABI" != "$REQUESTED_PYTHON_VERSION" ]; then
+          UV_PYTHON_QUERY="$REQUESTED_PYTHON_ABI"
+          UV_PYTHON_BIN=$(uv python find "$UV_PYTHON_QUERY" 2>/dev/null || true)
+        fi
+        if [ -z "$UV_PYTHON_BIN" ]; then
+          echo "::error::unable to resolve Python for requested version $REQUESTED_PYTHON_VERSION (tried ABI $REQUESTED_PYTHON_ABI)"
+          echo "::error::Install it with: $INSTALL_HINT"
+          echo "::error::Verify with: $FIND_HINT"
+          exit 1
+        fi
         PYTHON_PREFIX=$(dirname "$(dirname "$UV_PYTHON_BIN")")
         PYTHON_VERSION=$("$UV_PYTHON_BIN" --version)
         PYTHON_ABI_VERSION=$("$UV_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
@@ -59,6 +88,7 @@ runs:
             echo "| --- | --- |"
             echo "| Requested | \`$REQUESTED_PYTHON_VERSION\` |"
             echo "| Requested ABI | \`$REQUESTED_PYTHON_ABI\` |"
+            echo "| Resolved query | \`$UV_PYTHON_QUERY\` |"
             echo "| Resolved | \`$PYTHON_VERSION\` |"
             echo "| ABI | \`$PYTHON_ABI_VERSION\` |"
             echo "| Interpreter | \`$UV_PYTHON_BIN\` |"

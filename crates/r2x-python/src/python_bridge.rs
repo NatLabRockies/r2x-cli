@@ -153,24 +153,26 @@ impl Bridge {
 
         // Try uv first
         if let Some(ref uv_path) = config.uv_path {
-            let output = Command::new(uv_path)
-                .arg("venv")
-                .arg(venv_path)
-                .arg("--python")
-                .arg(python_version.requested())
-                .output()?;
+            for python_query in python_version.query_candidates() {
+                let output = Command::new(uv_path)
+                    .arg("venv")
+                    .arg(venv_path)
+                    .arg("--python")
+                    .arg(python_query)
+                    .output()?;
 
-            if output.status.success() {
-                logger::success("Virtual environment created successfully");
-                return Ok(());
+                if output.status.success() {
+                    logger::success("Virtual environment created successfully");
+                    return Ok(());
+                }
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                logger::debug_lazy(|| format!("uv venv failed for {python_query}: {}", stderr));
             }
-
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            logger::debug_lazy(|| format!("uv venv failed: {}", stderr));
         }
 
         // Fallback to python3 -m venv
-        let python_cmd = format!("python{}", python_version.requested());
+        let python_cmd = format!("python{}", python_version.abi());
         let output = Command::new(&python_cmd)
             .args(["-m", "venv"])
             .arg(venv_path)
@@ -516,7 +518,7 @@ fn check_python_library_available(
         }
 
         // Try to find Python via uv and set up the library path
-        if let Some(lib_dir) = find_python_lib_via_uv(python_version.requested(), &lib_names) {
+        if let Some(lib_dir) = find_python_lib_via_uv(python_version, &lib_names) {
             prepend_to_env_path(env_var, &lib_dir);
             logger::debug_lazy(|| format!("Set {} to include: {}", env_var, lib_dir.display()));
             return Ok(());
@@ -567,27 +569,34 @@ where
 /// Try to find Python library via uv python find command.
 /// Returns the lib directory path if found.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn find_python_lib_via_uv(python_version: &str, lib_names: &[String]) -> Option<PathBuf> {
-    let output = Command::new("uv")
-        .args(["python", "find", python_version])
-        .output()
-        .ok()?;
+fn find_python_lib_via_uv(
+    python_version: &PythonRuntimeVersion,
+    lib_names: &[String],
+) -> Option<PathBuf> {
+    for python_query in python_version.query_candidates() {
+        let output = Command::new("uv")
+            .args(["python", "find", python_query])
+            .output()
+            .ok()?;
 
-    if !output.status.success() {
-        return None;
-    }
+        if !output.status.success() {
+            continue;
+        }
 
-    let python_path = String::from_utf8_lossy(&output.stdout);
-    let python_path = python_path.trim();
+        let python_path = String::from_utf8_lossy(&output.stdout);
+        let python_path = python_path.trim();
 
-    // Python binary is in bin/, lib is in ../lib/
-    let lib_dir = PathBuf::from(python_path).parent()?.parent()?.join("lib");
+        // Python binary is in bin/, lib is in ../lib/
+        let lib_dir = PathBuf::from(python_path).parent()?.parent()?.join("lib");
 
-    for lib_name in lib_names {
-        let lib_path = lib_dir.join(lib_name);
-        if lib_path.exists() {
-            logger::debug_lazy(|| format!("Found Python library via uv: {}", lib_path.display()));
-            return Some(lib_dir);
+        for lib_name in lib_names {
+            let lib_path = lib_dir.join(lib_name);
+            if lib_path.exists() {
+                logger::debug_lazy(|| {
+                    format!("Found Python library via uv: {}", lib_path.display())
+                });
+                return Some(lib_dir);
+            }
         }
     }
 
@@ -614,29 +623,31 @@ fn setup_windows_dll_path(python_version: &PythonRuntimeVersion) -> Result<(), B
     let dll_name = format!("python{}.dll", python_version.abi().replace('.', ""));
 
     // Try to find Python via uv first
-    let output = Command::new("uv")
-        .args(["python", "find", python_version.requested()])
-        .output();
+    for python_query in python_version.query_candidates() {
+        let output = Command::new("uv")
+            .args(["python", "find", python_query])
+            .output();
 
-    if let Ok(output) = output {
-        if output.status.success() {
-            let python_path = String::from_utf8_lossy(&output.stdout);
-            let python_path = python_path.trim();
-            if let Some(parent) = PathBuf::from(python_path).parent() {
-                // On Windows, Python DLL is usually in the same directory as python.exe
-                let dll_path = parent.join(&dll_name);
-                if dll_path.exists() {
-                    // Add the directory to PATH so Windows can find the DLL
-                    if let Ok(current_path) = env::var("PATH") {
-                        let new_path = format!("{};{}", parent.display(), current_path);
-                        env::set_var("PATH", &new_path);
-                        logger::debug_lazy(|| {
-                            format!(
-                                "Added {} to PATH for Python DLL discovery",
-                                parent.display()
-                            )
-                        });
-                        return Ok(());
+        if let Ok(output) = output {
+            if output.status.success() {
+                let python_path = String::from_utf8_lossy(&output.stdout);
+                let python_path = python_path.trim();
+                if let Some(parent) = PathBuf::from(python_path).parent() {
+                    // On Windows, Python DLL is usually in the same directory as python.exe
+                    let dll_path = parent.join(&dll_name);
+                    if dll_path.exists() {
+                        // Add the directory to PATH so Windows can find the DLL
+                        if let Ok(current_path) = env::var("PATH") {
+                            let new_path = format!("{};{}", parent.display(), current_path);
+                            env::set_var("PATH", &new_path);
+                            logger::debug_lazy(|| {
+                                format!(
+                                    "Added {} to PATH for Python DLL discovery",
+                                    parent.display()
+                                )
+                            });
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -661,19 +672,21 @@ fn setup_windows_dll_path(python_version: &PythonRuntimeVersion) -> Result<(), B
         }
     }
 
+    let find_hint = python_version.find_hint();
+    let install_hint = python_version.install_hint();
     Err(BridgeError::PythonLibraryNotFound(format!(
         "Could not find {}.\n\n\
         This binary requires Python {} to be installed.\n\n\
         To fix this on Windows:\n\
-        1. Install Python via uv: uv python install {}\n\
+        1. Install Python via uv: {}\n\
         2. Or download from https://www.python.org/downloads/\n\
         3. Ensure Python is in your PATH\n\n\
         If you installed Python via uv, try running:\n\
-           uv python find {}",
+           {}",
         dll_name,
         python_version.requested(),
-        python_version.requested(),
-        python_version.requested()
+        install_hint,
+        find_hint
     )))
 }
 
@@ -703,9 +716,17 @@ pub struct PythonEnvCompat {
 #[cfg(test)]
 mod tests {
     use crate::python_bridge::*;
-    use r2x_config::default_python_version;
+    use r2x_config::{default_python_version, PythonRuntimeVersion};
+    #[cfg(unix)]
+    use std::env;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    static PATH_TEST_LOCK: once_cell::sync::Lazy<std::sync::Mutex<()>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(()));
 
     #[test]
     fn test_bridge_struct() {
@@ -876,5 +897,78 @@ mod tests {
         let result = resolve_python_home(&venv_path);
         assert!(result.is_ok());
         assert!(result.is_ok_and(|path| path == expected_prefix));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_find_python_lib_via_uv_falls_back_from_patch_to_abi_query() {
+        let _lock = PATH_TEST_LOCK.lock().expect("path lock poisoned");
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+
+        let python_prefix = temp_dir.path().join("cpython-3.13");
+        let python_bin = python_prefix.join("bin").join("python3.13");
+        let lib_dir = python_prefix.join("lib");
+        if fs::create_dir_all(python_bin.parent().unwrap_or(temp_dir.path())).is_err() {
+            return;
+        }
+        if fs::create_dir_all(&lib_dir).is_err() {
+            return;
+        }
+        if fs::write(&python_bin, "").is_err() {
+            return;
+        }
+
+        let lib_name = if cfg!(target_os = "macos") {
+            "libpython3.13.dylib"
+        } else {
+            "libpython3.13.so"
+        };
+        if fs::write(lib_dir.join(lib_name), "").is_err() {
+            return;
+        }
+
+        let uv = temp_dir.path().join("uv");
+        if fs::write(
+            &uv,
+            format!(
+                "#!/usr/bin/env sh\nif [ \"$1\" = \"python\" ] && [ \"$2\" = \"find\" ] && [ \"$3\" = \"3.13.1\" ]; then\n  exit 1\nfi\nif [ \"$1\" = \"python\" ] && [ \"$2\" = \"find\" ] && [ \"$3\" = \"3.13\" ]; then\n  printf '{}\\n'\n  exit 0\nfi\nexit 1\n",
+                python_bin.display()
+            ),
+        )
+        .is_err()
+        {
+            return;
+        }
+        let Ok(metadata) = fs::metadata(&uv) else {
+            return;
+        };
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o755);
+        if fs::set_permissions(&uv, permissions).is_err() {
+            return;
+        }
+
+        let original_path = env::var_os("PATH");
+        let mut path_entries = vec![temp_dir.path().to_path_buf()];
+        if let Some(existing) = original_path.as_ref() {
+            path_entries.extend(env::split_paths(existing));
+        }
+        let Ok(new_path) = env::join_paths(path_entries) else {
+            return;
+        };
+        env::set_var("PATH", &new_path);
+
+        let version = PythonRuntimeVersion::parse("3.13.1").expect("valid python version");
+        let found = find_python_lib_via_uv(&version, &[lib_name.to_string()]);
+
+        if let Some(path) = original_path {
+            env::set_var("PATH", path);
+        } else {
+            env::remove_var("PATH");
+        }
+
+        assert_eq!(found, Some(lib_dir));
     }
 }

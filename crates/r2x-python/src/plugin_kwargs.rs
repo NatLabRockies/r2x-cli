@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule};
 use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings, RuntimeConfig};
+use std::collections::HashSet;
 use std::path::Path;
 
 impl Bridge {
@@ -19,13 +20,14 @@ impl Bridge {
     ) -> Result<pyo3::Bound<'py, PyDict>, BridgeError> {
         let kwargs = PyDict::new(py);
 
-        // Log the input config dict keys for debugging
-        let config_keys: Vec<String> = config_dict
-            .keys()
-            .iter()
-            .filter_map(|k| k.extract::<String>().ok())
-            .collect();
-        logger::debug_lazy(|| format!("build_kwargs: input config_dict keys: {:?}", config_keys));
+        logger::debug_lazy(|| {
+            let config_keys: Vec<String> = config_dict
+                .keys()
+                .iter()
+                .filter_map(|k| k.extract::<String>().ok())
+                .collect();
+            format!("build_kwargs: input config_dict keys: {:?}", config_keys)
+        });
 
         let Some(runtime) = runtime_bindings else {
             logger::debug(
@@ -40,9 +42,9 @@ impl Bridge {
             return Ok(kwargs);
         };
 
-        // Log the runtime parameters we're working with
-        let param_names: Vec<&str> = runtime.parameters.iter().map(|p| p.name.as_ref()).collect();
         logger::debug_lazy(|| {
+            let param_names: Vec<&str> =
+                runtime.parameters.iter().map(|p| p.name.as_ref()).collect();
             format!(
                 "build_kwargs: runtime parameters to process: {:?}",
                 param_names
@@ -68,7 +70,8 @@ impl Bridge {
         let mut needs_config_class = false;
         let mut config_param_name = String::new();
 
-        // Track which arguments are created vs skipped for logging
+        // Track argument reconstruction details only when debug logging is enabled.
+        let collect_debug_details = logger::debug_enabled();
         let mut created_args: Vec<String> = Vec::new();
         let mut skipped_args: Vec<(String, String)> = Vec::new(); // (name, reason)
 
@@ -126,6 +129,7 @@ impl Bridge {
         }
 
         let mut config_instance: Option<pyo3::Py<pyo3::PyAny>> = None;
+        let mut config_field_names: Option<HashSet<String>> = None;
         if needs_config_class {
             // Always pass the full config dict to the config class.
             // The config class (e.g., ZonalToNodal which extends PluginConfig) may have
@@ -151,17 +155,24 @@ impl Bridge {
                 config_param_name
             ));
             kwargs.set_item(&config_param_name, &config_obj)?;
-            created_args.push(format!("{} (config class)", config_param_name));
+            if collect_debug_details {
+                created_args.push(format!("{} (config class)", config_param_name));
+            }
             config_instance = Some(config_obj.unbind());
+            if let Some(ref config_obj) = config_instance {
+                config_field_names = snapshot_config_field_names(config_obj.bind(py));
+            }
         }
 
         for param in &runtime.parameters {
             // Skip the config parameter - it was already handled above
             if needs_config_class && param.name.as_ref() == config_param_name {
-                skipped_args.push((
-                    param.name.to_string(),
-                    "already handled as config class".to_string(),
-                ));
+                if collect_debug_details {
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "already handled as config class".to_string(),
+                    ));
+                }
                 continue;
             }
 
@@ -191,12 +202,16 @@ impl Bridge {
                         Self::instantiate_data_store(py, &value, None, runtime.config.as_ref())?
                     };
                     kwargs.set_item(param.name.as_ref(), store_instance)?;
-                    created_args.push(format!("{} (DataStore)", param.name));
+                    if collect_debug_details {
+                        created_args.push(format!("{} (DataStore)", param.name));
+                    }
                 } else {
-                    skipped_args.push((
-                        param.name.to_string(),
-                        "no store path found in config".to_string(),
-                    ));
+                    if collect_debug_details {
+                        skipped_args.push((
+                            param.name.to_string(),
+                            "no store path found in config".to_string(),
+                        ));
+                    }
                 }
                 continue;
             }
@@ -204,8 +219,11 @@ impl Bridge {
             // Skip parameters that are config fields when we have a config class
             // (those values are already inside the config object)
             let is_config_field = if needs_config_class {
-                // Check the config instance directly for the attribute
-                if let Some(ref config_obj) = config_instance {
+                if let Some(names) = config_field_names.as_ref() {
+                    names.contains(param.name.as_ref())
+                } else if let Some(ref config_obj) = config_instance {
+                    // Fallback to per-parameter Python lookup when a field snapshot
+                    // is unavailable for the config object implementation.
                     config_obj
                         .bind(py)
                         .hasattr(param.name.as_ref())
@@ -224,20 +242,26 @@ impl Bridge {
                         param.name
                     )
                 });
-                skipped_args.push((
-                    param.name.to_string(),
-                    "already in config object".to_string(),
-                ));
+                if collect_debug_details {
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "already in config object".to_string(),
+                    ));
+                }
                 continue;
             }
 
             if let Some(value) = config_dict.get_item(param.name.as_ref()).ok().flatten() {
                 let path_alias = value.clone();
                 kwargs.set_item(param.name.as_ref(), value)?;
-                created_args.push(param.name.to_string());
+                if collect_debug_details {
+                    created_args.push(param.name.to_string());
+                }
                 if param.name.as_ref() == "folder_path" && !kwargs.contains("path")? {
                     kwargs.set_item("path", path_alias)?;
-                    created_args.push("path (alias of folder_path)".to_string());
+                    if collect_debug_details {
+                        created_args.push("path (alias of folder_path)".to_string());
+                    }
                 }
             } else if param.required {
                 let stdin_param = param.name.as_ref() == "stdin" || param.name.as_ref() == "system";
@@ -248,25 +272,31 @@ impl Bridge {
                             param.name
                         )
                     });
-                    skipped_args.push((
-                        param.name.to_string(),
-                        "will be provided via stdin".to_string(),
-                    ));
+                    if collect_debug_details {
+                        skipped_args.push((
+                            param.name.to_string(),
+                            "will be provided via stdin".to_string(),
+                        ));
+                    }
                 } else {
                     logger::warn(&format!(
                         "Required parameter '{}' missing in config",
                         param.name
                     ));
-                    skipped_args.push((
-                        param.name.to_string(),
-                        "missing in config (required)".to_string(),
-                    ));
+                    if collect_debug_details {
+                        skipped_args.push((
+                            param.name.to_string(),
+                            "missing in config (required)".to_string(),
+                        ));
+                    }
                 }
             } else {
-                skipped_args.push((
-                    param.name.to_string(),
-                    "not found in config (optional)".to_string(),
-                ));
+                if collect_debug_details {
+                    skipped_args.push((
+                        param.name.to_string(),
+                        "not found in config (optional)".to_string(),
+                    ));
+                }
             }
         }
 
@@ -277,35 +307,41 @@ impl Bridge {
                 .any(|p| p.name.as_ref() == "stdin")
             {
                 kwargs.set_item("stdin", stdin)?;
-                created_args.push("stdin (from pipeline)".to_string());
+                if collect_debug_details {
+                    created_args.push("stdin (from pipeline)".to_string());
+                }
             } else {
                 logger::debug(
                     "Plugin received stdin payload but exposes no 'stdin' parameter; skipping kwargs injection",
                 );
-                skipped_args.push((
-                    "stdin".to_string(),
-                    "plugin has no stdin parameter".to_string(),
-                ));
+                if collect_debug_details {
+                    skipped_args.push((
+                        "stdin".to_string(),
+                        "plugin has no stdin parameter".to_string(),
+                    ));
+                }
             }
         }
 
         // Log summary of argument reconstruction
-        logger::debug_lazy(|| {
-            format!(
-                "build_kwargs: created {} arguments: {:?}",
-                created_args.len(),
-                created_args
-            )
-        });
-        if !skipped_args.is_empty() {
+        if collect_debug_details {
             logger::debug_lazy(|| {
                 format!(
-                    "build_kwargs: skipped {} arguments from pipeline:",
-                    skipped_args.len()
+                    "build_kwargs: created {} arguments: {:?}",
+                    created_args.len(),
+                    created_args
                 )
             });
-            for (name, reason) in &skipped_args {
-                logger::debug_lazy(|| format!("  - '{}': {}", name, reason));
+            if !skipped_args.is_empty() {
+                logger::debug_lazy(|| {
+                    format!(
+                        "build_kwargs: skipped {} arguments from pipeline:",
+                        skipped_args.len()
+                    )
+                });
+                for (name, reason) in &skipped_args {
+                    logger::debug_lazy(|| format!("  - '{}': {}", name, reason));
+                }
             }
         }
 
@@ -437,6 +473,180 @@ Verify the data folder contains all expected outputs (did you unpack the full `i
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::snapshot_config_field_names;
+    use crate::python_bridge::Bridge;
+    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyModule};
+    use r2x_manifest::runtime::{PluginRole, RuntimeBindings, RuntimeConfig};
+    use r2x_manifest::types::{Parameter, PluginType};
+    use std::ffi::CString;
+
+    #[test]
+    fn snapshot_config_field_names_reads_fields_from_dict() -> Result<(), String> {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> Result<(), String> {
+            let code = CString::new(
+                r#"
+class Config:
+    def __init__(self):
+        self.alpha = 1
+        self.beta = 2
+"#,
+            )
+            .map_err(|error| error.to_string())?;
+            let file =
+                CString::new("config_snapshot_dict_test.py").map_err(|error| error.to_string())?;
+            let module_name =
+                CString::new("config_snapshot_dict_test").map_err(|error| error.to_string())?;
+            let module =
+                PyModule::from_code(py, code.as_c_str(), file.as_c_str(), module_name.as_c_str())
+                    .map_err(|error| error.to_string())?;
+            let instance = module
+                .getattr("Config")
+                .and_then(|class| class.call0())
+                .map_err(|error| error.to_string())?;
+
+            let names = snapshot_config_field_names(&instance)
+                .ok_or_else(|| "missing snapshot".to_string())?;
+            assert!(names.contains("alpha"));
+            assert!(names.contains("beta"));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn snapshot_config_field_names_falls_back_to_dir_for_slots() -> Result<(), String> {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> Result<(), String> {
+            let code = CString::new(
+                r#"
+class Config:
+    __slots__ = ("gamma",)
+    def __init__(self):
+        self.gamma = 3
+"#,
+            )
+            .map_err(|error| error.to_string())?;
+            let file =
+                CString::new("config_snapshot_slots_test.py").map_err(|error| error.to_string())?;
+            let module_name =
+                CString::new("config_snapshot_slots_test").map_err(|error| error.to_string())?;
+            let module =
+                PyModule::from_code(py, code.as_c_str(), file.as_c_str(), module_name.as_c_str())
+                    .map_err(|error| error.to_string())?;
+            let instance = module
+                .getattr("Config")
+                .and_then(|class| class.call0())
+                .map_err(|error| error.to_string())?;
+
+            let names = snapshot_config_field_names(&instance)
+                .ok_or_else(|| "missing snapshot".to_string())?;
+            assert!(names.contains("gamma"));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn build_kwargs_uses_config_field_snapshot_without_per_param_hasattr() -> Result<(), String> {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> Result<(), String> {
+            let code = CString::new(
+                r#"
+HASATTR_CHECKS = 0
+
+class Config:
+    def __init__(self, alpha=0, beta=0):
+        self.alpha = alpha
+        self.beta = beta
+
+    def __getattribute__(self, name):
+        global HASATTR_CHECKS
+        if name in ("alpha", "beta"):
+            HASATTR_CHECKS += 1
+        return object.__getattribute__(self, name)
+"#,
+            )
+            .map_err(|error| error.to_string())?;
+            let file = CString::new("build_kwargs_config_snapshot_test.py")
+                .map_err(|error| error.to_string())?;
+            let module_name = CString::new("build_kwargs_config_snapshot_test")
+                .map_err(|error| error.to_string())?;
+            let module =
+                PyModule::from_code(py, code.as_c_str(), file.as_c_str(), module_name.as_c_str())
+                    .map_err(|error| error.to_string())?;
+
+            let config_dict = PyDict::new(py);
+            config_dict
+                .set_item("alpha", 1)
+                .map_err(|error| error.to_string())?;
+            config_dict
+                .set_item("beta", 2)
+                .map_err(|error| error.to_string())?;
+
+            let runtime_bindings = RuntimeBindings {
+                entry_module: "m".to_string(),
+                entry_name: "f".to_string(),
+                plugin_type: PluginType::Function,
+                role: PluginRole::Utility,
+                call_method: None,
+                config: Some(RuntimeConfig {
+                    module: "build_kwargs_config_snapshot_test".to_string(),
+                    name: "Config".to_string(),
+                }),
+                parameters: vec![
+                    Parameter {
+                        name: "config".into(),
+                        required: true,
+                        default: None,
+                        types: vec!["Config".into()].into(),
+                        module: None,
+                        description: None,
+                    },
+                    Parameter {
+                        name: "alpha".into(),
+                        required: false,
+                        default: None,
+                        types: vec!["int".into()].into(),
+                        module: None,
+                        description: None,
+                    },
+                    Parameter {
+                        name: "beta".into(),
+                        required: false,
+                        default: None,
+                        types: vec!["int".into()].into(),
+                        module: None,
+                        description: None,
+                    },
+                ],
+                requires_store: false,
+            };
+
+            let kwargs = Bridge::build_kwargs(py, &config_dict, None, Some(&runtime_bindings))
+                .map_err(|error| error.to_string())?;
+
+            let has_config = kwargs
+                .contains("config")
+                .map_err(|error| error.to_string())?;
+            let has_alpha = kwargs
+                .contains("alpha")
+                .map_err(|error| error.to_string())?;
+            let has_beta = kwargs.contains("beta").map_err(|error| error.to_string())?;
+            assert!(has_config);
+            assert!(!has_alpha);
+            assert!(!has_beta);
+
+            let checks = module
+                .getattr("HASATTR_CHECKS")
+                .and_then(|value| value.extract::<i64>())
+                .map_err(|error| error.to_string())?;
+            assert_eq!(checks, 0);
+            Ok(())
+        })
+    }
+}
+
 fn transform_data_store_error(py: pyo3::Python<'_>, err: pyo3::PyErr) -> BridgeError {
     if let Some(missing) = extract_missing_data_file(py, &err) {
         BridgeError::Python(format!(
@@ -450,6 +660,38 @@ Verify the data folder contains all expected outputs (did you unpack the full `i
             err,
             "Failed to instantiate DataStore",
         ))
+    }
+}
+
+fn snapshot_config_field_names(
+    config_instance: &pyo3::Bound<'_, PyAny>,
+) -> Option<HashSet<String>> {
+    let mut names = HashSet::new();
+
+    if let Ok(dict_obj) = config_instance.getattr("__dict__") {
+        if let Ok(dict) = dict_obj.cast::<PyDict>() {
+            for key in dict.keys().iter() {
+                if let Ok(name) = key.extract::<String>() {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+
+    if names.is_empty() {
+        if let Ok(dir_list) = config_instance.dir() {
+            for key in dir_list.iter() {
+                if let Ok(name) = key.extract::<String>() {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
     }
 }
 

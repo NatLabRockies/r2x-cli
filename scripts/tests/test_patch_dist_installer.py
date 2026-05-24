@@ -43,6 +43,24 @@ class PatchDistInstallerTests(unittest.TestCase):
             self.assertIn('local _primary_lib="libpython${_python_abi_version}.so.1.0"', patched)
             self.assertIn('local _primary_lib="libpython${_python_abi_version}.dylib"', patched)
             self.assertIn('uv python install "$_python_request_version"', patched)
+            self.assertIn('uv python find "$_python_request_version"', patched)
+            self.assertIn(
+                'if [ -z "$_python_bin" ] && [ "$_python_abi_version" != "$_python_request_version" ]; then',
+                patched,
+            )
+            self.assertIn('uv python find "$_python_abi_version"', patched)
+            self.assertIn(
+                'say "Install uv and run: uv python install 3.13.1 || uv python install 3.13"',
+                patched,
+            )
+            self.assertIn(
+                'say "Run: uv python install 3.13.1 || uv python install 3.13"',
+                patched,
+            )
+            self.assertIn(
+                'say "Verify with: uv python find 3.13.1 || uv python find 3.13"',
+                patched,
+            )
             self.assertNotIn("libpython3.12.so", patched)
             self.assertNotIn("libpython3.13.1", patched)
 

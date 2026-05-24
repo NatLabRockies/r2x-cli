@@ -24,3 +24,61 @@ r2x_validate_python_version() {
 
     r2x_python_abi_version "$label" "$version" >/dev/null
 }
+
+r2x_python_install_hint() {
+    local requested_version="$1"
+    local requested_abi=""
+
+    if ! requested_abi="$(r2x_python_abi_version "R2X_PYTHON_VERSION" "$requested_version" 2>/dev/null)"; then
+        echo "uv python install $requested_version"
+        return 0
+    fi
+
+    if [[ "$requested_abi" != "$requested_version" ]]; then
+        echo "uv python install $requested_version || uv python install $requested_abi"
+    else
+        echo "uv python install $requested_version"
+    fi
+}
+
+r2x_python_find_hint() {
+    local requested_version="$1"
+    local requested_abi=""
+
+    if ! requested_abi="$(r2x_python_abi_version "R2X_PYTHON_VERSION" "$requested_version" 2>/dev/null)"; then
+        echo "uv python find $requested_version"
+        return 0
+    fi
+
+    if [[ "$requested_abi" != "$requested_version" ]]; then
+        echo "uv python find $requested_version || uv python find $requested_abi"
+    else
+        echo "uv python find $requested_version"
+    fi
+}
+
+r2x_find_uv_python() {
+    local requested_version="$1"
+
+    command -v uv >/dev/null 2>&1 || return 1
+
+    local python_bin=""
+    python_bin="$(uv python find "$requested_version" 2>/dev/null || true)"
+    if [[ -n "$python_bin" ]]; then
+        echo "$python_bin"
+        return 0
+    fi
+
+    local requested_abi=""
+    if requested_abi="$(r2x_python_abi_version "R2X_PYTHON_VERSION" "$requested_version" 2>/dev/null)"; then
+        if [[ "$requested_version" == *.*.* ]] && [[ "$requested_abi" != "$requested_version" ]]; then
+            python_bin="$(uv python find "$requested_abi" 2>/dev/null || true)"
+            if [[ -n "$python_bin" ]]; then
+                echo "$python_bin"
+                return 0
+            fi
+        fi
+    fi
+
+    return 1
+}

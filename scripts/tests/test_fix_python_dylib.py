@@ -119,6 +119,40 @@ exit 1
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_resolve_uv_python_tag_falls_back_to_configured_patch_abi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            uv = bin_dir / "uv"
+            write_executable(
+                uv,
+                """#!/usr/bin/env bash
+if [ "$1" = "python" ] && [ "$2" = "find" ] && [ "$3" = "3.13.1" ]; then
+  exit 1
+fi
+if [ "$1" = "python" ] && [ "$2" = "find" ] && [ "$3" = "3.13" ]; then
+  echo /uv/python/cpython-3.13-linux-x86_64-gnu/bin/python3.13
+  exit 0
+fi
+exit 1
+""",
+            )
+
+            env = os.environ.copy()
+            env.pop("PYO3_PYTHON", None)
+            env["R2X_PYTHON_VERSION"] = "3.13.1"
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", f'source "{FIX_SCRIPT}"; resolve_uv_python_tag'],
+                check=True,
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+
+        self.assertEqual(result.stdout.strip(), "cpython-3.13-linux-x86_64-gnu")
+
     def test_resolve_uv_python_tag_rejects_unsupported_configured_version_before_uv_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = Path(tmp) / "bin"

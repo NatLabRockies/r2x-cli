@@ -35,26 +35,23 @@ if [[ -n "${PYO3_PYTHON:-}" ]]; then
     exit 1
 fi
 
-find_uv_python() {
-    local version="$1"
-    command -v uv >/dev/null 2>&1 || return 1
-    uv python find "$version" 2>/dev/null
-}
-
 if [[ -n "$requested_version" ]]; then
     r2x_validate_python_version "R2X_PYTHON_VERSION" "$requested_version"
-    if python_bin=$(find_uv_python "$requested_version"); then
+    if python_bin=$(r2x_find_uv_python "$requested_version"); then
         echo "$python_bin"
         exit 0
     fi
+    install_hint="$(r2x_python_install_hint "$requested_version")"
+    find_hint="$(r2x_python_find_hint "$requested_version")"
     echo "Requested R2X_PYTHON_VERSION=$requested_version was not found." >&2
-    echo "Install it with: uv python install $requested_version" >&2
+    echo "Install it with: $install_hint" >&2
+    echo "Verify with: $find_hint" >&2
     exit 1
 fi
 
 r2x_validate_python_version "R2X_DEFAULT_PYTHON_VERSION" "$default_version"
 for version in "$default_version" 3.12 3.11; do
-    if python_bin=$(find_uv_python "$version"); then
+    if python_bin=$(r2x_find_uv_python "$version"); then
         echo "$python_bin"
         exit 0
     fi
@@ -65,5 +62,8 @@ if command -v python3 >/dev/null 2>&1; then
     exit 0
 fi
 
-echo "Unable to find Python for PyO3. Install uv and run: uv python install $default_version" >&2
+default_install_hint="$(r2x_python_install_hint "$default_version")"
+default_find_hint="$(r2x_python_find_hint "$default_version")"
+echo "Unable to find Python for PyO3. Install uv and run: $default_install_hint" >&2
+echo "Verify with: $default_find_hint" >&2
 exit 1

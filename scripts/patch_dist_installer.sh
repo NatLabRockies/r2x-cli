@@ -19,6 +19,8 @@ if [[ ! -f "${installer_path}" ]]; then
 fi
 
 python_abi_version="$(r2x_python_abi_version "R2X_PYTHON_VERSION" "${python_request_version}")"
+python_install_hint="$(r2x_python_install_hint "${python_request_version}")"
+python_find_hint="$(r2x_python_find_hint "${python_request_version}")"
 
 if grep -q "ensure_python_runtime_for_r2x()" "${installer_path}"; then
     echo "Installer already patched: ${installer_path}"
@@ -28,7 +30,7 @@ fi
 tmp_file="$(mktemp)"
 trap 'rm -f "${tmp_file}"' EXIT
 
-awk -v python_request_version="${python_request_version}" -v python_abi_version="${python_abi_version}" '
+awk -v python_request_version="${python_request_version}" -v python_abi_version="${python_abi_version}" -v python_install_hint="${python_install_hint}" -v python_find_hint="${python_find_hint}" '
 BEGIN {
     inserted_function = 0
     inserted_call = 0
@@ -67,7 +69,7 @@ BEGIN {
         print ""
         print "    if ! command -v uv >/dev/null 2>&1; then"
         print "        say \"warning: $APP_NAME requires Python ${_python_abi_version} shared libraries.\""
-        print "        say \"Install uv and run: uv python install ${_python_request_version}\""
+        print "        say \"Install uv and run: " python_install_hint "\""
         print "        say \"Then re-run this installer or copy libpython into the install directory.\""
         print "        return 0"
         print "    fi"
@@ -75,9 +77,13 @@ BEGIN {
         print "    uv python install \"$_python_request_version\" >/dev/null 2>&1 || true"
         print "    local _python_bin"
         print "    _python_bin=\"$(uv python find \"$_python_request_version\" 2>/dev/null || true)\""
+        print "    if [ -z \"$_python_bin\" ] && [ \"$_python_abi_version\" != \"$_python_request_version\" ]; then"
+        print "        _python_bin=\"$(uv python find \"$_python_abi_version\" 2>/dev/null || true)\""
+        print "    fi"
         print "    if [ -z \"$_python_bin\" ]; then"
         print "        say \"warning: unable to locate Python ${_python_request_version} via uv\""
-        print "        say \"Run: uv python install ${_python_request_version}\""
+        print "        say \"Run: " python_install_hint "\""
+        print "        say \"Verify with: " python_find_hint "\""
         print "        return 0"
         print "    fi"
         print ""

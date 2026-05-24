@@ -1,15 +1,16 @@
-use crate::commands::run::{PluginCommand, RunError};
+use crate::commands::run::{build_call_target, PluginCommand, RunError};
 use crate::common::GlobalOpts;
 use crate::help::show_plugin_help;
 use crate::manifest_lookup::resolve_plugin_ref;
 use crate::package_verification;
 use colored::Colorize;
 use r2x_logger as logger;
+use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_python::plugin_invoker::PluginInvocationResult;
 use r2x_python::python_bridge::Bridge;
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Result<(), RunError> {
     match cmd.plugin_name {
@@ -18,7 +19,13 @@ pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Re
                 show_plugin_help(&plugin_name)
                     .map_err(|e| RunError::Config(format!("Help error: {}", e)))?;
             } else {
-                run_plugin(&plugin_name, &cmd.args, opts)?;
+                run_plugin(
+                    &plugin_name,
+                    &cmd.args,
+                    opts,
+                    cmd.repeat.get(),
+                    cmd.benchmark,
+                )?;
             }
         }
         None => {
@@ -61,7 +68,13 @@ fn list_available_plugins() -> Result<(), RunError> {
     Ok(())
 }
 
-fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(), RunError> {
+fn run_plugin(
+    plugin_name: &str,
+    args: &[String],
+    opts: &GlobalOpts,
+    repeat: usize,
+    benchmark: bool,
+) -> Result<(), RunError> {
     logger::step(&format!("Running plugin: {}", plugin_name));
     logger::debug(&format!("Received args: {:?}", args));
 
@@ -88,39 +101,51 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
     let config_json = serde_json::to_string(&config_map)
         .map_err(|e| RunError::Config(format!("Failed to serialize config: {}", e)))?;
 
-    // Build target string from plugin's module and class/function name
-    let target = if let Some(ref class_name) = plugin.class_name {
-        format!("{}.{}", plugin.module, class_name)
-    } else if let Some(ref function_name) = plugin.function_name {
-        format!("{}.{}", plugin.module, function_name)
-    } else {
-        return Err(RunError::Config(format!(
-            "Plugin '{}' has no class_name or function_name",
-            plugin_name
-        )));
-    };
+    let runtime_bindings = build_runtime_bindings(plugin);
+    let target = build_call_target(&runtime_bindings)?;
 
     let bridge = Bridge::get()?;
     logger::debug(&format!("Invoking plugin with target: {}", target));
 
-    // Set current plugin context for logging
-    logger::set_current_plugin(Some(plugin_name.to_string()));
+    let mut total_elapsed = Duration::ZERO;
+    let mut total_python_invocation = Duration::ZERO;
+    let mut total_serialization = Duration::ZERO;
+    let mut timing_samples: usize = 0;
+    let mut result = String::new();
+    let mut timings = None;
 
-    let start = Instant::now();
-    // Pass None for plugin metadata since we don't have PluginSpec (execution type)
-    let invocation_result = bridge.invoke_plugin(&target, &config_json, None, None)?;
-    let PluginInvocationResult {
-        output: result,
-        timings,
-    } = invocation_result;
-    let elapsed = start.elapsed();
+    for iteration in 0..repeat {
+        logger::set_current_plugin(Some(plugin_name.to_string()));
+        let start = Instant::now();
+        let invocation_result = bridge.invoke_plugin(&target, &config_json, None, Some(plugin));
+        let elapsed = start.elapsed();
+        total_elapsed += elapsed;
+        // Clear plugin context after each execution attempt
+        logger::set_current_plugin(None);
+
+        let PluginInvocationResult {
+            output,
+            timings: invocation_timings,
+        } = invocation_result?;
+
+        if let Some(invocation_timings) = invocation_timings.as_ref() {
+            total_python_invocation += invocation_timings.python_invocation;
+            total_serialization += invocation_timings.serialization;
+            timing_samples += 1;
+        }
+
+        if iteration + 1 == repeat {
+            result = output;
+            timings = invocation_timings;
+        }
+    }
+
+    let per_run_seconds = total_elapsed.as_secs_f64() / repeat as f64;
     let duration_msg = format!(
-        "({})",
-        crate::commands::run::format_duration(elapsed).dimmed()
+        "(total {}, avg {})",
+        crate::commands::run::format_duration(total_elapsed).dimmed(),
+        crate::commands::run::format_duration(Duration::from_secs_f64(per_run_seconds)).dimmed()
     );
-
-    // Clear plugin context after execution
-    logger::set_current_plugin(None);
 
     let no_stdout = opts.no_stdout || logger::get_no_stdout();
     if !result.is_empty() && result != "null" {
@@ -133,12 +158,43 @@ fn run_plugin(plugin_name: &str, args: &[String], opts: &GlobalOpts) -> Result<(
 
     if logger::get_verbosity() > 0 {
         logger::success(&format!(
-            "{} execution completed {}",
-            plugin_name, duration_msg
+            "{} execution completed {}{}",
+            plugin_name,
+            duration_msg,
+            if repeat > 1 {
+                format!(" [{} runs]", repeat)
+            } else {
+                String::new()
+            }
         ));
 
         if let Some(timings) = timings {
             crate::commands::run::print_plugin_timing_breakdown(&timings);
+        }
+    }
+
+    if benchmark || repeat > 1 {
+        let avg_total = Duration::from_secs_f64(per_run_seconds);
+        eprintln!(
+            "Benchmark {}: runs={} total={} avg={}",
+            plugin_name,
+            repeat,
+            crate::commands::run::format_duration(total_elapsed),
+            crate::commands::run::format_duration(avg_total)
+        );
+        if timing_samples > 0 {
+            let avg_python = Duration::from_secs_f64(
+                total_python_invocation.as_secs_f64() / timing_samples as f64,
+            );
+            let avg_ser =
+                Duration::from_secs_f64(total_serialization.as_secs_f64() / timing_samples as f64);
+            eprintln!(
+                "Benchmark {} breakdown: python={} serialization={} (samples={})",
+                plugin_name,
+                crate::commands::run::format_duration(avg_python),
+                crate::commands::run::format_duration(avg_ser),
+                timing_samples
+            );
         }
     }
 

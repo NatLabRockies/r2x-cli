@@ -193,6 +193,76 @@ exit 1
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("uv python install 3.13", result.stderr)
+        self.assertIn("uv python find 3.13", result.stderr)
+
+    def test_requested_patch_version_falls_back_to_requested_abi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            uv = bin_dir / "uv"
+            write_executable(
+                uv,
+                """#!/usr/bin/env bash
+if [ "$1" = "python" ] && [ "$2" = "find" ] && [ "$3" = "3.13.1" ]; then
+  exit 1
+fi
+if [ "$1" = "python" ] && [ "$2" = "find" ] && [ "$3" = "3.13" ]; then
+  echo /uv/python/3.13/bin/python3.13
+  exit 0
+fi
+exit 1
+""",
+            )
+
+            env = os.environ.copy()
+            env.pop("PYO3_PYTHON", None)
+            env["R2X_PYTHON_VERSION"] = "3.13.1"
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            result = subprocess.run(
+                [str(RESOLVE_SCRIPT)],
+                check=True,
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+
+        self.assertEqual(result.stdout.strip(), "/uv/python/3.13/bin/python3.13")
+
+    def test_requested_patch_version_reports_fallback_hints_when_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            uv = bin_dir / "uv"
+            write_executable(
+                uv,
+                """#!/usr/bin/env bash
+exit 1
+""",
+            )
+
+            env = os.environ.copy()
+            env.pop("PYO3_PYTHON", None)
+            env["R2X_PYTHON_VERSION"] = "3.13.1"
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            result = subprocess.run(
+                [str(RESOLVE_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Install it with: uv python install 3.13.1 || uv python install 3.13",
+            result.stderr,
+        )
+        self.assertIn(
+            "Verify with: uv python find 3.13.1 || uv python find 3.13",
+            result.stderr,
+        )
 
     def test_requested_version_rejects_unsupported_python_before_uv_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,6 +295,49 @@ exit 1
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("requires Python 3.11 or newer", result.stderr)
         self.assertFalse(uv_was_called, "uv should not run for unsupported versions")
+
+    def test_default_patch_version_reports_fallback_hints_when_no_python_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            bash_path = subprocess.run(
+                ["which", "bash"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            dirname_path = subprocess.run(
+                ["which", "dirname"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            (bin_dir / "bash").symlink_to(bash_path)
+            (bin_dir / "dirname").symlink_to(dirname_path)
+
+            env = os.environ.copy()
+            env.pop("PYO3_PYTHON", None)
+            env.pop("R2X_PYTHON_VERSION", None)
+            env["R2X_DEFAULT_PYTHON_VERSION"] = "3.13.1"
+            env["PATH"] = str(bin_dir)
+            result = subprocess.run(
+                [str(RESOLVE_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Install uv and run: uv python install 3.13.1 || uv python install 3.13",
+            result.stderr,
+        )
+        self.assertIn(
+            "Verify with: uv python find 3.13.1 || uv python find 3.13",
+            result.stderr,
+        )
 
 
 if __name__ == "__main__":
