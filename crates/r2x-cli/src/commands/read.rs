@@ -100,6 +100,7 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
         .replace('\\', "\\\\");
 
     let display_source_str = display_source.replace('\\', "\\\\").replace('\'', "\\'");
+    let source_is_stdin = if is_stdin { "True" } else { "False" };
 
     let python_code = format!(
         r#"
@@ -764,8 +765,12 @@ class R2XMagics:
 
         # Create new System object
         try:
-            cwd = os.getcwd()
-            new_system = System.from_dict(data, cwd)
+            time_series_parent_dir = Path(file_path).resolve().parent
+            missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
+            if missing_sidecar is not None:
+                print(format_time_series_sidecar_error(*missing_sidecar))
+                return
+            new_system = System.from_dict(data, time_series_parent_dir)
         except Exception as e:
             print(format_system_error(e))
             return
@@ -1132,6 +1137,7 @@ def print_startup_banner(display_source, plugins):
 
 DISPLAY_SOURCE = r'''{}'''
 JSON_PATH = r'''{}'''
+SOURCE_IS_STDIN = {}
 
 
 def format_json_error(json_path, error):
@@ -1175,6 +1181,54 @@ def format_json_error(json_path, error):
     msg_lines.append("  - Check for trailing commas in arrays/objects")
     msg_lines.append("  - Ensure all strings are properly quoted")
     msg_lines.append("  - Verify brackets/braces are balanced")
+    msg_lines.append("")
+    return "\n".join(msg_lines)
+
+
+def time_series_parent_dir_for(json_path, source_is_stdin):
+    """Return the base directory used for relative time-series sidecars."""
+    if source_is_stdin:
+        return Path(os.getcwd())
+    return Path(json_path).resolve().parent
+
+
+def missing_time_series_sidecar(data, time_series_parent_dir):
+    """Return a missing sidecar descriptor, if serialized metadata needs one."""
+    if not isinstance(data, dict):
+        return None
+
+    time_series = data.get("time_series")
+    if not isinstance(time_series, dict):
+        return None
+
+    directory = time_series.get("directory")
+    if not directory:
+        return None
+
+    sidecar_dir = Path(directory)
+    if not sidecar_dir.is_absolute():
+        sidecar_dir = time_series_parent_dir / sidecar_dir
+
+    if not sidecar_dir.exists():
+        return ("directory", sidecar_dir)
+
+    db_filename = getattr(System, "DB_FILENAME", "time_series_metadata.db")
+    metadata_db = sidecar_dir / db_filename
+    if not metadata_db.exists():
+        return ("metadata database", metadata_db)
+
+    return None
+
+
+def format_time_series_sidecar_error(kind, path):
+    """Format missing time-series sidecar errors without schema guidance."""
+    msg_lines = []
+    msg_lines.append("\n  Time-series Sidecar Error")
+    msg_lines.append("  " + "-" * 50)
+    msg_lines.append(f"  Missing time-series sidecar {{kind}}: {{path}}")
+    msg_lines.append("")
+    msg_lines.append("  This JSON references external time-series sidecar data that is required to load the system.")
+    msg_lines.append("  Keep the JSON file together with its generated time-series sidecar directory, or re-export the system.")
     msg_lines.append("")
     return "\n".join(msg_lines)
 
@@ -1225,9 +1279,13 @@ try:
         except json.JSONDecodeError as e:
             print(format_json_error(JSON_PATH, e), file=py_sys.stderr)
             py_sys.exit(1)
-    cwd = os.getcwd()
+    time_series_parent_dir = time_series_parent_dir_for(JSON_PATH, SOURCE_IS_STDIN)
+    missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
+    if missing_sidecar is not None:
+        print(format_time_series_sidecar_error(*missing_sidecar), file=py_sys.stderr)
+        py_sys.exit(1)
     try:
-        system = System.from_dict(data, cwd)
+        system = System.from_dict(data, time_series_parent_dir)
     except Exception as e:
         print(format_system_error(e), file=py_sys.stderr)
         py_sys.exit(1)
@@ -1347,7 +1405,7 @@ shell(
     global_ns=context,
 )
 "#,
-        display_source_str, file_path_str
+        display_source_str, file_path_str, source_is_stdin
     );
 
     logger::debug("Generated Python initialization code");
