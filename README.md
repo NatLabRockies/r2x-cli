@@ -148,8 +148,17 @@ r2x run pipeline.yaml my-pipeline -o output.json
 Skip the pipeline and run a single plugin with inline arguments:
 
 ```bash
-# Run a plugin directly
-r2x run plugin r2x-reeds.reeds-parser solve_year=2030 weather_year=2012
+# Run a plugin directly with idiomatic flags
+r2x run plugin r2x-reeds.reeds-parser \
+  --path /path/to/reeds/run \
+  --solve-year 2030 \
+  --weather-year 2012
+
+# Existing key=value arguments also work
+r2x run plugin r2x-reeds.reeds-parser \
+  path=/path/to/reeds/run \
+  solve_year=2030 \
+  weather_year=2012
 
 # Show a plugin's help
 r2x run plugin r2x-reeds.reeds-parser --show-help

@@ -294,6 +294,113 @@ fn test_pipeline_reeds_test_runs() {
 }
 
 #[test]
+fn test_direct_plugin_accepts_flag_forms() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+    let reeds_path = env
+        .home_path()
+        .join("data")
+        .join("reeds-store")
+        .to_string_lossy()
+        .to_string();
+    let path_key_value = format!("path={}", reeds_path);
+
+    env.command()
+        .args([
+            "run",
+            "plugin",
+            "r2x_reeds.parser",
+            "--path",
+            &reeds_path,
+            "--weather-year",
+            "2012",
+            "--solve-year=2025",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reeds"));
+
+    env.command()
+        .args([
+            "run",
+            "plugin",
+            "r2x_reeds.parser",
+            &path_key_value,
+            "weather_year=2012",
+            "solve_year=2025",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reeds"));
+
+    env.command()
+        .args([
+            "run",
+            "plugin",
+            "r2x_reeds.parser",
+            "--set",
+            &path_key_value,
+            "--weather_year",
+            "2012",
+            "--solve-year",
+            "2025",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reeds"));
+}
+
+#[test]
+fn test_direct_plugin_unknown_option_suggests_known_flag() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+    let reeds_path = env
+        .home_path()
+        .join("data")
+        .join("reeds-store")
+        .to_string_lossy()
+        .to_string();
+
+    env.command()
+        .args([
+            "run",
+            "plugin",
+            "r2x_reeds.parser",
+            "--path",
+            &reeds_path,
+            "--weathear_year",
+            "2012",
+            "--solve-year",
+            "2025",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown option '--weathear_year'"))
+        .stderr(predicate::str::contains("Did you mean '--weather-year'?"));
+}
+
+#[test]
+fn test_direct_plugin_help_prefers_copy_pasteable_kebab_flags() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    env.command()
+        .args(["run", "plugin", "r2x_reeds.parser", "--show-help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "r2x run plugin r2x_reeds.parser --path <value> --solve-year <value> --weather-year <value>",
+        ))
+        .stdout(predicate::str::contains("--weather-year"))
+        .stdout(predicate::str::contains("Alias: --weather_year"))
+        .stdout(predicate::str::contains("Compatibility:"))
+        .stdout(predicate::str::contains("weather_year=<value>"));
+}
+
+#[test]
 fn test_pipeline_s2p_runs() {
     let Ok(env) = PipelineHarness::new() else {
         return;
@@ -399,6 +506,13 @@ fn test_run_plugin_benchmark_repeat_outputs_summary() {
         return;
     };
 
+    let reeds_path = env
+        .home_path()
+        .join("data")
+        .join("reeds-store")
+        .to_string_lossy()
+        .to_string();
+
     let assert = env
         .command()
         .args([
@@ -408,6 +522,10 @@ fn test_run_plugin_benchmark_repeat_outputs_summary() {
             "--repeat",
             "3",
             "--benchmark",
+            "--path",
+            &reeds_path,
+            "--weather-year",
+            "2012",
             "solve_year=2032",
         ])
         .assert()
@@ -667,6 +785,18 @@ module = "r2x_reeds.parser"
 class_name = "ReEDSParser"
 config_class = "ReEDSConfig"
 config_module = "r2x_reeds.parser"
+
+[packages.plugins.config_schema.path]
+type = "str"
+required = true
+
+[packages.plugins.config_schema.solve_year]
+type = "int"
+required = true
+
+[packages.plugins.config_schema.weather_year]
+type = "int"
+required = true
 
 [[packages.plugins]]
 name = "r2x_reeds.no_stdin_function"
