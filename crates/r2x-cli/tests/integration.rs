@@ -547,6 +547,151 @@ fn test_run_plugin_benchmark_repeat_outputs_summary() {
     }
 }
 
+#[test]
+fn test_read_file_resolves_time_series_sidecar_relative_to_json_parent() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let system_dir = env.home_path().join("exports").join("system");
+    let cwd = env.home_path().join("caller-cwd");
+    let sidecar_dir = system_dir.join("system_time_series");
+    if fs::create_dir_all(&sidecar_dir).is_err() || fs::create_dir_all(&cwd).is_err() {
+        return;
+    }
+    if fs::write(sidecar_dir.join("time_series_metadata.db"), "stub").is_err() {
+        return;
+    }
+    let system_path = system_dir.join("system.json");
+    if fs::write(&system_path, system_json("system_time_series")).is_err() {
+        return;
+    }
+
+    env.command()
+        .current_dir(cwd)
+        .env("R2X_READ_NONINTERACTIVE", "1")
+        .args([
+            "read",
+            system_path.to_string_lossy().as_ref(),
+            "--no-banner",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_read_stdin_keeps_relative_time_series_sidecars_resolved_from_cwd() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let cwd = env.home_path().join("stdin-cwd");
+    let sidecar_dir = cwd.join("stdin_time_series");
+    if fs::create_dir_all(&sidecar_dir).is_err() {
+        return;
+    }
+    if fs::write(sidecar_dir.join("time_series_metadata.db"), "stub").is_err() {
+        return;
+    }
+
+    env.command()
+        .current_dir(cwd)
+        .env("R2X_READ_NONINTERACTIVE", "1")
+        .write_stdin(system_json("stdin_time_series"))
+        .args(["read", "--no-banner"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_read_missing_time_series_sidecar_directory_reports_required_path() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let system_dir = env.home_path().join("exports").join("missing-sidecar");
+    if fs::create_dir_all(&system_dir).is_err() {
+        return;
+    }
+    let missing_sidecar = env.home_path().join("cache-backed-missing-time-series");
+    let system_path = system_dir.join("system.json");
+    if fs::write(&system_path, system_json(missing_sidecar.to_string_lossy())).is_err() {
+        return;
+    }
+    let missing_sidecar_text = missing_sidecar.to_string_lossy().to_string();
+
+    env.command()
+        .env("R2X_READ_NONINTERACTIVE", "1")
+        .args([
+            "read",
+            system_path.to_string_lossy().as_ref(),
+            "--no-banner",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Time-series Sidecar Error"))
+        .stderr(predicate::str::contains(
+            "Missing time-series sidecar directory",
+        ))
+        .stderr(predicate::str::contains(missing_sidecar_text))
+        .stderr(predicate::str::contains(
+            "JSON references external time-series sidecar data",
+        ))
+        .stderr(predicate::str::contains("Verify the JSON structure").not());
+}
+
+#[test]
+fn test_read_missing_time_series_metadata_db_reports_required_path() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    let system_dir = env.home_path().join("exports").join("missing-metadata-db");
+    let sidecar_dir = system_dir.join("system_time_series");
+    if fs::create_dir_all(&sidecar_dir).is_err() {
+        return;
+    }
+    let system_path = system_dir.join("system.json");
+    if fs::write(&system_path, system_json("system_time_series")).is_err() {
+        return;
+    }
+    let metadata_db = sidecar_dir.join("time_series_metadata.db");
+    let metadata_db_text = metadata_db.to_string_lossy().to_string();
+
+    env.command()
+        .env("R2X_READ_NONINTERACTIVE", "1")
+        .args([
+            "read",
+            system_path.to_string_lossy().as_ref(),
+            "--no-banner",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Time-series Sidecar Error"))
+        .stderr(predicate::str::contains(
+            "Missing time-series sidecar metadata database",
+        ))
+        .stderr(predicate::str::contains(metadata_db_text))
+        .stderr(predicate::str::contains(
+            "JSON references external time-series sidecar data",
+        ))
+        .stderr(predicate::str::contains("Verify the JSON structure").not());
+}
+
+fn system_json(sidecar_directory: impl AsRef<str>) -> String {
+    serde_json::json!({
+        "components": [],
+        "supplemental_attributes": [],
+        "time_series": {
+            "directory": sidecar_directory.as_ref(),
+            "time_series_storage_type": "arrow"
+        },
+        "uuid": "00000000-0000-0000-0000-000000000001",
+        "r2x_core_version": "test"
+    })
+    .to_string()
+}
+
 struct PipelineHarness {
     _home: TempDir,
     config_path: PathBuf,
@@ -584,6 +729,8 @@ impl PipelineHarness {
         let manifest_path = cache_dir.join("manifest.toml");
         fs::write(&manifest_path, stub_manifest_toml())?;
 
+        copy_python_stub("IPython", &site_packages)?;
+        copy_python_stub("traitlets", &site_packages)?;
         copy_python_stub("r2x_reeds", &site_packages)?;
         copy_python_stub("r2x_sienna", &site_packages)?;
         copy_python_stub("r2x_core", &site_packages)?;
