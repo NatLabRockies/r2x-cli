@@ -259,9 +259,9 @@ def _r2x_cache_path_override():
                     BridgeError::Python(format!("Failed to obtain cache override function: {}", e))
                 })?;
 
-            let file_ops = PyModule::import(py, "r2x_core.utils.file_operations").map_err(|e| {
+            let file_ops = PyModule::import(py, "r2x_core.utils.files").map_err(|e| {
                 BridgeError::Python(format!(
-                    "Failed to import r2x_core.utils.file_operations: {}",
+                    "Failed to import r2x_core.utils.files: {}",
                     e
                 ))
             })?;
