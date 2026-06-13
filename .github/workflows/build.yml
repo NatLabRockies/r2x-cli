@@ -117,7 +117,7 @@ jobs:
         run: bash scripts/ci_compare_benchmark_baseline.sh "${BASELINE_BENCHMARK_PATH}" "${{ runner.temp }}/r2x-plugin-benchmark.txt" "${{ runner.temp }}/r2x-plugin-benchmark-delta.md" "${BASELINE_BENCHMARK_RUN_ID}" "${BASELINE_BENCHMARK_RUN_URL}"
       - name: Upload benchmark summary
         if: matrix.toolchain == 'stable' && matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: r2x-plugin-benchmark-summary
           path: |
