@@ -121,7 +121,7 @@ class CiPythonVersionTests(unittest.TestCase):
         self.assertIn("r2x-plugin-benchmark-summary", build)
         self.assertIn("r2x-plugin-benchmark.md", build)
         self.assertIn("r2x-plugin-benchmark-delta.md", build)
-        self.assertIn("actions/upload-artifact@v4", build)
+        self.assertIn("actions/upload-artifact@v7", build)
         self.assertIn("r2x-plugin-benchmark-summary", build)
 
     def test_diagnostics_accepts_supported_pyo3_python(self):
