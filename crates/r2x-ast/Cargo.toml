@@ -1,6 +1,6 @@
 [package]
 name = "r2x-ast"
-version = "0.0.4"
+version = "0.1.2"
 edition = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
@@ -15,11 +15,18 @@ description = "AST discovery utilities for the r2x CLI"
 anyhow = "1.0"
 ast-grep-core = "0.25"
 ast-grep-language = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+smallvec = { version = "1.13", features = ["serde"] }
 tracing = "0.1"
 walkdir = "2.4"
 toml = { version = "0.9", features = ["preserve_order"] }
 r2x-manifest = { workspace = true }
 r2x-logger = { workspace = true }
+r2x-config = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[lints]
+workspace = true

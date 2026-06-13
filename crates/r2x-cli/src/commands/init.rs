@@ -1,6 +1,6 @@
-use crate::logger;
-use crate::GlobalOpts;
-use colored::*;
+use crate::common::GlobalOpts;
+use colored::Colorize;
+use r2x_logger as logger;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -90,14 +90,16 @@ pub fn handle_init(filename: Option<String>, _opts: GlobalOpts) {
         // Check for skip confirmation flag
         let should_skip = std::env::var("R2X_INIT_YES").is_ok();
 
-        if !should_skip {
+        if should_skip {
+            logger::debug("Skipping confirmation (R2X_INIT_YES set)");
+        } else {
             print!(
                 "{} File '{}' already exists. Overwrite? {} ",
                 "?".bold().cyan(),
                 target_filename,
                 "[y/n] ›".dimmed()
             );
-            io::stdout().flush().unwrap();
+            let _ = io::stdout().flush();
 
             let mut response = String::new();
             if io::stdin().read_line(&mut response).is_ok() {
@@ -111,14 +113,12 @@ pub fn handle_init(filename: Option<String>, _opts: GlobalOpts) {
                 logger::error("Failed to read input");
                 return;
             }
-        } else {
-            logger::debug("Skipping confirmation (R2X_INIT_YES set)");
         }
     }
 
     // Write the pipeline template
     match fs::write(&target_filename, PIPELINE_TEMPLATE) {
-        Ok(_) => {
+        Ok(()) => {
             logger::success(&format!("Created pipeline file: {}", target_filename));
             println!();
             println!("{}  Pipeline file created successfully!", "✔".green());
@@ -150,7 +150,7 @@ pub fn handle_init(filename: Option<String>, _opts: GlobalOpts) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::commands::init::*;
 
     #[test]
     fn test_default_filename() {

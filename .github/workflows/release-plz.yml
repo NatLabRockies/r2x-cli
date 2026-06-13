@@ -1,0 +1,99 @@
+name: Release-plz
+
+env:
+  R2X_PYTHON_VERSION: "3.12"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  release-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'push' &&
+        !(
+          startsWith(github.event.head_commit.message, 'chore: release') ||
+          (startsWith(github.event.head_commit.message, 'chore(') && contains(github.event.head_commit.message, 'release'))
+        )
+      }}
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - &checkout
+        name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - &setup_rust
+        name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+
+      - &setup_python
+        name: Setup uv & Python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.R2X_PYTHON_VERSION }}
+
+      - &pyo3_diagnostics
+        name: PyO3 diagnostics
+        shell: bash
+        run: bash scripts/ci_pyo3_diagnostics.sh
+
+      - name: Run release-plz (release-pr)
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.merged == true &&
+          startsWith(github.event.pull_request.head.ref, 'release-plz-')
+        )
+      }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.ref_name }}
+      - *setup_rust
+      - *setup_python
+      - *pyo3_diagnostics
+      - name: Run release-plz (release)
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

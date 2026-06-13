@@ -1,4 +1,5 @@
-use crate::logger;
+use crate::plugins::error::PluginError;
+use r2x_logger as logger;
 use std::process::Command;
 
 /// Query package info via a single pip show call.
@@ -8,7 +9,7 @@ pub fn get_package_info(
     uv_path: &str,
     python_path: &str,
     package: &str,
-) -> Result<(Option<String>, Vec<String>), String> {
+) -> Result<(Option<String>, Vec<String>), PluginError> {
     let show_output = Command::new(uv_path)
         .args(["pip", "show", "--python", python_path, package])
         .output()
@@ -17,7 +18,7 @@ pub fn get_package_info(
                 "Failed to query package info for '{}': {}",
                 package, e
             ));
-            format!("Failed to query package info: {}", e)
+            PluginError::Io(e)
         })?;
 
     if !show_output.status.success() {
@@ -25,7 +26,10 @@ pub fn get_package_info(
             "pip show failed for package '{}' with status: {}",
             package, show_output.status
         ));
-        return Err("pip show failed".to_string());
+        return Err(PluginError::CommandFailed {
+            command: format!("{} pip show {}", uv_path, package),
+            status: show_output.status.code(),
+        });
     }
 
     let stdout = String::from_utf8_lossy(&show_output.stdout);
@@ -60,12 +64,4 @@ pub fn get_package_info(
     ));
 
     Ok((version, dependencies))
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_get_package_info() {
-        // Test package info extraction
-    }
 }

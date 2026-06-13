@@ -1,14 +1,14 @@
 use clap::{Parser, Subcommand};
-use r2x::{
-    commands::{
-        cache::{self, CacheAction},
-        config::{self, ConfigAction},
-        init, plugins,
-        python::{self, PythonAction, VenvAction},
-        read, run,
-    },
-    config_manager, logger, GlobalOpts,
+use r2x::commands::{
+    cache,
+    config::{self, ConfigAction, PythonAction},
+    init,
+    log::{self, LogAction},
+    plugins, read, run, self_update, venv,
 };
+use r2x::common::GlobalOpts;
+use r2x_config as config_manager;
+use r2x_logger as logger;
 
 #[derive(Parser)]
 #[command(name = "r2x")]
@@ -27,30 +27,49 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Cache configuration
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    Cache {
-        #[command(subcommand)]
-        action: CacheAction,
-    },
     /// Configure r2x tool
-    #[command(subcommand_required = true, arg_required_else_help = true)]
+    #[command(subcommand_required = false, arg_required_else_help = false)]
     Config {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
         #[command(subcommand)]
-        action: ConfigAction,
+        action: Option<ConfigAction>,
+    },
+    /// Python runtime management
+    Python {
+        #[command(subcommand)]
+        action: PythonAction,
+    },
+    /// Logging configuration
+    #[command(subcommand_required = false, arg_required_else_help = false)]
+    Log {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<LogAction>,
     },
     /// List installed plugins
-    List,
+    List {
+        /// Optional plugin name to filter by (e.g., r2x-reeds)
+        plugin: Option<String>,
+        /// Optional module/function name to filter by (e.g., break_gens)
+        module: Option<String>,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Install a plugin
     Install {
         plugin: Option<String>,
         /// Install in editable mode (-e)
         #[arg(short, long)]
         editable: bool,
-        /// Skip metadata cache and force rebuild
+        /// Force re-discovery of plugins (ignore cached metadata)
         #[arg(long)]
         no_cache: bool,
-        /// Git host (default: github.com). Use with org/repo format or full URLs.
+        /// Git host (default: github.com). Use with gh:owner/repo or full URLs.
         #[arg(long)]
         host: Option<String>,
         /// Install from a git branch
@@ -66,107 +85,124 @@ enum Commands {
     /// Remove a plugin
     Remove { plugin: String },
     /// Sync plugin manifest (re-run plugin discovery for all installed packages)
-    /// Useful when developing plugins locally with -e to refresh the plugin registry
-    Sync,
-    /// Clean the plugin manifest (removes all installed plugins)
+    Sync {
+        /// Upgrade installed plugin packages before syncing metadata
+        #[arg(long)]
+        upgrade: bool,
+    },
+    /// Clean plugins and cache (removes installed plugins and cleans cache folder)
     Clean {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+    /// Virtual environment management
+    Venv {
+        #[command(subcommand)]
+        command: venv::VenvCommand,
+    },
+    /// Cache management
+    Cache {
+        #[command(subcommand)]
+        command: cache::CacheCommand,
     },
     /// Initialize a new pipeline file
     Init {
         /// Optional filename for the pipeline (default: pipeline.yaml)
         file: Option<String>,
     },
-    /// Configure Python installation
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    Python {
-        #[command(subcommand)]
-        action: PythonAction,
-    },
-    /// Manage virtual environment
-    #[command(subcommand_required = false, arg_required_else_help = false)]
-    Venv {
-        #[command(subcommand)]
-        action: Option<VenvAction>,
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
+
     /// Run pipelines or plugins
     Run(run::RunCommand),
     /// Read a system from JSON (stdin or file) and open an interactive IPython session
-    Read {
-        /// Path to JSON file to read. If not provided, reads from stdin
-        file: Option<std::path::PathBuf>,
-    },
+    Read(read::ReadCommand),
+    /// Manage the r2x executable
+    Self_(self_update::SelfNamespace),
 }
 
-#[derive(Subcommand)]
-enum PluginsAction {
-    /// List current plugins.
-    List,
-    /// Install a package with plugins
-    Install {
-        plugin: String,
-        /// Install in editable mode (-e)
-        #[arg(short, long)]
-        editable: bool,
-        /// Skip metadata cache and force rebuild
-        #[arg(long)]
-        no_cache: bool,
-        /// Git host (default: github.com). Use with org/repo format or full URLs.
-        #[arg(long)]
-        host: Option<String>,
-        /// Install from a git branch
-        #[arg(long, conflicts_with_all = ["tag", "commit"])]
-        branch: Option<String>,
-        /// Install from a git tag
-        #[arg(long, conflicts_with_all = ["branch", "commit"])]
-        tag: Option<String>,
-        /// Install from a git commit hash
-        #[arg(long, conflicts_with_all = ["branch", "tag"])]
-        commit: Option<String>,
-    },
-    /// Remove a plugin
-    Remove { plugin: String },
-    /// Clean the plugin manifest (removes all installed plugins)
-    Clean {
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
+fn with_plugin_context<F>(action: F) -> Result<(), r2x::plugins::error::PluginError>
+where
+    F: FnOnce(&mut plugins::context::PluginContext) -> Result<(), r2x::plugins::error::PluginError>,
+{
+    let mut ctx = plugins::context::PluginContext::load()?;
+    action(&mut ctx)
+}
+
+fn exit_on_plugin_error(result: Result<(), r2x::plugins::error::PluginError>) {
+    if let Err(e) = result {
+        logger::error(&e.to_string());
+        std::process::exit(1);
+    }
 }
 
 fn main() {
+    // Respect NO_COLOR and TERM=dumb for accessibility and automation
+    if std::env::var_os("NO_COLOR").is_some()
+        || std::env::var("TERM").ok().as_deref() == Some("dumb")
+    {
+        colored::control::set_override(false);
+    }
+
     let cli = Cli::parse();
 
-    // Initialize logger with verbosity level and log_python flag
-    if let Err(e) = logger::init_with_verbosity(cli.global.verbosity_level(), cli.global.log_python)
-    {
+    let mut startup_config = match config_manager::Config::load() {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            eprintln!("Warning: Failed to load config: {}", e);
+            None
+        }
+    };
+
+    let (saved_log_python, saved_no_stdout, saved_log_path, saved_log_max_size) =
+        match startup_config.as_ref() {
+            Some(cfg) => (
+                cfg.log_python.unwrap_or(false),
+                cfg.no_stdout.unwrap_or(false),
+                cfg.log_path.as_deref(),
+                cfg.log_max_size,
+            ),
+            None => (false, false, None, None),
+        };
+    let effective_log_python = cli.global.log_python || saved_log_python;
+    let effective_no_stdout = cli.global.no_stdout || saved_no_stdout;
+
+    // Initialize logger with verbosity level, log_python flag, and no_stdout flag
+    if let Err(e) = logger::init_with_config(
+        cli.global.verbosity_level(),
+        effective_log_python,
+        effective_no_stdout,
+        saved_log_path,
+        saved_log_max_size,
+    ) {
         eprintln!("Warning: Failed to initialize logger: {}", e);
     }
 
-    if let Err(e) = config_manager::Config::load().and_then(|mut cfg| {
-        cfg.ensure_uv_path()?;
-        cfg.ensure_cache_path()?;
-        Ok(())
-    }) {
-        logger::warn(&format!("Failed to setup CLI: {}", e));
+    if !matches!(cli.command, Commands::Self_(_)) {
+        if let Some(cfg) = startup_config.as_mut() {
+            if let Err(e) = cfg.ensure_uv_path().and_then(|_| cfg.ensure_cache_path()) {
+                logger::warn(&format!("Failed to setup CLI: {}", e));
+            }
+        }
     }
 
     match cli.command {
-        Commands::Cache { action } => {
-            cache::handle_cache(action, cli.global);
+        Commands::Config { json, action } => {
+            config::handle_config(action, json, cli.global);
         }
-        Commands::Config { action } => {
-            config::handle_config(action, cli.global);
+        Commands::Python { action } => {
+            config::handle_python(action, cli.global);
         }
-        Commands::List => {
-            if let Err(e) = plugins::list_plugins(&cli.global) {
-                logger::error(&e);
-            }
+        Commands::Log { json, action } => {
+            log::handle_log(action, json);
+        }
+        Commands::List {
+            plugin,
+            module,
+            json,
+        } => {
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::list::list_plugins(&cli.global, plugin, module, json, ctx)
+            }));
         }
         Commands::Install {
             plugin,
@@ -178,63 +214,71 @@ fn main() {
             commit,
         } => match plugin {
             Some(pkg) => {
-                if let Err(e) = plugins::install_plugin(
-                    &pkg,
-                    editable,
-                    no_cache,
-                    plugins::GitOptions {
-                        host,
-                        branch,
-                        tag,
-                        commit,
-                    },
-                    &cli.global,
-                ) {
-                    logger::error(&e);
-                }
+                exit_on_plugin_error(with_plugin_context(|ctx| {
+                    plugins::install::install_plugin(
+                        &pkg,
+                        editable,
+                        no_cache,
+                        plugins::install::GitOptions {
+                            host,
+                            branch,
+                            tag,
+                            commit,
+                        },
+                        ctx,
+                    )
+                }));
             }
             None => {
-                if let Err(e) = plugins::show_install_help() {
-                    logger::error(&e);
+                if let Err(e) = plugins::install::show_install_help() {
+                    logger::error(&e.to_string());
+                    std::process::exit(1);
                 }
             }
         },
         Commands::Remove { plugin } => {
-            if let Err(e) = plugins::remove_plugin(&plugin, &cli.global) {
-                logger::error(&e);
-            }
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::remove::remove_plugin(&plugin, ctx)
+            }));
         }
-        Commands::Sync => {
-            if let Err(e) = plugins::sync_manifest(&cli.global) {
-                logger::error(&e);
-            }
+        Commands::Sync { upgrade } => {
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::sync::sync_manifest(ctx, upgrade)
+            }));
         }
         Commands::Clean { yes } => {
-            if let Err(e) = plugins::clean_manifest(yes, &cli.global) {
-                logger::error(&e);
-            }
+            exit_on_plugin_error(with_plugin_context(|ctx| {
+                plugins::clean::clean_manifest(yes, ctx)
+            }));
+        }
+        Commands::Venv { command } => {
+            venv::handle_venv(command, cli.global);
+        }
+        Commands::Cache { command } => {
+            cache::handle_cache(command, cli.global);
         }
         Commands::Init { file } => {
             init::handle_init(file, cli.global);
         }
-        Commands::Python { action } => {
-            python::handle_python(action, cli.global);
-        }
-        Commands::Venv { action, yes } => {
-            python::handle_venv(action, yes, cli.global);
-        }
+
         Commands::Run(cmd) => {
             if let Err(e) = run::handle_run(cmd, cli.global) {
                 logger::error(&format!("Run command failed: {}", e));
                 std::process::exit(1);
             }
         }
-        Commands::Read { file } => {
-            let cmd = read::ReadCommand { file };
+        Commands::Read(cmd) => {
             if let Err(e) = read::handle_read(cmd, cli.global) {
                 logger::error(&format!("Read command failed: {}", e));
                 std::process::exit(1);
             }
         }
+        Commands::Self_(args) => match self_update::handle_self_command(args) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                logger::error(&e.to_string());
+                std::process::exit(1);
+            }
+        },
     }
 }

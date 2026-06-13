@@ -1,7 +1,389 @@
+use crate::types::PackageSource;
 use anyhow::{anyhow, Result};
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
+
+#[derive(Debug, Deserialize)]
+struct DirectUrlVcsInfo {
+    #[expect(dead_code)]
+    vcs: String,
+    #[serde(default)]
+    requested_revision: Option<String>,
+    #[serde(default)]
+    commit_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DirectUrlMetadata {
+    url: String,
+    #[serde(default)]
+    subdirectory: Option<String>,
+    #[serde(default)]
+    vcs_info: Option<DirectUrlVcsInfo>,
+}
+
+/// Resolve installed package paths from site-packages (optionally using UV cache).
+#[derive(Debug, Clone)]
+pub struct PackageLocator {
+    site_packages: PathBuf,
+    uv_cache_dir: Option<PathBuf>,
+    /// Cached directory entries: filename -> full path
+    dir_entries: HashMap<String, PathBuf>,
+}
+
+impl PackageLocator {
+    fn read_dir_entries(site_packages: &Path) -> Result<HashMap<String, PathBuf>> {
+        let mut dir_entries = HashMap::new();
+        let entries = fs::read_dir(site_packages)?;
+        for entry in entries.flatten() {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            dir_entries.insert(filename, entry.path());
+        }
+        Ok(dir_entries)
+    }
+
+    /// Create a new locator for the given site-packages root.
+    pub fn new(site_packages: PathBuf, uv_cache_dir: Option<PathBuf>) -> Result<Self> {
+        debug!("Initializing package locator for: {:?}", site_packages);
+
+        if !site_packages.exists() {
+            return Err(anyhow!(
+                "Site-packages directory not found: {}",
+                site_packages.display()
+            ));
+        }
+
+        let dir_entries = Self::read_dir_entries(&site_packages)?;
+
+        Ok(PackageLocator {
+            site_packages,
+            uv_cache_dir,
+            dir_entries,
+        })
+    }
+
+    /// Refresh cached directory entries from disk.
+    pub fn refresh(&mut self) -> Result<()> {
+        self.dir_entries = Self::read_dir_entries(&self.site_packages)?;
+        Ok(())
+    }
+
+    /// Return the site-packages root used by this locator.
+    pub fn site_packages(&self) -> &Path {
+        &self.site_packages
+    }
+
+    /// Return an iterator over the cached directory entries (filename -> path).
+    pub fn dir_entries(&self) -> impl Iterator<Item = (&String, &PathBuf)> {
+        self.dir_entries.iter()
+    }
+
+    /// Find the `.dist-info` directory for a given package name.
+    ///
+    /// Looks for a directory matching `{normalized_name}-*.dist-info` pattern.
+    pub fn find_dist_info_path(&self, package_name: &str) -> Option<PathBuf> {
+        let normalized = package_name.replace('-', "_");
+        let prefix = format!("{}-", normalized);
+
+        for (filename, path) in &self.dir_entries {
+            if filename.starts_with(&prefix) && filename.ends_with(".dist-info") {
+                return Some(path.clone());
+            }
+        }
+        None
+    }
+
+    /// Find the `entry_points.txt` file for a given package.
+    ///
+    /// Returns the path if it exists inside the package's dist-info directory.
+    pub fn find_entry_points_txt(&self, package_name: &str) -> Option<PathBuf> {
+        let dist_info = self.find_dist_info_path(package_name)?;
+        let entry_points = dist_info.join("entry_points.txt");
+        if entry_points.exists() {
+            Some(entry_points)
+        } else {
+            None
+        }
+    }
+
+    /// Check if a package has r2x plugin entry points.
+    ///
+    /// Returns true if the package's `entry_points.txt` contains `[r2x_plugin]`
+    /// or any `[r2x.*]` section.
+    pub fn has_plugin_entry_points(&self, package_name: &str) -> bool {
+        let Some(entry_points_path) = self.find_entry_points_txt(package_name) else {
+            return false;
+        };
+
+        let Ok(content) = fs::read_to_string(&entry_points_path) else {
+            return false;
+        };
+
+        // Check for [r2x_plugin] or [r2x.*] sections
+        for line in content.lines() {
+            let line = line.trim();
+            if line == "[r2x_plugin]" {
+                return true;
+            }
+            // Match [r2x.something] pattern
+            if line.starts_with("[r2x.") && line.ends_with(']') {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Detect how a package was installed.
+    pub fn detect_package_source(
+        &self,
+        package_name: &str,
+        source_path: Option<&str>,
+    ) -> PackageSource {
+        if let Some(source) = self.source_from_direct_url(package_name) {
+            return source;
+        }
+
+        if source_path.is_some()
+            || self
+                .find_package_path_via_pth(&package_name.replace('-', "_"))
+                .is_some()
+        {
+            return PackageSource::Local;
+        }
+
+        PackageSource::Pypi
+    }
+
+    /// Read the installed version of a package from its `.dist-info/METADATA` file.
+    ///
+    /// This is a pure filesystem read (~0.1ms) compared to spawning `uv pip show`
+    /// (~300ms per call). The version lives on a `Version:` line near the top of
+    /// the METADATA file, so we bail as soon as we find it.
+    pub fn read_version(&self, package_name: &str) -> Option<String> {
+        let dist_info = self.find_dist_info_path(package_name)?;
+        let metadata_path = dist_info.join("METADATA");
+        let content = fs::read_to_string(&metadata_path).ok()?;
+        for line in content.lines() {
+            // Version: is always in the first ~10 lines, stop at first blank line
+            // (which separates headers from the description body).
+            if line.is_empty() {
+                break;
+            }
+            if let Some(version) = line.strip_prefix("Version: ") {
+                return Some(version.trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// Read the installed dependencies of a package from its `.dist-info/METADATA` file.
+    ///
+    /// Parses `Requires-Dist:` lines and returns bare package names (no version specifiers).
+    pub fn read_dependencies(&self, package_name: &str) -> Vec<String> {
+        let Some(dist_info) = self.find_dist_info_path(package_name) else {
+            return Vec::new();
+        };
+        let metadata_path = dist_info.join("METADATA");
+        let Ok(content) = fs::read_to_string(&metadata_path) else {
+            return Vec::new();
+        };
+
+        let mut deps = Vec::new();
+        for line in content.lines() {
+            if let Some(req) = line.strip_prefix("Requires-Dist: ") {
+                // "numpy (>=1.20)" or "numpy>=1.20" or "numpy ; extra == ..."
+                let name = req
+                    .split([' ', '(', '>', '<', '=', '!', '~', ';', '['])
+                    .next()
+                    .unwrap_or(req)
+                    .trim();
+                if !name.is_empty() {
+                    deps.push(name.to_string());
+                }
+            }
+        }
+        deps
+    }
+
+    /// Return a displayable direct URL origin (including revision and subdirectory if present).
+    pub fn direct_url_origin(&self, package_name: &str) -> Option<String> {
+        let metadata = self.direct_url_metadata(package_name)?;
+        let mut origin = metadata.url.clone();
+        if let Some(reference) = metadata
+            .vcs_info
+            .as_ref()
+            .and_then(|v| v.requested_revision.as_deref().or(v.commit_id.as_deref()))
+        {
+            origin.push('@');
+            origin.push_str(reference);
+        }
+
+        if let Some(subdirectory) = metadata.subdirectory.as_deref() {
+            origin.push_str("#subdirectory=");
+            origin.push_str(subdirectory);
+        }
+
+        Some(origin)
+    }
+
+    /// Return the resolved VCS commit hash from direct_url.json, when available.
+    pub fn direct_url_commit_id(&self, package_name: &str) -> Option<String> {
+        self.direct_url_metadata(package_name)?
+            .vcs_info
+            .as_ref()?
+            .commit_id
+            .clone()
+    }
+
+    /// Locate a package root suitable for AST discovery.
+    pub fn find_package_path(&self, package_name_full: &str) -> Result<PathBuf> {
+        let normalized = package_name_full.replace('-', "_");
+
+        if let Some(path) = self.find_package_path_via_pth(&normalized) {
+            return Ok(path);
+        }
+
+        let direct = self.site_packages.join(&normalized);
+        if direct.is_dir() {
+            return Ok(direct);
+        }
+
+        let mut dist_info_path: Option<PathBuf> = None;
+        let dist_prefix = format!("{}-", normalized);
+
+        // Use cached directory entries instead of read_dir
+        for (name_str, path) in &self.dir_entries {
+            if name_str == &normalized {
+                return Ok(path.clone());
+            }
+            if name_str.starts_with(&dist_prefix) && name_str.ends_with(".dist-info") {
+                dist_info_path = Some(path.clone());
+            }
+        }
+
+        if let Some(dist_info) = dist_info_path {
+            if let Some(resolved) = self.resolve_from_dist_info(&dist_info) {
+                return Ok(resolved);
+            }
+            debug!(
+                "Found dist-info for '{}' but could not resolve top-level module",
+                package_name_full
+            );
+            return Ok(self.site_packages.clone());
+        }
+
+        Err(anyhow!(
+            "Package '{}' not found in site-packages: {}",
+            package_name_full,
+            self.site_packages.display()
+        ))
+    }
+
+    fn find_package_path_via_pth(&self, normalized_package_name: &str) -> Option<PathBuf> {
+        let cache_dir = self.uv_cache_dir.as_ref()?;
+        if !cache_dir.exists() {
+            return None;
+        }
+
+        let hash_dirs = fs::read_dir(cache_dir).ok()?;
+        for hash_entry in hash_dirs {
+            let hash_entry = match hash_entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+
+            let hash_path = hash_entry.path();
+            if !hash_path.is_dir() {
+                continue;
+            }
+
+            let pth_entries = match fs::read_dir(&hash_path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            for pth_entry in pth_entries {
+                let pth_entry = match pth_entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+
+                let pth_file_name = pth_entry.file_name().to_string_lossy().to_string();
+                let matches = pth_file_name == format!("{}.pth", normalized_package_name)
+                    || (pth_file_name.starts_with("__editable__.")
+                        && pth_file_name.contains(&format!("{}-", normalized_package_name))
+                        && pth_file_name.ends_with(".pth"));
+
+                if !matches {
+                    continue;
+                }
+
+                if let Ok(content) = fs::read_to_string(pth_entry.path()) {
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') {
+                            continue;
+                        }
+                        let candidate = PathBuf::from(line);
+                        if candidate.exists() {
+                            return Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn resolve_from_dist_info(&self, dist_info_path: &Path) -> Option<PathBuf> {
+        let top_level = dist_info_path.join("top_level.txt");
+        let content = fs::read_to_string(&top_level).ok()?;
+        for line in content.lines() {
+            let module = line.trim();
+            if module.is_empty() {
+                continue;
+            }
+            let module_dir = self.site_packages.join(module);
+            if module_dir.is_dir() {
+                return Some(module_dir);
+            }
+            let module_file = self.site_packages.join(format!("{}.py", module));
+            if module_file.is_file() {
+                return Some(self.site_packages.clone());
+            }
+        }
+        None
+    }
+
+    fn source_from_direct_url(&self, package_name: &str) -> Option<PackageSource> {
+        let metadata = self.direct_url_metadata(package_name)?;
+        Some(Self::classify_direct_url_source(&metadata))
+    }
+
+    fn direct_url_metadata(&self, package_name: &str) -> Option<DirectUrlMetadata> {
+        let dist_info = self.find_dist_info_path(package_name)?;
+        let direct_url_path = dist_info.join("direct_url.json");
+        let content = fs::read_to_string(&direct_url_path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn classify_direct_url_source(metadata: &DirectUrlMetadata) -> PackageSource {
+        let url = metadata.url.to_ascii_lowercase();
+        if url.starts_with("file:") {
+            return PackageSource::Local;
+        }
+
+        if metadata.subdirectory.is_some() && url.contains("github.com") {
+            return PackageSource::Github;
+        }
+
+        PackageSource::Pypi
+    }
+}
 
 /// Information about a discovered r2x package
 #[derive(Debug, Clone)]
@@ -23,42 +405,34 @@ pub struct DiscoveredPackage {
 }
 
 /// Discovers r2x packages in a Python environment
-pub struct PackageDiscoverer {
-    /// Site-packages directory
-    site_packages: PathBuf,
+pub struct PackageDiscoverer<'a> {
+    /// Reference to the package locator with cached directory entries
+    locator: &'a PackageLocator,
 }
 
-impl PackageDiscoverer {
-    /// Create a new discovery instance for the given site-packages path
-    pub fn new(site_packages: PathBuf) -> Result<Self> {
-        debug!("Initializing package discovery for: {:?}", site_packages);
-
-        if !site_packages.exists() {
-            return Err(anyhow!(
-                "Site-packages directory not found: {:?}",
-                site_packages
-            ));
-        }
-
-        Ok(PackageDiscoverer { site_packages })
+impl<'a> PackageDiscoverer<'a> {
+    /// Create a new discovery instance using the given package locator
+    pub fn new(locator: &'a PackageLocator) -> Self {
+        debug!(
+            "Initializing package discovery for: {:?}",
+            locator.site_packages()
+        );
+        PackageDiscoverer { locator }
     }
 
-    /// Discover all r2x-* packages in site-packages
-    pub fn discover_packages(&self) -> Result<Vec<DiscoveredPackage>> {
-        debug!("Discovering r2x packages in: {:?}", self.site_packages);
+    /// Discover all packages with r2x plugin entry points in site-packages
+    pub fn discover_packages(&self) -> Vec<DiscoveredPackage> {
+        debug!(
+            "Discovering r2x packages in: {:?}",
+            self.locator.site_packages()
+        );
 
         let mut packages = Vec::new();
-        let entries = fs::read_dir(&self.site_packages)?;
 
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
-
+        for (file_name, path) in self.locator.dir_entries() {
             // Look for dist-info directories
-            if file_name_str.ends_with(".dist-info") {
-                if let Ok(pkg) = self.process_dist_info(&path, &file_name_str) {
+            if file_name.ends_with(".dist-info") {
+                if let Some(pkg) = self.process_dist_info(path, file_name) {
                     debug!("Discovered package: {}", pkg.name);
                     packages.push(pkg);
                 }
@@ -66,60 +440,47 @@ impl PackageDiscoverer {
         }
 
         info!("Found {} r2x packages", packages.len());
-        Ok(packages)
+        packages
     }
 
-    /// Process a single .dist-info directory
+    /// Process a single .dist-info directory.
+    /// Returns Some(package) if this package declares r2x plugin entry points, None otherwise.
     fn process_dist_info(
         &self,
         dist_info_path: &Path,
         dist_info_name: &str,
-    ) -> Result<DiscoveredPackage> {
+    ) -> Option<DiscoveredPackage> {
         // Extract package name from dist-info (e.g., r2x_reeds-1.2.3.dist-info -> r2x-reeds)
         let package_name = dist_info_name
-            .strip_suffix(".dist-info")
-            .ok_or_else(|| anyhow!("Invalid dist-info name: {}", dist_info_name))?
+            .strip_suffix(".dist-info")?
             .split('-')
-            .next()
-            .ok_or_else(|| anyhow!("Cannot extract package name from: {}", dist_info_name))?
+            .next()?
             .replace('_', "-");
 
-        // Only process r2x-* packages except the shared runtime
-        if !package_name.starts_with("r2x-") || package_name == "r2x-core" {
-            return Err(anyhow!("Package is not an r2x plugin: {}", package_name));
+        // Skip r2x-core (the shared runtime, not a plugin)
+        if package_name == "r2x-core" {
+            return None;
+        }
+
+        // Check for entry_points.txt with r2x plugin entry points
+        let entry_points_file = dist_info_path.join("entry_points.txt");
+        let entry_points_content = fs::read_to_string(&entry_points_file).ok()?;
+
+        // Filter: must have [r2x_plugin] or [r2x.*] section
+        if !Self::has_r2x_entry_points(&entry_points_content) {
+            return None;
         }
 
         debug!("Processing dist-info for: {}", package_name);
 
-        // Check for entry_points.txt with r2x_plugin entry point
-        let entry_points_file = dist_info_path.join("entry_points.txt");
-        if !entry_points_file.exists() {
-            return Err(anyhow!(
-                "No entry_points.txt found in: {:?}",
-                dist_info_path
-            ));
-        }
-
-        // Verify it has r2x_plugin entry point
-        let entry_points_content = fs::read_to_string(&entry_points_file)?;
-        if !entry_points_content.contains("[r2x_plugin]") {
-            return Err(anyhow!(
-                "No [r2x_plugin] entry point found in: {}",
-                package_name
-            ));
-        }
-
         // Get package location (parent directory of dist-info)
-        let location = dist_info_path
-            .parent()
-            .ok_or_else(|| anyhow!("Cannot get parent of dist-info"))?
-            .to_path_buf();
+        let location = dist_info_path.parent()?.to_path_buf();
 
         // Check if it's an editable install
         let (is_editable, pth_file, resolved_source_path) =
-            self.check_editable_install(&package_name, &location)?;
+            self.check_editable_install(&package_name);
 
-        Ok(DiscoveredPackage {
+        Some(DiscoveredPackage {
             name: package_name,
             is_explicit: true, // TODO: Read from installed.json to distinguish
             location,
@@ -130,45 +491,53 @@ impl PackageDiscoverer {
         })
     }
 
+    /// Check if entry_points.txt content contains r2x plugin entry points.
+    /// Matches [r2x_plugin] or any [r2x.*] section (for transform plugins etc).
+    fn has_r2x_entry_points(content: &str) -> bool {
+        for line in content.lines() {
+            let line = line.trim();
+            if line == "[r2x_plugin]" {
+                return true;
+            }
+            // Match [r2x.something] pattern
+            if line.starts_with("[r2x.") && line.ends_with(']') {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check if package is an editable install and resolve source path
-    #[allow(dead_code)]
     fn check_editable_install(
         &self,
         package_name: &str,
-        _location: &Path,
-    ) -> Result<(bool, Option<PathBuf>, Option<PathBuf>)> {
-        // Look for .pth file in site-packages
-        let pth_pattern = format!("__{}-*__.pth", package_name.replace('-', "_"));
-        debug!("Looking for editable install marker: {}", pth_pattern);
+    ) -> (bool, Option<PathBuf>, Option<PathBuf>) {
+        let normalized_name = package_name.replace('-', "_");
+        debug!(
+            "Looking for editable install marker for: {}",
+            normalized_name
+        );
 
-        for entry in fs::read_dir(&self.site_packages)? {
-            let entry = entry?;
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
-
-            if file_name_str.ends_with(".pth")
-                && file_name_str.contains(&package_name.replace('-', "_"))
-            {
+        for (file_name, path) in self.locator.dir_entries() {
+            if file_name.ends_with(".pth") && file_name.contains(&normalized_name) {
                 // Try to read the .pth file and resolve the actual source path
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(resolved_path) = self.resolve_pth_path(&content) {
+                if let Ok(content) = fs::read_to_string(path) {
+                    if let Ok(resolved_path) = Self::resolve_pth_path(&content) {
                         debug!(
                             "Found editable install for {} at: {:?}",
                             package_name, resolved_path
                         );
-                        return Ok((true, Some(path), Some(resolved_path)));
+                        return (true, Some(path.clone()), Some(resolved_path));
                     }
                 }
             }
         }
 
-        Ok((false, None, None))
+        (false, None, None)
     }
 
     /// Parse .pth file content and resolve the actual source path
-    #[allow(dead_code)]
-    fn resolve_pth_path(&self, content: &str) -> Result<PathBuf> {
+    fn resolve_pth_path(content: &str) -> Result<PathBuf> {
         // .pth files can contain multiple lines, typically with import statements
         // For editable installs, usually just contains a path
         for line in content.lines() {
@@ -227,8 +596,8 @@ pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> 
 
     if module.is_empty() || function.is_empty() {
         return Err(anyhow!(
-            "No valid r2x_plugin entry point found in: {:?}",
-            entry_points_path
+            "No valid r2x_plugin entry point found in: {}",
+            entry_points_path.display()
         ));
     }
 
@@ -238,44 +607,740 @@ pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::package_discovery::*;
+    use crate::types::PackageSource;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_entry_points() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds.plugins:register_plugin
 
 [other]
 something = some.module:function
-"#;
+";
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join("test_entry_points.txt");
-        fs::write(&temp_file, content).unwrap();
+        let Ok(()) = fs::write(&temp_file, content) else {
+            return;
+        };
 
-        let result = parse_entry_points(&temp_file).unwrap();
-        assert_eq!(result.0, "r2x_reeds.plugins");
-        assert_eq!(result.1, "register_plugin");
+        let result = parse_entry_points(&temp_file);
+        assert!(result.is_ok(), "Failed to parse entry points");
+        assert!(result.is_ok_and(|r| r.0 == "r2x_reeds.plugins" && r.1 == "register_plugin"));
 
         let _ = fs::remove_file(&temp_file);
     }
 
     #[test]
     fn test_parse_entry_points_multiple_entries() {
-        let content = r#"[r2x_plugin]
+        let content = r"[r2x_plugin]
 reeds = r2x_reeds.plugins:register_plugin
 other = other.module:func
-"#;
+";
 
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join("test_entry_points2.txt");
-        fs::write(&temp_file, content).unwrap();
+        let Ok(()) = fs::write(&temp_file, content) else {
+            return;
+        };
 
-        let result = parse_entry_points(&temp_file).unwrap();
+        let result = parse_entry_points(&temp_file);
+        assert!(result.is_ok(), "Failed to parse entry points");
         // Should get the first one
-        assert_eq!(result.0, "r2x_reeds.plugins");
-        assert_eq!(result.1, "register_plugin");
+        assert!(result.is_ok_and(|r| r.0 == "r2x_reeds.plugins" && r.1 == "register_plugin"));
 
         let _ = fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_dir_entries_cache_populated() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create some dist-info directories
+        if let Err(err) = fs::create_dir(site_packages.join("r2x_reeds-1.0.0.dist-info")) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+        if let Err(err) = fs::create_dir(site_packages.join("r2x_sienna-2.1.0.dist-info")) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+        if let Err(err) = fs::create_dir(site_packages.join("some_other_package-0.1.0.dist-info")) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        // Verify the cache contains all the entries
+        let entries: Vec<&String> = locator.dir_entries().map(|(name, _)| name).collect();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.contains(&&"r2x_reeds-1.0.0.dist-info".to_string()));
+        assert!(entries.contains(&&"r2x_sienna-2.1.0.dist-info".to_string()));
+        assert!(entries.contains(&&"some_other_package-0.1.0.dist-info".to_string()));
+    }
+
+    #[test]
+    fn test_find_dist_info_path() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create dist-info directories
+        let reeds_dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&reeds_dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create reeds dist-info: {err}"
+            );
+            return;
+        }
+
+        let sienna_dist_info = site_packages.join("r2x_sienna-2.1.0.dist-info");
+        if let Err(err) = fs::create_dir(&sienna_dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create sienna dist-info: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        // Test finding by package name (with hyphen, should normalize to underscore)
+        let found = locator.find_dist_info_path("r2x-reeds");
+        assert!(found.is_some());
+        assert!(
+            found.as_ref().is_some_and(|p| *p == reeds_dist_info),
+            "Expected reeds_dist_info path"
+        );
+
+        // Test finding with underscore
+        let found = locator.find_dist_info_path("r2x_sienna");
+        assert!(found.is_some());
+        assert!(
+            found.as_ref().is_some_and(|p| *p == sienna_dist_info),
+            "Expected sienna_dist_info path"
+        );
+
+        // Test non-existent package
+        let not_found = locator.find_dist_info_path("nonexistent-package");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_refresh_updates_cached_directory_entries() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        let mut locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        assert!(locator.find_dist_info_path("r2x-reeds").is_none());
+
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        // Cache is stale until refresh is called.
+        assert!(locator.find_dist_info_path("r2x-reeds").is_none());
+
+        if let Err(err) = locator.refresh() {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to refresh locator: {err}"
+            );
+            return;
+        }
+
+        let found = locator.find_dist_info_path("r2x-reeds");
+        assert!(found.is_some());
+        assert!(
+            found.as_ref().is_some_and(|path| path == &dist_info),
+            "Expected refreshed dist-info path"
+        );
+    }
+
+    #[test]
+    fn test_has_plugin_entry_points_true() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create dist-info with [r2x_plugin] section
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        let entry_points_content = r"[console_scripts]
+some-cli = r2x_reeds.cli:main
+
+[r2x_plugin]
+reeds = r2x_reeds.plugins:register_plugin
+";
+        if let Err(err) = fs::write(dist_info.join("entry_points.txt"), entry_points_content) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to write entry_points.txt: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        assert!(locator.has_plugin_entry_points("r2x-reeds"));
+    }
+
+    #[test]
+    fn test_has_plugin_entry_points_false() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create dist-info WITHOUT any r2x sections
+        let dist_info = site_packages.join("some_package-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        let entry_points_content = r"[console_scripts]
+some-cli = some_package.cli:main
+
+[other_section]
+foo = bar.baz:qux
+";
+        if let Err(err) = fs::write(dist_info.join("entry_points.txt"), entry_points_content) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to write entry_points.txt: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        assert!(!locator.has_plugin_entry_points("some-package"));
+    }
+
+    #[test]
+    fn test_has_plugin_entry_points_transforms() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create dist-info with [r2x.transforms] section (not [r2x_plugin])
+        let dist_info = site_packages.join("r2x_transforms-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        let entry_points_content = r"[console_scripts]
+transform-cli = r2x_transforms.cli:main
+
+[r2x.transforms]
+my_transform = r2x_transforms.transform:MyTransform
+";
+        if let Err(err) = fs::write(dist_info.join("entry_points.txt"), entry_points_content) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to write entry_points.txt: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        // Should return true because [r2x.transforms] matches the [r2x.*] pattern
+        assert!(locator.has_plugin_entry_points("r2x-transforms"));
+    }
+
+    #[test]
+    fn test_has_plugin_entry_points_no_entry_points_file() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create dist-info WITHOUT entry_points.txt
+        let dist_info = site_packages.join("no_entry_points-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        // Should return false when entry_points.txt doesn't exist
+        assert!(!locator.has_plugin_entry_points("no-entry-points"));
+    }
+
+    #[test]
+    fn test_find_entry_points_txt() {
+        let temp_dir = match TempDir::new() {
+            Ok(dir) => dir,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create temp dir: {err}"
+                );
+                return;
+            }
+        };
+        let site_packages = temp_dir.path();
+
+        // Create dist-info with entry_points.txt
+        let dist_info = site_packages.join("test_package-1.0.0.dist-info");
+        if let Err(err) = fs::create_dir(&dist_info) {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to create dist-info: {err}"
+            );
+            return;
+        }
+
+        let entry_points_path = dist_info.join("entry_points.txt");
+        if let Err(err) = fs::write(&entry_points_path, "[r2x_plugin]\ntest = test:register") {
+            assert!(
+                err.to_string().is_empty(),
+                "Failed to write entry_points.txt: {err}"
+            );
+            return;
+        }
+
+        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+            Ok(locator) => locator,
+            Err(err) => {
+                assert!(
+                    err.to_string().is_empty(),
+                    "Failed to create locator: {err}"
+                );
+                return;
+            }
+        };
+
+        let found = locator.find_entry_points_txt("test-package");
+        assert!(found.is_some());
+        assert!(
+            found.as_ref().is_some_and(|p| *p == entry_points_path),
+            "Expected entry_points_path"
+        );
+
+        // Test non-existent package
+        let not_found = locator.find_entry_points_txt("nonexistent");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_detect_package_source_github_from_direct_url() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_plexos_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git" },
+  "subdirectory": "packages/r2x-plexos-to-sienna"
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-plexos-to-sienna", None),
+            PackageSource::Github
+        );
+    }
+
+    #[test]
+    fn test_detect_package_source_defaults_to_pypi_without_direct_url() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        if fs::create_dir(site_packages.join("r2x_sienna-0.1.0.dist-info")).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-sienna", None),
+            PackageSource::Pypi
+        );
+    }
+
+    #[test]
+    fn test_detect_package_source_standalone_git_direct_url_stays_pypi() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_sienna-0.1.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+  "vcs_info": { "vcs": "git" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-sienna", None),
+            PackageSource::Pypi
+        );
+    }
+
+    #[test]
+    fn test_direct_url_origin_includes_requested_revision_and_subdirectory() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "git+ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git", "requested_revision": "v2.0.0", "commit_id": "abc123" },
+  "subdirectory": "packages/r2x-reeds-to-sienna"
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.direct_url_origin("r2x-reeds-to-sienna"),
+            Some(
+                "git+ssh://git@github.com/NatLabRockies/R2X.git@v2.0.0#subdirectory=packages/r2x-reeds-to-sienna"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_direct_url_commit_id_returns_hash_when_present() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds_to_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "git+ssh://git@github.com/NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git", "requested_revision": "main", "commit_id": "abc123def456" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.direct_url_commit_id("r2x-reeds-to-sienna"),
+            Some("abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_direct_url_commit_id_none_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_sienna-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+  "vcs_info": { "vcs": "git" }
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.direct_url_commit_id("r2x-sienna"), None);
+    }
+
+    #[test]
+    fn test_read_version_from_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds-1.2.3.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let metadata =
+            "Metadata-Version: 2.1\nName: r2x-reeds\nVersion: 1.2.3\nSummary: ReEDS plugin\n";
+        if fs::write(dist_info.join("METADATA"), metadata).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.read_version("r2x-reeds"), Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_read_version_returns_none_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+        // No METADATA file
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.read_version("r2x-reeds"), None);
+    }
+
+    #[test]
+    fn test_read_version_returns_none_for_unknown_package() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert_eq!(locator.read_version("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_read_dependencies_from_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("r2x_reeds-1.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let metadata = "Metadata-Version: 2.1\nName: r2x-reeds\nVersion: 1.0.0\nRequires-Dist: numpy (>=1.20)\nRequires-Dist: pandas>=1.3\nRequires-Dist: r2x-core ; extra == \"dev\"\n";
+        if fs::write(dist_info.join("METADATA"), metadata).is_err() {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        let deps = locator.read_dependencies("r2x-reeds");
+        assert_eq!(deps, vec!["numpy", "pandas", "r2x-core"]);
+    }
+
+    #[test]
+    fn test_read_dependencies_returns_empty_without_metadata() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+            return;
+        };
+
+        assert!(locator.read_dependencies("nonexistent").is_empty());
     }
 }

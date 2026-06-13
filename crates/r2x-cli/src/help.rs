@@ -1,6 +1,8 @@
-use crate::logger;
-use crate::r2x_manifest::Manifest;
+use crate::manifest_lookup::resolve_plugin_ref;
 use colored::Colorize;
+use r2x_logger as logger;
+use r2x_manifest::types::Manifest;
+use std::collections::BTreeSet;
 
 /// Show help for the run command when invoked with no arguments
 pub fn show_run_help() -> Result<(), String> {
@@ -11,23 +13,23 @@ pub fn show_run_help() -> Result<(), String> {
     println!();
 
     // Show installed plugins
-    if !manifest.is_empty() {
+    if manifest.is_empty() {
+        println!("{}", "No plugins installed.".yellow());
+        println!("Install plugins with: r2x install <package>");
+        println!();
+    } else {
         println!("{}", "Installed plugins:".bold());
         for pkg in &manifest.packages {
             for plugin in &pkg.plugins {
-                let plugin_type = format!("{:?}", plugin.kind);
+                let plugin_type = format!("{:?}", plugin.plugin_type);
                 println!(
                     "  {} {} - from package {}",
-                    plugin.name.cyan(),
+                    plugin.name.as_ref().cyan(),
                     format!("({})", plugin_type).dimmed(),
-                    pkg.name.dimmed()
+                    pkg.name.as_ref().dimmed()
                 );
             }
         }
-        println!();
-    } else {
-        println!("{}", "No plugins installed.".yellow());
-        println!("Install plugins with: r2x install <package>");
         println!();
     }
 
@@ -57,113 +59,198 @@ pub fn show_run_help() -> Result<(), String> {
 pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
-    let (_pkg, plugin) = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name == plugin_name)
-                .map(|p| (pkg, p))
-        })
-        .ok_or_else(|| format!("Plugin '{}' not found in manifest", plugin_name))?;
-
-    let bindings = r2x_manifest::build_runtime_bindings(plugin);
+    let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|e| e.to_string())?;
+    let plugin = resolved.plugin;
 
     logger::step(&format!("Plugin: {}", plugin_name));
 
-    println!("\nType: {:?}", plugin.kind);
+    println!("\nType: {:?}", plugin.plugin_type);
+    println!("Module: {}", plugin.module);
 
-    let needs_store = bindings.requires_store;
-
-    if needs_store {
-        println!("\nRequires data store: yes");
-        println!("\nData Store Arguments:");
-        println!("  --store-path <PATH>       Path to store directory (required)");
-        println!("  --store-name <NAME>       Name of the store (optional)");
+    // Show description if available
+    if let Some(ref desc) = plugin.description {
+        println!("Description: {}", desc);
     }
 
-    println!(
-        "\nCallable: {}.{}",
-        bindings.entry_module, bindings.entry_name
-    );
-    if let Some(call_method) = &bindings.call_method {
-        println!("Method: {}", call_method);
+    // Show class or function name
+    if let Some(ref class_name) = plugin.class_name {
+        println!("Class: {}", class_name);
+    }
+    if let Some(ref function_name) = plugin.function_name {
+        println!("Function: {}", function_name);
     }
 
-    if !bindings.entry_parameters.is_empty() {
-        println!("\nCallable Parameters:");
-        for param in &bindings.entry_parameters {
-            let annotation = param.annotation.as_deref().unwrap_or("Any");
-            let required = if param.required {
-                "required"
-            } else {
-                "optional"
-            };
-            let default = param
-                .default
-                .as_deref()
-                .map(|d| format!(" (default: {})", d))
-                .unwrap_or_default();
-            println!(
-                "  --{:<20} {:<15} {}{}",
-                param.name, annotation, required, default
-            );
+    // Show config if available
+    if let Some(ref config_class) = plugin.config_class {
+        print!("\nConfiguration Class: {}", config_class);
+        if let Some(ref config_module) = plugin.config_module {
+            print!(" ({})", config_module);
         }
+        println!();
     }
 
-    // Show config parameters
-    if let Some(config) = &bindings.config {
-        println!("\nConfiguration Class: {}.{}", config.module, config.name);
-        if !config.fields.is_empty() {
-            println!("\nConfiguration Parameters:");
-            for field in &config.fields {
-                let annotation = field.annotation.as_deref().unwrap_or("Any");
-                let required = if field.required {
-                    "required"
-                } else {
-                    "optional"
-                };
-                let default = field
-                    .default
-                    .as_deref()
-                    .map(|d| format!(" (default: {})", d))
-                    .unwrap_or_default();
-                println!(
-                    "  --{:<20} {:<15} {}{}",
-                    field.name, annotation, required, default
-                );
+    let required_options = required_plugin_options(plugin);
+    let usage_options = if required_options.is_empty() {
+        " [OPTIONS]".to_string()
+    } else {
+        format_option_usage(&required_options)
+    };
+    let example_options = if required_options.is_empty() {
+        plugin_option_names(plugin)
+            .iter()
+            .next()
+            .map(|name| format!(" --{} <value>", name))
+            .unwrap_or_default()
+    } else {
+        format_option_usage(&required_options)
+    };
+
+    println!("\nUsage:");
+    println!("  r2x run plugin {}{}", plugin_name, usage_options);
+    println!("    (add -q to silence logs, -q -q to hide stdout)");
+
+    // Show parameters
+    if !plugin.parameters.is_empty() {
+        println!("\nPlugin options:");
+        for param in &plugin.parameters {
+            let module_str = param
+                .module
+                .as_ref()
+                .map(|m| format!(" ({})", m))
+                .unwrap_or_default();
+            let req_marker = if required_param_is_user_supplied(
+                plugin,
+                param.name.as_ref(),
+                param.required && param.default.is_none(),
+            ) {
+                " (required)"
+            } else {
+                ""
+            };
+            println!(
+                "  --{:<20} {}{}{}",
+                cli_flag_name(param.name.as_ref()),
+                param.format_types(),
+                module_str,
+                req_marker
+            );
+            if param.name.contains('_') {
+                println!("      Alias: --{}", param.name);
+            }
+            if let Some(ref desc) = param.description {
+                println!("      {}", desc);
             }
         }
     }
 
-    println!("\nUsage:");
-    println!("  r2x run plugin {} [OPTIONS]", plugin_name);
-    println!("    (add -q to silence logs, -q -q to hide stdout)");
-    println!("\nExamples:");
-    println!("  r2x run --plugin {} --show-help", plugin_name);
-
-    if needs_store {
-        println!(
-            "  r2x run --plugin {} --store-path /path/to/store <other args>",
-            plugin_name
-        );
-    } else {
-        println!("  r2x run --plugin {} <args>", plugin_name);
+    // Show config schema
+    if !plugin.config_schema.is_empty() {
+        println!("\nConfiguration options:");
+        for (field_name, field) in plugin.config_schema.iter() {
+            let req_marker = if field.required && field.default.is_none() {
+                " (required)"
+            } else {
+                ""
+            };
+            println!(
+                "  --{:<20} {:?}{}",
+                cli_flag_name(field_name.as_ref()),
+                field.field_type,
+                req_marker
+            );
+            if field_name.contains('_') {
+                println!("      Alias: --{}", field_name);
+            }
+        }
     }
+
+    println!("\nCompatibility:");
+    println!("  key=value arguments are also supported:");
+    println!("    {}", compatibility_example(plugin));
+    println!("  --set key=value is accepted as an explicit key/value form.");
+
+    println!("\nExamples:");
+    println!("  r2x run plugin {} --show-help", plugin_name);
+    println!("  r2x run plugin {}{}", plugin_name, example_options);
 
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_show_run_help() {
-        // Test run help display
+fn required_plugin_options(plugin: &r2x_manifest::types::Plugin) -> BTreeSet<String> {
+    let mut options = BTreeSet::new();
+
+    for param in &plugin.parameters {
+        if required_param_is_user_supplied(
+            plugin,
+            param.name.as_ref(),
+            param.required && param.default.is_none(),
+        ) {
+            options.insert(cli_flag_name(param.name.as_ref()));
+        }
     }
 
-    #[test]
-    fn test_show_plugin_help() {
-        // Test plugin help display
+    for (field_name, field) in plugin.config_schema.iter() {
+        if field.required && field.default.is_none() {
+            options.insert(cli_flag_name(field_name.as_ref()));
+        }
     }
+
+    options
+}
+
+fn plugin_option_names(plugin: &r2x_manifest::types::Plugin) -> BTreeSet<String> {
+    let mut options = BTreeSet::new();
+    for param in &plugin.parameters {
+        options.insert(cli_flag_name(param.name.as_ref()));
+    }
+    for (field_name, _) in plugin.config_schema.iter() {
+        options.insert(cli_flag_name(field_name.as_ref()));
+    }
+    options
+}
+
+fn compatibility_example(plugin: &r2x_manifest::types::Plugin) -> String {
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for param in &plugin.parameters {
+        keys.insert(param.name.to_string());
+    }
+    for (field_name, _) in plugin.config_schema.iter() {
+        keys.insert(field_name.to_string());
+    }
+
+    if keys.is_empty() {
+        return "key=value".to_string();
+    }
+
+    keys.iter()
+        .map(|key| format!("{}=<value>", key))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_option_usage(options: &BTreeSet<String>) -> String {
+    options.iter().fold(String::new(), |mut usage, name| {
+        usage.push_str(" --");
+        usage.push_str(name);
+        usage.push_str(" <value>");
+        usage
+    })
+}
+
+fn required_param_is_user_supplied(
+    plugin: &r2x_manifest::types::Plugin,
+    param_name: &str,
+    has_no_default: bool,
+) -> bool {
+    if !has_no_default {
+        return false;
+    }
+    if param_name == "config" && plugin.config_class.is_some() && plugin.config_module.is_some() {
+        return false;
+    }
+    !matches!(param_name, "store" | "data_store")
+}
+
+fn cli_flag_name(key: &str) -> String {
+    key.replace('_', "-")
 }

@@ -19,10 +19,18 @@ pub struct GlobalOpts {
 
     #[arg(
         long,
+        visible_alias = "python-log",
         global = true,
         help = "Show Python logs on console (always logged to file)"
     )]
     pub log_python: bool,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Disable logging stdout to file (useful with --log-python to avoid large system objects in logs)"
+    )]
+    pub no_stdout: bool,
 }
 
 impl GlobalOpts {

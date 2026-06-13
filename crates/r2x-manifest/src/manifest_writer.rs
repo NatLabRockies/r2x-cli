@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 use tracing::{debug, info};
 
-use super::types::Manifest;
+use crate::types::Manifest;
 
 /// Write manifest to a custom path (primarily for testing)
 pub fn write_to_path(manifest: &Manifest, output_path: &Path) -> Result<()> {
@@ -34,8 +34,8 @@ pub fn read_from_path(manifest_path: &Path) -> Result<Manifest> {
     let manifest: Manifest = toml::from_str(&content)?;
 
     info!("Manifest loaded successfully");
-    info!("Manifest version: {}", manifest.metadata.version);
-    info!("Generated at: {}", manifest.metadata.generated_at);
+    info!("Manifest version: {}", manifest.version);
+    info!("Generated at: {}", manifest.generated_at);
     info!("Total packages: {}", manifest.packages.len());
 
     Ok(manifest)
@@ -43,88 +43,73 @@ pub fn read_from_path(manifest_path: &Path) -> Result<Manifest> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::{
-        ArgumentSpec, IOContract, ImplementationType, InvocationSpec, Metadata, Package,
-        PluginKind, PluginSpec,
-    };
+    use crate::manifest_writer::*;
+    use crate::types::{Manifest, Package, Plugin, PluginType};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[test]
     fn test_write_and_read_custom_path() {
-        let temp_dir = TempDir::new().unwrap();
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
         let manifest_path = temp_dir.path().join("test_manifest.toml");
 
-        let packages = vec![Package {
-            name: "r2x-example".to_string(),
-            entry_points_dist_info: "/path/to/entry_points.txt".to_string(),
+        let mut package = Package {
+            name: Arc::from("r2x-example"),
             editable_install: true,
-            pth_file: Some("/path/to/easy-install.pth".to_string()),
-            resolved_source_path: Some("/home/dev/r2x-example".to_string()),
-            install_type: Some("explicit".to_string()),
-            installed_by: Vec::new(),
-            dependencies: Vec::new(),
-            plugins: vec![PluginSpec {
-                name: "example-plugin".to_string(),
-                kind: PluginKind::Parser,
-                entry: "example_module.ExampleParser".to_string(),
-                invocation: InvocationSpec {
-                    implementation: ImplementationType::Class,
-                    method: None,
-                    constructor: vec![ArgumentSpec {
-                        name: "name".to_string(),
-                        annotation: Some("str".to_string()),
-                        default: Some("example-plugin".to_string()),
-                        required: false,
-                    }],
-                    call: vec![],
-                },
-                io: IOContract {
-                    consumes: vec![],
-                    produces: vec![],
-                },
-                resources: None,
-                upgrade: None,
-                description: None,
-                tags: vec![],
-            }],
-            decorator_registrations: vec![],
-        }];
-
-        let manifest = Manifest {
-            metadata: Metadata {
-                version: "2.0".to_string(),
-                generated_at: chrono::Utc::now().to_rfc3339(),
-                uv_lock_path: None,
-            },
-            packages,
+            source_uri: Some(Arc::from("/home/dev/r2x-example")),
+            ..Default::default()
         };
 
+        package.plugins.push(Plugin {
+            name: Arc::from("example-plugin"),
+            plugin_type: PluginType::Class,
+            module: Arc::from("example_module"),
+            class_name: Some(Arc::from("ExampleParser")),
+            ..Default::default()
+        });
+
+        let mut manifest = Manifest::default();
+        manifest.packages.push(package);
+        manifest.rebuild_indexes();
+
         // Write to custom path
-        write_to_path(&manifest, &manifest_path).unwrap();
+        assert!(
+            write_to_path(&manifest, &manifest_path).is_ok(),
+            "Failed to write manifest"
+        );
 
         // Read back from custom path
-        let loaded = read_from_path(&manifest_path).unwrap();
+        let loaded = read_from_path(&manifest_path);
+        assert!(loaded.is_ok(), "Failed to read manifest");
+        let loaded = loaded.unwrap_or_default();
 
         assert_eq!(loaded.packages.len(), 1);
-        assert_eq!(loaded.packages[0].name, "r2x-example");
-        assert_eq!(loaded.packages[0].editable_install, true);
-        assert_eq!(loaded.packages[0].plugins[0].name, "example-plugin");
+        assert_eq!(loaded.packages[0].name.as_ref(), "r2x-example");
+        assert!(loaded.packages[0].editable_install);
         assert_eq!(
-            loaded.packages[0].plugins[0].invocation.constructor.len(),
-            1
+            loaded.packages[0].plugins[0].name.as_ref(),
+            "example-plugin"
         );
+        assert_eq!(loaded.packages[0].plugins[0].plugin_type, PluginType::Class);
     }
 
     #[test]
     fn test_version_preserved() {
-        let temp_dir = TempDir::new().unwrap();
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
         let manifest_path = temp_dir.path().join("manifest.toml");
 
         let manifest = Manifest::default();
-        write_to_path(&manifest, &manifest_path).unwrap();
+        assert!(
+            write_to_path(&manifest, &manifest_path).is_ok(),
+            "Failed to write manifest"
+        );
 
-        let loaded = read_from_path(&manifest_path).unwrap();
-        assert_eq!(loaded.metadata.version, "2.0");
+        let loaded = read_from_path(&manifest_path);
+        assert!(loaded.is_ok(), "Failed to read manifest");
+        assert!(loaded.is_ok_and(|m| m.version.as_ref() == "3.0"));
     }
 }

@@ -1,11 +1,13 @@
 //! Package verification and automatic reinstallation
 
-use crate::config_manager::Config;
-use crate::logger;
-use crate::r2x_manifest::Manifest;
+use crate::manifest_lookup::resolve_plugin_ref;
+use r2x_config::Config;
+use r2x_logger as logger;
+use r2x_manifest::types::Manifest;
+use r2x_python::utils::resolve_site_package_path;
 use std::collections::HashSet;
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VerificationResult {
@@ -59,22 +61,9 @@ pub fn verify_plugin_packages(
 ) -> Result<VerificationResult, VerificationError> {
     logger::debug(&format!("Verifying packages for plugin: {}", plugin_key));
 
-    // Find the plugin and its package from manifest
-    let package_name = manifest
-        .packages
-        .iter()
-        .find_map(|pkg| {
-            pkg.plugins
-                .iter()
-                .find(|p| p.name == plugin_key)
-                .map(|_| pkg.name.clone())
-        })
-        .ok_or_else(|| {
-            VerificationError::VerificationFailed(format!(
-                "Plugin '{}' not found in manifest",
-                plugin_key
-            ))
-        })?;
+    let resolved = resolve_plugin_ref(manifest, plugin_key)
+        .map_err(|e| VerificationError::VerificationFailed(e.to_string()))?;
+    let package_name = resolved.package.name.to_string();
 
     // Get venv path
     let config = Config::load().map_err(|e| {
@@ -107,7 +96,7 @@ pub fn verify_plugin_packages(
 /// # Returns
 /// List of packages that are not installed or invalid
 fn check_packages_installed(
-    venv_path: &PathBuf,
+    venv_path: &Path,
     packages: &[&str],
 ) -> Result<Vec<String>, VerificationError> {
     let site_packages = get_site_packages_dir(venv_path)?;
@@ -124,11 +113,11 @@ fn check_packages_installed(
         let package_exists =
             package_dir.exists() || dist_info_exists(&site_packages, &dist_info_pattern);
 
-        if !package_exists {
-            logger::debug(&format!("Package '{}' not found in site-packages", package));
-            missing.push(package.to_string());
-        } else {
+        if package_exists {
             logger::debug(&format!("Package '{}' found in site-packages", package));
+        } else {
+            logger::debug(&format!("Package '{}' not found in site-packages", package));
+            missing.push((*package).to_string());
         }
     }
 
@@ -136,36 +125,22 @@ fn check_packages_installed(
 }
 
 /// Get the site-packages directory from venv
-fn get_site_packages_dir(venv_path: &PathBuf) -> Result<PathBuf, VerificationError> {
-    let lib_dir = venv_path.join("lib");
+fn get_site_packages_dir(venv_path: &Path) -> Result<PathBuf, VerificationError> {
+    logger::debug(&format!(
+        "Getting site-packages directory for venv: {}",
+        venv_path.display()
+    ));
 
-    if !lib_dir.exists() {
-        return Err(VerificationError::VenvNotFound(venv_path.clone()));
-    }
-
-    // Find python3.X directory
-    let entries = std::fs::read_dir(&lib_dir).map_err(|e| {
-        VerificationError::VerificationFailed(format!("Failed to read lib directory: {}", e))
-    })?;
-
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("python") && entry.path().is_dir() {
-            let site_packages = entry.path().join("site-packages");
-            if site_packages.exists() {
-                return Ok(site_packages);
-            }
+    resolve_site_package_path(venv_path).map_err(|e| match e {
+        r2x_python::errors::BridgeError::VenvNotFound(path) => {
+            VerificationError::VenvNotFound(path)
         }
-    }
-
-    Err(VerificationError::VerificationFailed(
-        "site-packages directory not found".to_string(),
-    ))
+        _ => VerificationError::VerificationFailed(format!("{}", e)),
+    })
 }
 
 /// Check if a dist-info directory matching the pattern exists
-fn dist_info_exists(site_packages: &PathBuf, pattern: &str) -> bool {
+fn dist_info_exists(site_packages: &Path, pattern: &str) -> bool {
     let pattern_prefix = pattern.split('-').next().unwrap_or("");
 
     if let Ok(entries) = std::fs::read_dir(site_packages) {
@@ -213,7 +188,8 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
         .arg("install")
         .arg("--python")
         .arg(&python_exe)
-        .arg("--prerelease=allow");
+        .arg("--prerelease=allow")
+        .arg("--no-progress");
 
     // Add all packages
     for package in &packages {
@@ -222,17 +198,18 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
 
     logger::debug(&format!("Running: {:?}", cmd));
 
-    let output = cmd
-        .output()
+    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
+    let status = cmd
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .map_err(|e| VerificationError::ReinstallFailed(format!("Failed to execute uv: {}", e)))?;
 
-    logger::capture_output(&format!("uv pip install {}", packages.join(" ")), &output);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
         return Err(VerificationError::ReinstallFailed(format!(
-            "uv pip install failed: {}",
-            stderr
+            "uv pip install failed: exit code {}",
+            status.code().unwrap_or(-1)
         )));
     }
 
@@ -260,7 +237,7 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
 ///
 /// ```rust,ignore
 /// use r2x::package_verification::verify_and_ensure_plugin;
-/// use r2x::plugin_manifest::PluginManifest;
+/// use r2x_manifest::types::Manifest;
 ///
 /// let manifest = Manifest::load()?;
 ///
@@ -317,14 +294,15 @@ pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, Verif
     }
 
     // Collect all unique package names from manifest
-    let mut all_packages: HashSet<&str> = HashSet::new();
+    let mut all_packages: HashSet<String> = HashSet::new();
     for pkg in &manifest.packages {
-        all_packages.insert(&pkg.name);
+        all_packages.insert(pkg.name.to_string());
     }
 
     // Check which packages are missing
-    let packages_vec: Vec<&str> = all_packages.into_iter().collect();
-    let missing = check_packages_installed(&venv_path, &packages_vec)?;
+    let packages_vec: Vec<String> = all_packages.into_iter().collect();
+    let packages_refs: Vec<&str> = packages_vec.iter().map(|s| s.as_str()).collect();
+    let missing = check_packages_installed(&venv_path, &packages_refs)?;
 
     for package in missing {
         missing_packages.insert(package);
@@ -335,7 +313,7 @@ pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, Verif
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::package_verification::*;
 
     #[test]
     fn test_verification_result_valid() {
@@ -349,7 +327,7 @@ mod tests {
         let result = VerificationResult::Missing(packages.clone());
         match result {
             VerificationResult::Missing(p) => assert_eq!(p, packages),
-            _ => panic!("Expected Missing variant"),
+            VerificationResult::Valid => unreachable!("Expected Missing variant"),
         }
     }
 

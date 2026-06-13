@@ -1,9 +1,10 @@
-- uses: actions/setup-python@v6
+# Build setup steps for r2x CI
+# These steps are used as a reference for setting up the build environment.
+
+- name: Setup uv & Python
+  uses: ./.github/actions/setup-uv-python
   with:
-    python-version: "3.12"
-- if: runner.os != 'Windows'
+    python-version: ${{ env.R2X_PYTHON_VERSION }}
+- name: PyO3 diagnostics
   shell: bash
-  run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
-- if: runner.os == 'Windows'
-  shell: pwsh
-  run: echo "PYO3_PYTHON=$env:pythonLocation\python.exe" >> $GITHUB_ENV
+  run: bash scripts/ci_pyo3_diagnostics.sh

@@ -16,6 +16,8 @@
 name: Release
 permissions:
   "contents": "write"
+env:
+  R2X_PYTHON_VERSION: "3.12"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -42,7 +44,7 @@ on:
   pull_request:
   push:
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+      - "v*"
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
@@ -56,29 +58,19 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: Set PYO3_PYTHON (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
-      - name: Set PYO3_PYTHON (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: echo "PYO3_PYTHON=$env:pythonLocation\python.exe" >> $GITHUB_ENV
+
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.30.2/cargo-dist-installer.sh | sh"
+
       - name: Cache dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
@@ -94,7 +86,7 @@ jobs:
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
@@ -125,37 +117,178 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
     steps:
+      - name: Install prerequisites in Rocky Linux 8 container
+        if: ${{ matrix.container }}
+        shell: bash
+        run: |
+          for repo in /etc/yum.repos.d/Rocky-*.repo; do
+            sed -i \
+              -e 's|^mirrorlist=|#mirrorlist=|' \
+              -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://dl.rockylinux.org/pub/rocky|' \
+              -e 's|^#baseurl=https://dl.rockylinux.org/$contentdir|baseurl=https://dl.rockylinux.org/pub/rocky|' \
+              "$repo"
+          done
+          dnf clean all
+          dnf -y --setopt=retries=5 --setopt=timeout=30 makecache
+          dnf install -y --setopt=retries=5 --setopt=timeout=30 --allowerasing git tar xz findutils curl ca-certificates gcc make gcc-c++ openssl-devel libffi-devel epel-release coreutils
+          dnf install -y --setopt=retries=5 --setopt=timeout=30 patchelf
       - name: enable windows longpaths
+        if: runner.os == 'Windows'
+        shell: bash
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install Rust non-interactively if not already installed
+
+      - name: Install uv & python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: ${{ env.R2X_PYTHON_VERSION }}
+
+      - name: PyO3 diagnostics
+        shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ join(matrix.targets, ' ') }}
+        run: bash scripts/ci_pyo3_diagnostics.sh
+
+      - name: Install Rust toolchain
         if: ${{ matrix.container }}
-        run: |
-          if ! command -v cargo > /dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          fi
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+        env:
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: target/distrib/
           merge-multiple: true
       - name: Install dependencies
+        shell: bash
         run: |
           ${{ matrix.packages_install }}
-      - name: Build artifacts
+
+      - name: Build and fix Python library paths (container)
+        if: ${{ matrix.container }}
+        shell: bash
+        env:
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
+          PATH: /root/.cargo/bin:${{ env.PATH }}
         run: |
-          # Actually do builds and make zips and whatnot
+          echo "Building dist-profile binaries first..."
+          TARGETS="${{ join(matrix.targets, ' ') }}"
+          for target in $TARGETS; do
+            cargo build --profile dist -p r2x --target "$target"
+          done
+
+          echo "Fixing Python library paths..."
+          while IFS= read -r -d '' bin; do
+            ./scripts/fix_python_dylib.sh "$bin"
+          done < <(find target -path "*/dist/r2x" -type f -print0)
+
+      - name: Build and fix Python library paths (host)
+        if: ${{ !matrix.container && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          echo "Building dist-profile binaries first..."
+          TARGETS="${{ join(matrix.targets, ' ') }}"
+          for target in $TARGETS; do
+            cargo build --profile dist -p r2x --target "$target"
+          done
+
+          echo "Fixing Python library paths..."
+          while IFS= read -r -d '' bin; do
+            ./scripts/fix_python_dylib.sh "$bin"
+          done < <(find target -path "*/dist/r2x" -type f -print0)
+
+      - name: Build artifacts (container)
+        if: ${{ matrix.container }}
+        shell: bash
+        env:
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
+          PATH: /root/.cargo/bin:${{ env.PATH }}
+        run: |
+          # dist will reuse the already-built binary (Cargo skips rebuild if binary is newer than sources)
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+
+      - name: Build artifacts (host)
+        if: ${{ !matrix.container }}
+        shell: bash
+        run: |
+          # dist will reuse the already-built binary (Cargo skips rebuild if binary is newer than sources)
+          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          echo "dist ran successfully"
+
+      - name: Verify checksum artifacts
+        shell: bash
+        run: |
+          if command -v shasum >/dev/null 2>&1; then
+            hash_cmd="shasum -a 256"
+          elif command -v sha256sum >/dev/null 2>&1; then
+            hash_cmd="sha256sum"
+          else
+            echo "No sha256 tool found (need shasum or sha256sum)"
+            exit 1
+          fi
+
+          files=$(dist print-upload-files-from-manifest --manifest dist-manifest.json)
+          checksum_files=$(printf '%s\n' "$files" | awk '/\\.sha256(sum)?$/ {print}')
+
+          if [[ -z "$checksum_files" ]]; then
+            echo "No checksum artifacts found to verify."
+            exit 0
+          fi
+
+          failures=0
+          for checksum_path in $checksum_files; do
+            if [[ ! -f "$checksum_path" ]]; then
+              echo "Missing checksum file: $checksum_path"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            target_path="${checksum_path%.sha256}"
+            target_path="${target_path%.sha256sum}"
+            if [[ ! -f "$target_path" ]]; then
+              echo "Missing target for checksum: $checksum_path -> $target_path"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            expected=$(awk '{print $1; exit}' "$checksum_path")
+            if [[ -z "$expected" ]]; then
+              echo "Empty checksum file: $checksum_path"
+              failures=$((failures + 1))
+              continue
+            fi
+
+            actual=$($hash_cmd "$target_path" | awk '{print $1}')
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Checksum mismatch for $target_path: want $expected got $actual"
+              failures=$((failures + 1))
+            fi
+          done
+
+          if [[ "$failures" -ne 0 ]]; then
+            echo "$failures checksum mismatch(es) detected."
+            exit 1
+          fi
+
+          echo "Checksum verification passed."
+
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
@@ -170,7 +303,7 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
@@ -187,26 +320,20 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - name: Set PYO3_PYTHON (unix)
-        shell: bash
-        run: echo "PYO3_PYTHON=$pythonLocation/bin/python" >> $GITHUB_ENV
+
       - name: Install cached dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
       # Get all the local artifacts for the global tasks to use (for e.g. checksums)
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -223,8 +350,24 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+
+      - name: Patch shell installer for Python runtime bootstrap
+        shell: bash
+        run: |
+          shopt -s nullglob
+          installers=(target/distrib/*-installer.sh)
+
+          if [ ${#installers[@]} -eq 0 ]; then
+            echo "No shell installer artifacts found in target/distrib"
+            exit 1
+          fi
+
+          for installer in "${installers[@]}"; do
+            ./scripts/patch_dist_installer.sh "$installer"
+          done
+
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-build-global
           path: |
@@ -244,19 +387,19 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
       - name: Install cached dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
       # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -269,22 +412,24 @@ jobs:
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
       # Create a GitHub Release while uploading all files to it
       - name: "Download GitHub Artifacts"
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
       - name: Cleanup
+        shell: bash
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
@@ -309,7 +454,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive

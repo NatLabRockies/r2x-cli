@@ -4,26 +4,19 @@
 //! It provides the core types for managing plugin metadata from discovery and AST analysis.
 //!
 //! The manifest is stored in TOML format and contains comprehensive metadata about
-//! installed plugins, their configurations, and decorator registrations.
+//! installed plugins, their configurations, and config schemas.
+//!
+//! # Version 3.0 Format
+//!
+//! The new format uses memory-efficient types:
+//! - `Arc<str>` for string interning
+//! - `SmallVec` for inline small collections
+//! - Pre-computed hashes for O(1) comparisons
+//! - Indexed lookups for O(1) package/plugin access
 
 pub mod errors;
 pub mod manifest;
-pub mod manifest_writer;
 pub mod package_discovery;
 pub mod runtime;
+pub mod sync;
 pub mod types;
-
-pub use runtime::{build_runtime_bindings, RuntimeBindings};
-pub use types::{
-    ArgumentSpec, ConfigField, ConfigSpec, DecoratorRegistration, FunctionParameter,
-    FunctionSignature, IOContract, IOSlot, ImplementationType, InvocationSpec, Manifest, Metadata,
-    Package, PluginKind, PluginSpec, ResourceSpec, StoreMode, StoreSpec, UpgradeSpec, VarArgType,
-};
-
-pub use errors::ManifestError;
-
-// Re-export manifest writer utilities for custom paths (testing)
-pub use manifest_writer::{read_from_path, write_to_path};
-
-// Re-export package discovery for convenience
-pub use package_discovery::{parse_entry_points, DiscoveredPackage, PackageDiscoverer};

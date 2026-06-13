@@ -1,6 +1,7 @@
 use colored::Colorize;
 use indicatif::ProgressBar;
 use std::fs::{self, OpenOptions};
+use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -8,22 +9,59 @@ use std::sync::Mutex;
 static LOG_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static VERBOSITY: Mutex<u8> = Mutex::new(0);
 static LOG_PYTHON: Mutex<bool> = Mutex::new(false);
+static NO_STDOUT: Mutex<bool> = Mutex::new(false);
+static FILE_LOG_LEVEL: Mutex<LogLevel> = Mutex::new(LogLevel::Info);
+static MAX_LOG_BYTES: Mutex<Option<u64>> = Mutex::new(None);
+static CURRENT_PLUGIN: Mutex<Option<String>> = Mutex::new(None);
 static SPINNER: Mutex<Option<ProgressBar>> = Mutex::new(None);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
 
 /// Get the current verbosity level for use by other modules (e.g., Python bridge)
 pub fn get_verbosity() -> u8 {
-    VERBOSITY.lock().ok().map(|v| *v).unwrap_or(0)
+    VERBOSITY.lock().ok().map_or(0, |v| *v)
 }
 
 /// Get whether Python logging to console is enabled
 pub fn get_log_python() -> bool {
-    LOG_PYTHON.lock().ok().map(|v| *v).unwrap_or(false)
+    LOG_PYTHON.lock().ok().is_some_and(|v| *v)
 }
 
 /// Set whether Python logging to console is enabled
 pub fn set_log_python(enabled: bool) {
     if let Ok(mut v) = LOG_PYTHON.lock() {
         *v = enabled;
+    }
+}
+
+/// Get whether stdout logging is disabled
+pub fn get_no_stdout() -> bool {
+    NO_STDOUT.lock().ok().is_some_and(|v| *v)
+}
+
+/// Set whether stdout logging is disabled
+pub fn set_no_stdout(disabled: bool) {
+    if let Ok(mut v) = NO_STDOUT.lock() {
+        *v = disabled;
+    }
+}
+
+/// Get the current plugin name being executed
+pub fn get_current_plugin() -> Option<String> {
+    CURRENT_PLUGIN.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// Set the current plugin name being executed
+pub fn set_current_plugin(plugin_name: Option<String>) {
+    if let Ok(mut v) = CURRENT_PLUGIN.lock() {
+        *v = plugin_name;
     }
 }
 
@@ -38,7 +76,18 @@ pub fn verbosity_to_loguru_level() -> String {
 }
 
 /// Initialize the logger with a log file path and verbosity level
-pub fn init_with_verbosity(verbosity: u8, log_python: bool) -> Result<(), String> {
+pub fn init_with_verbosity(verbosity: u8, log_python: bool, no_stdout: bool) -> Result<(), String> {
+    init_with_config(verbosity, log_python, no_stdout, None, None)
+}
+
+/// Initialize logger with optional path override, file level, and max file size.
+pub fn init_with_config(
+    verbosity: u8,
+    log_python: bool,
+    no_stdout: bool,
+    log_path: Option<&str>,
+    max_log_bytes: Option<u64>,
+) -> Result<(), String> {
     // Set verbosity level
     if let Ok(mut v) = VERBOSITY.lock() {
         *v = verbosity;
@@ -47,23 +96,48 @@ pub fn init_with_verbosity(verbosity: u8, log_python: bool) -> Result<(), String
     // Set log_python flag
     set_log_python(log_python);
 
-    init()
+    // Set no_stdout flag
+    set_no_stdout(no_stdout);
+
+    if let Ok(mut max_size) = MAX_LOG_BYTES.lock() {
+        *max_size = max_log_bytes;
+    }
+
+    if let Ok(mut file_level) = FILE_LOG_LEVEL.lock() {
+        *file_level = match verbosity {
+            0 => LogLevel::Info,
+            1 => LogLevel::Debug,
+            _ => LogLevel::Trace,
+        };
+    }
+
+    init(log_path)
 }
 
 /// Initialize the logger with a log file path (internal)
-fn init() -> Result<(), String> {
-    let config_dir = get_config_dir()?;
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+fn init(log_path_override: Option<&str>) -> Result<(), String> {
+    let log_file = if let Some(path) = log_path_override {
+        PathBuf::from(path)
+    } else {
+        let config_dir = get_config_dir()?;
+        config_dir.join("r2x.log")
+    };
 
-    let log_file = config_dir.join("r2x.log");
-
-    // Truncate log file on each run (overwrite instead of append)
-    if log_file.exists() {
-        let _ = fs::remove_file(&log_file);
+    if let Some(parent) = log_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create log directory: {}", e))?;
     }
 
-    let mut log_file_guard = LOG_FILE.lock().unwrap();
+    // Ensure log file exists so commands like `r2x log path` always reference
+    // a readable file, and preserve prior command history by appending.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .map_err(|e| format!("Failed to initialize log file: {}", e))?;
+
+    let mut log_file_guard = LOG_FILE
+        .lock()
+        .map_err(|e| format!("Failed to lock log file mutex: {e}"))?;
     *log_file_guard = Some(log_file);
 
     Ok(())
@@ -86,20 +160,58 @@ fn get_config_dir() -> Result<PathBuf, String> {
 }
 
 /// Write to log file
-fn write_to_log(message: &str) {
+fn write_to_log(level: LogLevel, message: &str) {
+    write_to_log_with_source(level, message, "RUST");
+}
+
+/// Write to log file with custom source tag
+fn write_to_log_with_source(level: LogLevel, message: &str, source: &str) {
+    let allowed_level = FILE_LOG_LEVEL.lock().ok().map_or(LogLevel::Info, |v| *v);
+    if level > allowed_level {
+        return;
+    }
+
     if let Ok(log_file_guard) = LOG_FILE.lock() {
         if let Some(ref log_path) = *log_file_guard {
+            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            let line = format!("[{}] [{}] {}", timestamp, source, message);
+            maybe_rotate_log_file(log_path, line.len() as u64 + 1);
+
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
-                let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                let _ = writeln!(file, "[{}] [RUST] {}", timestamp, message);
+                let _ = writeln!(file, "{}", line);
             }
         }
     }
 }
 
+fn maybe_rotate_log_file(log_path: &PathBuf, incoming_bytes: u64) {
+    let Some(max_bytes) = MAX_LOG_BYTES.lock().ok().and_then(|v| *v) else {
+        return;
+    };
+
+    if max_bytes == 0 {
+        return;
+    }
+
+    let current_len = fs::metadata(log_path).map_or(0, |m| m.len());
+    if current_len.saturating_add(incoming_bytes) <= max_bytes {
+        return;
+    }
+
+    let backup = log_path.with_file_name(format!(
+        "{}.1",
+        log_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("r2x.log")
+    ));
+    let _ = fs::remove_file(&backup);
+    let _ = fs::rename(log_path, backup);
+}
+
 /// Log an informational message (to console if verbose >= 1, always to file)
 pub fn info(message: &str) {
-    write_to_log(&format!("INFO {}", message));
+    write_to_log(LogLevel::Info, &format!("INFO {}", message));
     if get_verbosity() >= 1 {
         eprintln!("{}", message);
     }
@@ -107,9 +219,25 @@ pub fn info(message: &str) {
 
 /// Log a debug message (to console if verbose >= 1, always to file)
 pub fn debug(message: &str) {
-    write_to_log(&format!("DEBUG {}", message));
+    write_to_log(LogLevel::Debug, &format!("DEBUG {}", message));
     if get_verbosity() >= 1 {
         eprintln!("{} {}", "DEBUG:".blue().bold(), message);
+    }
+}
+
+/// Return whether a debug message would be emitted anywhere.
+pub fn debug_enabled() -> bool {
+    get_verbosity() >= 1
+        || FILE_LOG_LEVEL
+            .lock()
+            .ok()
+            .is_some_and(|level| *level >= LogLevel::Debug)
+}
+
+/// Log a lazily-built debug message.
+pub fn debug_lazy(message: impl FnOnce() -> String) {
+    if debug_enabled() {
+        debug(&message());
     }
 }
 
@@ -122,19 +250,19 @@ pub fn debug_console_only(message: &str) {
 
 /// Log a warning message (to both file and console)
 pub fn warn(message: &str) {
-    write_to_log(&format!("WARN {}", message));
+    write_to_log(LogLevel::Warn, &format!("WARN {}", message));
     eprintln!("{} {}", "warning:".yellow().bold(), message);
 }
 
 /// Log an error message (to both file and console)
 pub fn error(message: &str) {
-    write_to_log(&format!("ERROR {}", message));
+    write_to_log(LogLevel::Error, &format!("ERROR {}", message));
     eprintln!("{} {}", "Error:".red().bold(), message);
 }
 
 /// Log a success message (to console only for user feedback)
 pub fn success(message: &str) {
-    write_to_log(&format!("SUCCESS {}", message));
+    write_to_log(LogLevel::Info, &format!("SUCCESS {}", message));
     let check = "\u{2714}".green().bold(); // 🗸 HEAVY CHECK MARK
     eprintln!("{} {}", check, message);
 }
@@ -144,7 +272,7 @@ pub fn step(message: &str) {
     if get_verbosity() >= 2 {
         eprintln!("TRACE: {}", message);
     }
-    write_to_log(&format!("STEP: {}", message));
+    write_to_log(LogLevel::Info, &format!("STEP: {}", message));
 }
 
 /// Capture command output and log it
@@ -152,18 +280,47 @@ pub fn capture_output(command_name: &str, output: &std::process::Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    write_to_log(&format!(
-        "COMMAND: {} (exit code: {:?})",
-        command_name,
-        output.status.code()
-    ));
+    write_to_log(
+        LogLevel::Debug,
+        &format!(
+            "COMMAND: {} (exit code: {:?})",
+            command_name,
+            output.status.code()
+        ),
+    );
 
     if !stdout.is_empty() {
-        write_to_log(&format!("  STDOUT:\n{}", stdout));
+        write_to_log(LogLevel::Debug, &format!("  STDOUT:\n{}", stdout));
     }
 
     if !stderr.is_empty() {
-        write_to_log(&format!("  STDERR:\n{}", stderr));
+        write_to_log(LogLevel::Debug, &format!("  STDERR:\n{}", stderr));
+    }
+}
+
+/// Capture command output and always persist it to log file at info level.
+///
+/// This is useful for noisy subprocesses where console output is suppressed
+/// by default but full output should remain available in logs.
+pub fn capture_output_always(command_name: &str, output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    write_to_log(
+        LogLevel::Info,
+        &format!(
+            "COMMAND: {} (exit code: {:?})",
+            command_name,
+            output.status.code()
+        ),
+    );
+
+    if !stdout.is_empty() {
+        write_to_log(LogLevel::Info, &format!("  STDOUT:\n{}", stdout));
+    }
+
+    if !stderr.is_empty() {
+        write_to_log(LogLevel::Info, &format!("  STDERR:\n{}", stderr));
     }
 }
 
@@ -201,13 +358,25 @@ pub fn spinner_start(message: &str) {
         return;
     }
 
+    // Skip spinner for non-TTY output (CI, pipes, redirects)
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+
+    // Respect NO_COLOR and TERM=dumb for accessibility and automation
+    if std::env::var_os("NO_COLOR").is_some()
+        || std::env::var("TERM").ok().as_deref() == Some("dumb")
+    {
+        return;
+    }
+
     let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        indicatif::ProgressStyle::default_spinner()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-            .template("{spinner:.cyan} {msg}")
-            .unwrap(),
-    );
+    let style = indicatif::ProgressStyle::default_spinner()
+        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        .template("{spinner:.cyan} {msg}");
+    if let Ok(s) = style {
+        spinner.set_style(s);
+    }
     spinner.enable_steady_tick(std::time::Duration::from_millis(80));
     spinner.set_message(message.to_string());
 
@@ -244,5 +413,64 @@ pub fn spinner_stop() {
         if let Some(spinner) = spinner_guard.take() {
             spinner.finish_and_clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn debug_lazy_skips_message_construction_when_debug_is_disabled() {
+        let Ok(_guard) = TEST_LOCK.lock() else {
+            return;
+        };
+        {
+            let Ok(mut verbosity) = VERBOSITY.lock() else {
+                return;
+            };
+            let Ok(mut file_level) = FILE_LOG_LEVEL.lock() else {
+                return;
+            };
+            *verbosity = 0;
+            *file_level = LogLevel::Info;
+        }
+
+        let called = Cell::new(false);
+        debug_lazy(|| {
+            called.set(true);
+            "expensive debug message".to_string()
+        });
+
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn debug_lazy_builds_message_when_debug_is_enabled_for_file() {
+        let Ok(_guard) = TEST_LOCK.lock() else {
+            return;
+        };
+        {
+            let Ok(mut verbosity) = VERBOSITY.lock() else {
+                return;
+            };
+            let Ok(mut file_level) = FILE_LOG_LEVEL.lock() else {
+                return;
+            };
+            *verbosity = 0;
+            *file_level = LogLevel::Debug;
+        }
+
+        let called = Cell::new(false);
+        debug_lazy(|| {
+            called.set(true);
+            "expensive debug message".to_string()
+        });
+
+        assert!(called.get());
     }
 }

@@ -1,6 +1,0 @@
-id: extract_typed_param
-language: python
-rule:
-  any:
-    - kind: typed_parameter
-    - kind: typed_default_parameter

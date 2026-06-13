@@ -1,12 +1,16 @@
-use crate::errors::{BridgeError, ManifestError, PipelineError};
-use crate::logger;
-use crate::r2x_manifest;
-use crate::GlobalOpts;
+use crate::common::GlobalOpts;
+use crate::errors::PipelineError;
+use crate::help;
 use clap::Parser;
 use pipeline::handle_pipeline_mode;
 use plugin::handle_plugin_command;
-use r2x_manifest::{runtime::RuntimeBindings, PluginKind};
+use r2x_logger as logger;
+use r2x_manifest::errors::ManifestError;
+use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
+use r2x_manifest::types::PluginType;
+use r2x_python::errors::BridgeError;
 use r2x_python::plugin_invoker::PluginInvocationTimings;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 mod pipeline;
@@ -73,7 +77,7 @@ pub struct RunCommand {
     pub list: bool,
     #[arg(long)]
     pub print: bool,
-    #[arg(long)]
+    #[arg(short = 'n', long)]
     pub dry_run: bool,
     #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<String>,
@@ -89,6 +93,18 @@ pub struct PluginCommand {
     pub plugin_name: Option<String>,
     #[arg(long)]
     pub show_help: bool,
+    #[arg(
+        long,
+        value_name = "N",
+        default_value = "1",
+        help = "Repeat plugin invocation N times"
+    )]
+    pub repeat: NonZeroUsize,
+    #[arg(
+        long,
+        help = "Print benchmark summary (also implied when --repeat > 1)"
+    )]
+    pub benchmark: bool,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }
@@ -97,6 +113,14 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
     match cmd.command {
         Some(RunSubcommand::Plugin(plugin_cmd)) => handle_plugin_command(plugin_cmd, &opts),
         None => {
+            // No pipeline name and no flags → show friendly help
+            if cmd.pipeline_name.is_none() && !cmd.list && !cmd.print && !cmd.dry_run {
+                if let Err(e) = help::show_run_help() {
+                    logger::error(&e);
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             let yaml_path = cmd.yaml_path.unwrap_or_else(|| "pipeline.yaml".to_string());
             handle_pipeline_mode(
                 yaml_path,
@@ -112,9 +136,11 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
 }
 
 pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, RunError> {
-    let target = match bindings.implementation_type {
-        r2x_manifest::ImplementationType::Class => {
-            if bindings.plugin_kind == PluginKind::Upgrader {
+    let target = match bindings.plugin_type {
+        PluginType::Class => {
+            // Upgrader plugins have their own invoker that already calls .run() internally,
+            // so we don't append the call_method to the target string for them.
+            if bindings.role == PluginRole::Upgrader {
                 format!("{}:{}", bindings.entry_module, bindings.entry_name)
             } else if let Some(call_method) = &bindings.call_method {
                 format!(
@@ -125,7 +151,7 @@ pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, Ru
                 format!("{}:{}", bindings.entry_module, bindings.entry_name)
             }
         }
-        r2x_manifest::ImplementationType::Function => {
+        PluginType::Function => {
             format!("{}:{}", bindings.entry_module, bindings.entry_name)
         }
     };
