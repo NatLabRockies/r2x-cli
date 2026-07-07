@@ -40,7 +40,7 @@ pub fn show_run_help() -> Result<(), String> {
     println!();
     println!("  Run a plugin directly:");
     println!("    r2x run plugin <plugin-name> [OPTIONS]");
-    println!("      (use -q for quiet logs, -q -q to suppress plugin stdout)");
+    println!("      (use --output <FILE> for portable UTF-8 JSON files; use -q for quiet logs, -q -q to suppress plugin stdout)");
     println!();
     println!("  Get plugin help:");
     println!("    r2x run plugin <plugin-name> --show-help");
@@ -107,7 +107,7 @@ pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
 
     println!("\nUsage:");
     println!("  r2x run plugin {}{}", plugin_name, usage_options);
-    println!("    (add -q to silence logs, -q -q to hide stdout)");
+    println!("    (add --output <FILE> for UTF-8 JSON files, or -q to silence logs, -q -q to hide stdout)");
 
     // Show parameters
     if !plugin.parameters.is_empty() {

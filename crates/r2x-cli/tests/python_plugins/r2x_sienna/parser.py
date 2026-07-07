@@ -31,4 +31,6 @@ class SiennaParser:
         return cls(config=ctx.config)
 
     def build_system(self) -> str:
-        return '{"system": "sienna", "status": "ok"}'
+        from r2x_core.system import System
+
+        return System({"system": "sienña", "status": "ok"})

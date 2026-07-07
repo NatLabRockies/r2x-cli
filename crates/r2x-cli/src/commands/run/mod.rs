@@ -95,6 +95,12 @@ pub struct PluginCommand {
     pub show_help: bool,
     #[arg(
         long,
+        value_name = "FILE",
+        help = "Write plugin JSON output to a UTF-8 file instead of stdout"
+    )]
+    pub output: Option<String>,
+    #[arg(
+        long,
         value_name = "N",
         default_value = "1",
         help = "Repeat plugin invocation N times"

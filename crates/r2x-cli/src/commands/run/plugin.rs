@@ -24,6 +24,7 @@ pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Re
                     &plugin_name,
                     &cmd.args,
                     opts,
+                    cmd.output,
                     cmd.repeat.get(),
                     cmd.benchmark,
                 )?;
@@ -52,6 +53,7 @@ fn run_plugin(
     plugin_name: &str,
     args: &[String],
     opts: &GlobalOpts,
+    output_file: Option<String>,
     repeat: usize,
     benchmark: bool,
 ) -> Result<(), RunError> {
@@ -129,7 +131,14 @@ fn run_plugin(
     );
 
     let no_stdout = opts.no_stdout || logger::get_no_stdout();
-    if !result.is_empty() && result != "null" {
+    if let Some(output_path) = output_file {
+        if !result.is_empty() {
+            logger::step(&format!("Writing plugin output to: {}", output_path));
+            std::fs::write(&output_path, result.as_bytes())
+                .map_err(|e| RunError::Pipeline(crate::errors::PipelineError::Io(e)))?;
+            logger::success(&format!("Plugin output saved to: {}", output_path));
+        }
+    } else if !result.is_empty() && result != "null" {
         if opts.suppress_stdout() || no_stdout {
             logger::debug("Plugin output suppressed");
         } else {
