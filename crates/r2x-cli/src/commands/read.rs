@@ -1410,7 +1410,12 @@ shell(
 
     logger::debug("Generated Python initialization code");
 
-    logger::debug("Launching interactive IPython session...");
+    let bootstrap_script = write_bootstrap_script(&mut config, &python_code)?;
+
+    logger::debug(&format!(
+        "Launching interactive IPython session via {}",
+        bootstrap_script.display()
+    ));
 
     let ipython_dir = ensure_ipython_dir();
     let stdin_is_tty = atty::is(Stream::Stdin);
@@ -1419,11 +1424,7 @@ shell(
     let (_tty_attached, stdin_tty, stdout_tty, stderr_tty) = acquire_tty_stdio();
 
     // Spawn IPython bootstrap script with interactive embed
-    let mut command = Command::new(&python_exe);
-    command
-        .arg("-c")
-        .arg(&python_code)
-        .env("PYTHONUNBUFFERED", "1");
+    let mut command = build_python_launch_command(&python_exe, &bootstrap_script);
 
     command
         .stdin(stdin_tty)
@@ -1464,16 +1465,26 @@ shell(
         command.env("IPYTHONDIR", dir);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn IPython process: {}", e))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            cleanup_bootstrap_script(&bootstrap_script);
+            return Err(format!("Failed to spawn IPython process: {}", e).into());
+        }
+    };
 
     logger::debug("IPython process spawned, waiting for completion");
 
     // Wait for IPython to finish
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for IPython process: {}", e))?;
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(e) => {
+            cleanup_bootstrap_script(&bootstrap_script);
+            return Err(format!("Failed to wait for IPython process: {}", e).into());
+        }
+    };
+
+    cleanup_bootstrap_script(&bootstrap_script);
 
     if !status.success() {
         let exit_code = status.code().unwrap_or(-1);
@@ -1628,6 +1639,48 @@ fn install_package_with_spinner(
     Ok(())
 }
 
+fn build_python_launch_command(python_exe: &str, bootstrap_script: &Path) -> Command {
+    let mut command = Command::new(python_exe);
+    command.arg(bootstrap_script).env("PYTHONUNBUFFERED", "1");
+    command
+}
+
+fn write_bootstrap_script(
+    config: &mut Config,
+    python_code: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let cache_dir = config.ensure_cache_path()?;
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let bootstrap_script = PathBuf::from(cache_dir).join(format!(
+        "read_bootstrap_{}_{}.py",
+        std::process::id(),
+        unique
+    ));
+
+    fs::write(&bootstrap_script, python_code).map_err(|e| {
+        format!(
+            "Failed to write Python bootstrap script {}: {}",
+            bootstrap_script.display(),
+            e
+        )
+    })?;
+
+    Ok(bootstrap_script)
+}
+
+fn cleanup_bootstrap_script(path: &Path) {
+    if let Err(err) = fs::remove_file(path) {
+        logger::debug(&format!(
+            "Failed to remove Python bootstrap script {}: {}",
+            path.display(),
+            err
+        ));
+    }
+}
+
 fn ensure_ipython_dir() -> Option<PathBuf> {
     let config_path = Config::path();
     if let Some(dir) = config_path.parent() {
@@ -1650,6 +1703,7 @@ fn ensure_ipython_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use crate::commands::read::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn test_read_command_creation() {
@@ -1712,5 +1766,17 @@ mod tests {
         };
         assert!(cmd.exec.is_some());
         assert!(cmd.interactive);
+    }
+
+    #[test]
+    fn test_build_python_launch_command_uses_bootstrap_script_path() {
+        let command = build_python_launch_command(
+            "python.exe",
+            Path::new(r"C:\\Temp\\r2x_read_bootstrap.py"),
+        );
+        let args: Vec<_> = command.get_args().collect();
+
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0], OsStr::new(r"C:\\Temp\\r2x_read_bootstrap.py"));
     }
 }
