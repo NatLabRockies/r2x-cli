@@ -123,8 +123,50 @@ fn test_plugins_help() {
             "Usage: {} run plugin",
             EXECUTABLE_NAME
         )))
+        .stdout(predicate::str::contains("--output <FILE>"))
         .stdout(predicate::str::contains("--repeat"))
         .stdout(predicate::str::contains("--benchmark"));
+}
+
+#[test]
+fn test_direct_plugin_output_writes_utf8_json_and_read_accepts_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let output_path = env.home_path().join("plugin-output.json");
+    env.command()
+        .args([
+            "run",
+            "plugin",
+            "r2x-sienna.parser",
+            "--output",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .assert()
+        .success();
+
+    let bytes = fs::read(&output_path)?;
+    assert!(bytes.starts_with(b"{"));
+    let expected = "sienña".as_bytes();
+    assert!(bytes
+        .windows(expected.len())
+        .any(|window| window == expected));
+    assert!(!bytes.starts_with(&[0xFF, 0xFE]));
+    assert!(!bytes.starts_with(&[0xFE, 0xFF]));
+
+    env.command()
+        .env("R2X_READ_NONINTERACTIVE", "1")
+        .args([
+            "read",
+            output_path.to_string_lossy().as_ref(),
+            "--no-banner",
+        ])
+        .assert()
+        .success();
+
+    Ok(())
 }
 
 #[test]

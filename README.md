@@ -145,7 +145,9 @@ r2x run pipeline.yaml my-pipeline -o output.json
 
 ### Running Plugins Directly
 
-Skip the pipeline and run a single plugin with inline arguments:
+Skip the pipeline and run a single plugin with inline arguments.
+
+Use `--output <FILE>` when you want a portable JSON artifact, especially on Windows. Shell redirection in PowerShell can produce UTF-16 files, while `r2x run plugin ... --output <FILE>` writes the JSON bytes directly.
 
 ```bash
 # Run a plugin directly with idiomatic flags
@@ -162,6 +164,13 @@ r2x run plugin r2x-reeds.reeds-parser \
 
 # Show a plugin's help
 r2x run plugin r2x-reeds.reeds-parser --show-help
+
+# Write portable UTF-8 JSON directly to a file
+r2x run plugin r2x-reeds.reeds-parser \
+  --output plugin-output.json \
+  --path /path/to/reeds/run \
+  --solve-year 2030 \
+  --weather-year 2012
 
 # Run repeated invocations and print timing summary
 r2x run plugin r2x-reeds.reeds-parser --repeat 10 --benchmark solve_year=2030

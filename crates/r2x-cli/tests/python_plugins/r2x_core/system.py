@@ -26,6 +26,9 @@ class System:
                 raise OSError("unable to open database file")
         return cls(data)
 
+    def to_json(self) -> bytes:
+        return json.dumps(self.data, ensure_ascii=False).encode("utf-8")
+
     @classmethod
     def from_json(cls, payload: bytes | str) -> "System":
         if isinstance(payload, bytes):
