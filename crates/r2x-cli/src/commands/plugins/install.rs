@@ -52,81 +52,78 @@ pub fn install_plugin(
         )?;
         ctx.refresh_locator()?;
 
-        // Now discover all packages with entry points (like sync command)
+        // Now discover all packages with entry points (like sync command).
+        // The install transaction just mutated site-packages, so rebuild plugin
+        // metadata from disk instead of trusting any existing manifest entries.
         logger::info("Discovering plugins from installed packages...");
-        return discover_all_installed_packages(ctx, no_cache, total_start);
+        return discover_all_installed_packages(ctx, true, total_start);
     }
 
     let package_name_for_query = extract_package_name(package)?;
 
+    let can_reuse_installed_package = !editable
+        && !crate::plugins::package_spec::is_git_url(&package_spec)
+        && !crate::plugins::package_spec::is_local_path(&package_spec);
     let check_start = std::time::Instant::now();
-    let is_already_installed = if no_cache {
+    let installed_info = if no_cache || !can_reuse_installed_package {
         None
     } else {
-        match get_package_info(&ctx.uv_path, &ctx.python_path, &package_name_for_query) {
-            Ok((version, _deps)) => {
-                let has_plugins = ctx.manifest.packages.iter().any(|pkg| {
-                    pkg.name.as_ref() == package_name_for_query && !pkg.plugins.is_empty()
-                });
-
-                if has_plugins {
-                    logger::debug(&format!(
-                        "Package '{}' already installed and registered (check took {:?})",
-                        package_name_for_query,
-                        check_start.elapsed()
-                    ));
-                    Some(version)
-                } else {
-                    None
-                }
-            }
-            Err(_) => None,
-        }
+        get_package_info(&ctx.uv_path, &ctx.python_path, &package_name_for_query).ok()
     };
+    let is_already_installed = installed_info.as_ref().is_some_and(|(version, _deps)| {
+        ctx.manifest
+            .get_package(&package_name_for_query)
+            .is_some_and(|pkg| {
+                let version_matches = version
+                    .as_deref()
+                    .is_some_and(|installed_version| pkg.version.as_ref() == installed_version);
+                !pkg.plugins.is_empty() && version_matches
+            })
+    });
 
-    if is_already_installed.is_some() {
-        let elapsed_ms = total_start.elapsed().as_millis();
-        println!(
-            "{}",
-            format!("Audited 1 package in {}ms", elapsed_ms)
-                .bold()
-                .dimmed()
-        );
-        return Ok(());
+    if is_already_installed {
+        logger::debug(&format!(
+            "Package '{}' already installed and registered (check took {:?}); refreshing plugin metadata",
+            package_name_for_query,
+            check_start.elapsed()
+        ));
+    } else {
+        // Print status without spinner since we need interactive terminal for SSH prompts
+        logger::info(&format!("Installing: {}", package));
+        let start = std::time::Instant::now();
+        match run_pip_install(
+            &ctx.uv_path,
+            &ctx.python_path,
+            &package_spec,
+            editable,
+            no_cache,
+        ) {
+            Ok(()) => {
+                logger::debug(&format!("pip install took: {:?}", start.elapsed()));
+            }
+            Err(e) => {
+                logger::error(&format!("Failed to install: {}", package));
+                return Err(e);
+            }
+        }
+
+        // uv pip install mutates site-packages and dist-info directories. Refresh the
+        // locator cache so entry_points.txt discovery can see newly installed packages.
+        ctx.refresh_locator()?;
     }
 
-    // Print status without spinner since we need interactive terminal for SSH prompts
-    logger::info(&format!("Installing: {}", package));
     let start = std::time::Instant::now();
-    match run_pip_install(
-        &ctx.uv_path,
-        &ctx.python_path,
-        &package_spec,
-        editable,
-        no_cache,
-    ) {
-        Ok(()) => {
-            logger::debug(&format!("pip install took: {:?}", start.elapsed()));
-        }
-        Err(e) => {
-            logger::error(&format!("Failed to install: {}", package));
-            return Err(e);
-        }
-    }
-
-    // uv pip install mutates site-packages and dist-info directories. Refresh the
-    // locator cache so entry_points.txt discovery can see newly installed packages.
-    ctx.refresh_locator()?;
-
-    let start = std::time::Instant::now();
-    let (package_version, dependencies) =
+    let (package_version, dependencies) = if is_already_installed {
+        installed_info.unwrap_or((None, Vec::new()))
+    } else {
         match get_package_info(&ctx.uv_path, &ctx.python_path, &package_name_for_query) {
             Ok((version, deps)) => (version, deps),
             Err(e) => {
                 logger::debug(&format!("Failed to get package info: {}", e));
                 (None, Vec::new())
             }
-        };
+        }
+    };
     logger::debug(&format!("get_package_info took: {:?}", start.elapsed()));
 
     // source_path: local filesystem path for AST discovery (editable installs only)
@@ -155,7 +152,7 @@ pub fn install_plugin(
             package_name_full: package_name_for_query.clone(),
             dependencies,
             package_version: package_version.clone(),
-            no_cache,
+            no_cache: true,
             editable,
             source_path,
             source_uri,
