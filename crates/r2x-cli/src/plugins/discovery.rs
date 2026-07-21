@@ -148,7 +148,7 @@ pub fn discover_and_register_entry_points_with_deps(
                         Err(e) => {
                             logger::warn(&format!(
                                 "Failed to discover plugins from dependency '{}': {}",
-                                &dep, e
+                                dep, e
                             ));
                             Vec::new()
                         }
@@ -157,7 +157,7 @@ pub fn discover_and_register_entry_points_with_deps(
                 Err(e) => {
                     logger::warn(&format!(
                         "Failed to locate dependency package '{}': {}",
-                        &dep, e
+                        dep, e
                     ));
                     Vec::new()
                 }
