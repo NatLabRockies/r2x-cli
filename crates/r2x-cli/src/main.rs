@@ -266,6 +266,10 @@ fn main() {
                 logger::error(&format!("Run command failed: {}", e));
                 std::process::exit(1);
             }
+            // Exit directly to bypass PyO3's Python finalizer, which crashes
+            // when extension modules (numpy, scipy, etc.) have active background
+            // threads at process teardown.
+            std::process::exit(0);
         }
         Commands::Read(cmd) => {
             if let Err(e) = read::handle_read(cmd, cli.global) {
