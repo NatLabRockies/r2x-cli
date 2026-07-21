@@ -149,6 +149,10 @@ fn test_venv_create_creates_missing_default_venv_without_prompt_hint() {
     let venv_path = config_dir.join(".venv");
     let mut cmd = cargo_bin_cmd!("r2x");
     cmd.env("HOME", home)
+        // Isolate XDG dirs so migrate_legacy_venv() cannot escape to the real
+        // runner home (e.g. via XDG_CONFIG_HOME set by the CI environment).
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local").join("share"))
         .env("R2X_CONFIG", &config_path)
         .env("NO_COLOR", "1")
         .args(["venv", "create"])
