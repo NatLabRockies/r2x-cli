@@ -9,6 +9,7 @@ use r2x::commands::{
 use r2x::common::GlobalOpts;
 use r2x_config as config_manager;
 use r2x_logger as logger;
+use r2x_python::python_bridge::process_exit;
 
 #[derive(Parser)]
 #[command(name = "r2x")]
@@ -266,10 +267,10 @@ fn main() {
                 logger::error(&format!("Run command failed: {}", e));
                 std::process::exit(1);
             }
-            // Exit directly to bypass PyO3's Python finalizer, which crashes
-            // when extension modules (numpy, scipy, etc.) have active background
-            // threads at process teardown.
-            std::process::exit(0);
+            // Re-acquire the GIL on the main thread before exit so that
+            // PyO3's atexit handler can call PyEval_SaveThread() without
+            // crashing. See python_bridge::process_exit for details.
+            process_exit(0);
         }
         Commands::Read(cmd) => {
             if let Err(e) = read::handle_read(cmd, cli.global) {

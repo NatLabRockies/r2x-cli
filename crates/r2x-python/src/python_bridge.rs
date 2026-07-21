@@ -35,6 +35,16 @@ static BRIDGE_INSTANCE: OnceCell<Result<Bridge, BridgeError>> = OnceCell::new();
 static POST_IMPORT_LOG_MODULES_ENABLED: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 
+/// Terminate the process safely when Python may be initialized.
+pub fn process_exit(code: i32) -> ! {
+    if BRIDGE_INSTANCE.get().is_some() {
+        // Give the main thread a thread state so Py_Finalize()'s
+        // PyEval_SaveThread() call can succeed.
+        Python::attach(|_py| -> ! { std::process::exit(code) });
+    }
+    std::process::exit(code)
+}
+
 impl Bridge {
     /// Get or initialize the bridge singleton
     pub fn get() -> Result<&'static Bridge, BridgeError> {
