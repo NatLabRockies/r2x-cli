@@ -114,6 +114,58 @@ fn test_invalid_command() {
 }
 
 #[test]
+#[cfg(not(target_os = "windows"))]
+fn test_venv_create_creates_missing_default_venv_without_prompt_hint() {
+    let Some(uv_path) = find_tool(&["uv"]) else {
+        return;
+    };
+    let python_version = test_python_version();
+    if !uv_can_find_python(&uv_path, &python_version) {
+        return;
+    }
+
+    let Ok(temp_dir) = TempDir::new() else {
+        return;
+    };
+    let home = temp_dir.path();
+    let config_dir = home.join(".config").join("r2x");
+    if fs::create_dir_all(&config_dir).is_err() {
+        return;
+    }
+
+    let config_path = config_dir.join("config.toml");
+    if fs::write(
+        &config_path,
+        format!(
+            "uv_path = \"{}\"\npython_version = \"{}\"\n",
+            uv_path, python_version
+        ),
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let venv_path = config_dir.join(".venv");
+    let mut cmd = cargo_bin_cmd!("r2x");
+    cmd.env("HOME", home)
+        // Isolate XDG dirs so migrate_legacy_venv() cannot escape to the real
+        // runner home (e.g. via XDG_CONFIG_HOME set by the CI environment).
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local").join("share"))
+        .env("R2X_CONFIG", &config_path)
+        .env("NO_COLOR", "1")
+        .args(["venv", "create"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Virtual environment ready at"))
+        .stderr(predicate::str::contains("Failed to configure venv").not())
+        .stdout(predicate::str::contains("Use the `-y/--yes` flag").not());
+
+    assert!(venv_path.join("pyvenv.cfg").is_file());
+}
+
+#[test]
 fn test_plugins_help() {
     r2x_cmd()
         .args(["run", "plugin", "--help"])
@@ -875,6 +927,14 @@ fn find_tool(candidates: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn uv_can_find_python(uv_path: &str, python_version: &str) -> bool {
+    StdCommand::new(uv_path)
+        .args(["python", "find", python_version])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 #[cfg(not(target_os = "windows"))]

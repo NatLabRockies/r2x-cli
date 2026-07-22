@@ -38,44 +38,40 @@ pub fn discover_and_register_entry_points_with_deps(
     let no_cache = opts.no_cache;
     let package_version = opts.package_version.as_deref().unwrap_or("unknown");
 
-    // Check if we already have this package in the manifest with plugins
-    let has_cached_plugins = manifest
-        .get_package(package_name_full)
-        .is_some_and(|pkg| !pkg.plugins.is_empty());
-
     // Discover or use cached plugins
-    let discovered_plugins: Vec<Plugin> = if has_cached_plugins && !no_cache {
-        // Use cached plugins
-        manifest
-            .get_package(package_name_full)
-            .map(|pkg| pkg.plugins.clone())
-            .unwrap_or_default()
-    } else {
-        // Discover from source
-        let package_path =
-            resolve_package_path(locator, package_name_full, opts.source_path.as_deref())?;
+    let discovered_plugins: Vec<Plugin> =
+        if should_use_cached_plugins(manifest, package_name_full, package_version, no_cache) {
+            // Use cached plugins
+            manifest
+                .get_package(package_name_full)
+                .map(|pkg| pkg.plugins.clone())
+                .unwrap_or_default()
+        } else {
+            // Discover from source
+            let package_path =
+                resolve_package_path(locator, package_name_full, opts.source_path.as_deref())?;
 
-        logger::debug(&format!(
-            "Found package path for '{}': {}",
-            package_name_full,
-            package_path.display()
-        ));
+            logger::debug(&format!(
+                "Found package path for '{}': {}",
+                package_name_full,
+                package_path.display()
+            ));
 
-        let dist_info = locator.find_dist_info_path(package_name_full);
-        AstDiscovery::discover_plugins(
-            &package_path,
-            package_name_full,
-            venv_path,
-            Some(package_version),
-            dist_info.as_deref(),
-        )
-        .map_err(|e| {
-            PluginError::Discovery(format!(
-                "Failed to discover plugins for '{}': {}",
-                package, e
-            ))
-        })?
-    };
+            let dist_info = locator.find_dist_info_path(package_name_full);
+            AstDiscovery::discover_plugins(
+                &package_path,
+                package_name_full,
+                venv_path,
+                Some(package_version),
+                dist_info.as_deref(),
+            )
+            .map_err(|e| {
+                PluginError::Discovery(format!(
+                    "Failed to discover plugins for '{}': {}",
+                    package, e
+                ))
+            })?
+        };
 
     for plugin in &discovered_plugins {
         logger::debug(&format!(
@@ -152,7 +148,7 @@ pub fn discover_and_register_entry_points_with_deps(
                         Err(e) => {
                             logger::warn(&format!(
                                 "Failed to discover plugins from dependency '{}': {}",
-                                &dep, e
+                                dep, e
                             ));
                             Vec::new()
                         }
@@ -161,7 +157,7 @@ pub fn discover_and_register_entry_points_with_deps(
                 Err(e) => {
                     logger::warn(&format!(
                         "Failed to locate dependency package '{}': {}",
-                        &dep, e
+                        dep, e
                     ));
                     Vec::new()
                 }
@@ -192,6 +188,21 @@ pub fn discover_and_register_entry_points_with_deps(
     manifest.save()?;
 
     Ok(total_plugins)
+}
+
+fn should_use_cached_plugins(
+    manifest: &Manifest,
+    package_name_full: &str,
+    package_version: &str,
+    no_cache: bool,
+) -> bool {
+    if no_cache || package_version.is_empty() || package_version == "unknown" {
+        return false;
+    }
+
+    manifest
+        .get_package(package_name_full)
+        .is_some_and(|pkg| !pkg.plugins.is_empty() && pkg.version.as_ref() == package_version)
 }
 
 fn resolve_package_path(
@@ -230,7 +241,59 @@ fn resolve_package_path(
 #[cfg(test)]
 mod tests {
     use crate::plugins::discovery::*;
+    use r2x_manifest::types::{Manifest, Plugin, PluginType};
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    fn manifest_with_cached_plugin(version: &str) -> Manifest {
+        let mut manifest = Manifest::default();
+        let package = manifest.get_or_create_package("r2x-reeds");
+        package.version = Arc::from(version);
+        package.plugins.push(Plugin {
+            name: Arc::from("add-pcm-defaults"),
+            plugin_type: PluginType::Function,
+            module: Arc::from("stale.module"),
+            function_name: Some(Arc::from("add_pcm_defaults")),
+            ..Plugin::default()
+        });
+        manifest
+    }
+
+    #[test]
+    fn should_use_cached_plugins_only_for_matching_versions() {
+        let manifest = manifest_with_cached_plugin("0.5.0");
+
+        assert!(should_use_cached_plugins(
+            &manifest,
+            "r2x-reeds",
+            "0.5.0",
+            false
+        ));
+        assert!(!should_use_cached_plugins(
+            &manifest,
+            "r2x-reeds",
+            "0.6.0",
+            false
+        ));
+        assert!(!should_use_cached_plugins(
+            &manifest,
+            "r2x-reeds",
+            "0.5.0",
+            true
+        ));
+        assert!(!should_use_cached_plugins(
+            &manifest,
+            "r2x-reeds",
+            "unknown",
+            false
+        ));
+        assert!(!should_use_cached_plugins(
+            &manifest,
+            "r2x-reeds",
+            "",
+            false
+        ));
+    }
 
     #[test]
     fn test_resolve_package_path_prefers_source_path() {
@@ -244,7 +307,7 @@ mod tests {
                 return;
             }
         };
-        let locator = match PackageLocator::new(site_packages.path().to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.path().to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(

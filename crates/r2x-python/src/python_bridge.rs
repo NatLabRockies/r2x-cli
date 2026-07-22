@@ -35,6 +35,16 @@ static BRIDGE_INSTANCE: OnceCell<Result<Bridge, BridgeError>> = OnceCell::new();
 static POST_IMPORT_LOG_MODULES_ENABLED: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 
+/// Terminate the process safely when Python may be initialized.
+pub fn process_exit(code: i32) -> ! {
+    if BRIDGE_INSTANCE.get().is_some() {
+        // Give the main thread a thread state so Py_Finalize()'s
+        // PyEval_SaveThread() call can succeed.
+        Python::attach(|_py| -> ! { std::process::exit(code) });
+    }
+    std::process::exit(code)
+}
+
 impl Bridge {
     /// Get or initialize the bridge singleton
     pub fn get() -> Result<&'static Bridge, BridgeError> {
@@ -70,12 +80,7 @@ impl Bridge {
             .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
         // Ensure venv exists
-        let venv_path = PathBuf::from(config.get_venv_path());
-
-        if !venv_path.exists() {
-            // Create venv using the configured runtime Python version.
-            Self::create_venv(&config, &venv_path)?;
-        }
+        let venv_path = ensure_configured_venv(&mut config)?;
 
         // Resolve PYTHONHOME from venv's pyvenv.cfg
         let python_home = resolve_python_home(&venv_path)?;
@@ -137,70 +142,6 @@ impl Bridge {
         });
 
         Ok(Bridge { _marker: () })
-    }
-
-    /// Create a virtual environment
-    ///
-    /// Uses the configured runtime Python version. PyO3 is built with abi3-py311,
-    /// so the embedded extension ABI supports Python 3.11 and newer runtimes.
-    fn create_venv(config: &Config, venv_path: &PathBuf) -> Result<(), BridgeError> {
-        logger::step(&format!(
-            "Creating Python virtual environment at: {}",
-            venv_path.display()
-        ));
-
-        let python_version = runtime_python_version(config)?;
-
-        // Try uv first
-        if let Some(ref uv_path) = config.uv_path {
-            for python_query in python_version.query_candidates() {
-                let output = Command::new(uv_path)
-                    .arg("venv")
-                    .arg(venv_path)
-                    .arg("--python")
-                    .arg(python_query)
-                    .output()?;
-
-                if output.status.success() {
-                    logger::success("Virtual environment created successfully");
-                    return Ok(());
-                }
-
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                logger::debug_lazy(|| format!("uv venv failed for {python_query}: {}", stderr));
-            }
-        }
-
-        // Fallback to python3 -m venv
-        let python_cmd = format!("python{}", python_version.abi());
-        let output = Command::new(&python_cmd)
-            .args(["-m", "venv"])
-            .arg(venv_path)
-            .output();
-
-        if let Ok(output) = output {
-            if output.status.success() {
-                logger::success("Virtual environment created successfully");
-                return Ok(());
-            }
-        }
-
-        // Try generic python3
-        let output = Command::new("python3")
-            .args(["-m", "venv"])
-            .arg(venv_path)
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(BridgeError::Initialization(format!(
-                "Failed to create virtual environment: {}",
-                stderr
-            )));
-        }
-
-        logger::success("Virtual environment created successfully");
-        Ok(())
     }
 
     /// Configure PYTHONPATH to include site-packages
@@ -354,6 +295,16 @@ def _r2x_cache_path_override():
 
         Ok(())
     }
+}
+
+fn ensure_configured_venv(config: &mut Config) -> Result<PathBuf, BridgeError> {
+    let venv_path = config.ensure_venv_path().map_err(|error| {
+        BridgeError::Initialization(format!(
+            "Failed to ensure Python virtual environment: {}",
+            error
+        ))
+    })?;
+    Ok(PathBuf::from(venv_path))
 }
 
 fn pending_post_import_log_modules(modules: &[&str]) -> Vec<String> {
@@ -689,11 +640,10 @@ fn setup_windows_dll_path(python_version: &PythonRuntimeVersion) -> Result<(), B
 
 /// Configure the Python virtual environment (legacy API compatibility)
 pub fn configure_python_venv() -> Result<PythonEnvCompat, BridgeError> {
-    let config = Config::load()
+    let mut config = Config::load()
         .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
-    let venv_path = PathBuf::from(config.get_venv_path());
-
+    let venv_path = ensure_configured_venv(&mut config)?;
     let interpreter = resolve_python_path(&venv_path)?;
     let python_home = resolve_python_home(&venv_path).ok();
 

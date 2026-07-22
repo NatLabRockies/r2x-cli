@@ -414,6 +414,7 @@ fn handle_python_install(version: Option<String>, _opts: GlobalOpts) {
                 return;
             }
 
+            config.migrate_legacy_venv();
             let venv_path = config.get_venv_path();
             logger::step(&format!(
                 "Installing Python {} and creating venv...",
@@ -475,15 +476,18 @@ fn handle_venv_create(skip_confirmation: bool) {
     ));
     match Config::load() {
         Ok(config) => {
+            config.migrate_legacy_venv();
             let venv_path = config.get_venv_path();
             let venv_dir = PathBuf::from(&venv_path);
 
-            if venv_dir.exists() {
-                let should_skip = skip_confirmation || std::env::var("R2X_VENV_YES").is_ok();
+            let should_skip = skip_confirmation || std::env::var("R2X_VENV_YES").is_ok();
+            let mut prompted_for_replacement = false;
 
+            if venv_dir.exists() {
                 if should_skip {
                     logger::debug("Skipping confirmation (--yes flag or R2X_VENV_YES set)");
                 } else {
+                    prompted_for_replacement = true;
                     print!(
                         "{} A virtual environment already exists at `{}`. Do you want to replace it? {} ",
                         "?".bold().cyan(),
@@ -525,7 +529,7 @@ fn handle_venv_create(skip_confirmation: bool) {
                 Err(e) => logger::error(&format!("Failed to configure venv: {}", e)),
             }
 
-            if !skip_confirmation && std::env::var("R2X_VENV_YES").is_err() {
+            if prompted_for_replacement && !should_skip {
                 println!(
                     "\n{} Use the `{}` flag or set `{}` to skip this prompt",
                     "hint:".dimmed(),

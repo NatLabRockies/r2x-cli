@@ -25,11 +25,10 @@ struct DirectUrlMetadata {
     vcs_info: Option<DirectUrlVcsInfo>,
 }
 
-/// Resolve installed package paths from site-packages (optionally using UV cache).
+/// Resolve installed package paths from site-packages.
 #[derive(Debug, Clone)]
 pub struct PackageLocator {
     site_packages: PathBuf,
-    uv_cache_dir: Option<PathBuf>,
     /// Cached directory entries: filename -> full path
     dir_entries: HashMap<String, PathBuf>,
 }
@@ -46,7 +45,7 @@ impl PackageLocator {
     }
 
     /// Create a new locator for the given site-packages root.
-    pub fn new(site_packages: PathBuf, uv_cache_dir: Option<PathBuf>) -> Result<Self> {
+    pub fn new(site_packages: PathBuf) -> Result<Self> {
         debug!("Initializing package locator for: {:?}", site_packages);
 
         if !site_packages.exists() {
@@ -60,7 +59,6 @@ impl PackageLocator {
 
         Ok(PackageLocator {
             site_packages,
-            uv_cache_dir,
             dir_entries,
         })
     }
@@ -283,54 +281,31 @@ impl PackageLocator {
     }
 
     fn find_package_path_via_pth(&self, normalized_package_name: &str) -> Option<PathBuf> {
-        let cache_dir = self.uv_cache_dir.as_ref()?;
-        if !cache_dir.exists() {
-            return None;
-        }
+        // Editable installs create __editable__.{package}-{version}.pth in site-packages.
+        // Search site-packages directly — the uv archive cache (archive-v0) holds raw wheel
+        // contents and must NOT be used here, because wheels that ship their own .pth files
+        // (e.g. namespace packages) would be falsely classified as Local.
+        let entries = fs::read_dir(&self.site_packages).ok()?;
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let matches = (file_name.starts_with("__editable__.")
+                && file_name.contains(&format!("{}-", normalized_package_name))
+                && file_name.ends_with(".pth"))
+                || file_name == format!("{}.pth", normalized_package_name);
 
-        let hash_dirs = fs::read_dir(cache_dir).ok()?;
-        for hash_entry in hash_dirs {
-            let hash_entry = match hash_entry {
-                Ok(entry) => entry,
-                Err(_) => continue,
-            };
-
-            let hash_path = hash_entry.path();
-            if !hash_path.is_dir() {
+            if !matches {
                 continue;
             }
 
-            let pth_entries = match fs::read_dir(&hash_path) {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
-
-            for pth_entry in pth_entries {
-                let pth_entry = match pth_entry {
-                    Ok(entry) => entry,
-                    Err(_) => continue,
-                };
-
-                let pth_file_name = pth_entry.file_name().to_string_lossy().to_string();
-                let matches = pth_file_name == format!("{}.pth", normalized_package_name)
-                    || (pth_file_name.starts_with("__editable__.")
-                        && pth_file_name.contains(&format!("{}-", normalized_package_name))
-                        && pth_file_name.ends_with(".pth"));
-
-                if !matches {
-                    continue;
-                }
-
-                if let Ok(content) = fs::read_to_string(pth_entry.path()) {
-                    for line in content.lines() {
-                        let line = line.trim();
-                        if line.is_empty() || line.starts_with('#') {
-                            continue;
-                        }
-                        let candidate = PathBuf::from(line);
-                        if candidate.exists() {
-                            return Some(candidate);
-                        }
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    let candidate = PathBuf::from(line);
+                    if candidate.exists() {
+                        return Some(candidate);
                     }
                 }
             }
@@ -691,7 +666,7 @@ other = other.module:func
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -743,7 +718,7 @@ other = other.module:func
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -789,7 +764,7 @@ other = other.module:func
         };
         let site_packages = temp_dir.path();
 
-        let mut locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let mut locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -868,7 +843,7 @@ reeds = r2x_reeds.plugins:register_plugin
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -920,7 +895,7 @@ foo = bar.baz:qux
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -972,7 +947,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -1011,7 +986,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -1059,7 +1034,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let locator = match PackageLocator::new(site_packages.to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(
@@ -1102,7 +1077,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1122,7 +1097,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1151,13 +1126,80 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
         assert_eq!(
             locator.detect_package_source("r2x-sienna", None),
             PackageSource::Pypi
+        );
+    }
+
+    #[test]
+    fn test_pypi_package_with_wheel_pth_in_site_packages_stays_pypi() {
+        // Regression: some wheels ship a .pth file (e.g. for namespace packages).
+        // When uv installs such a wheel it places that .pth file in site-packages.
+        // If the path inside it doesn't point to an existing directory the package
+        // must still be classified as Pypi, not Local.
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        if fs::create_dir(site_packages.join("r2x_reeds-1.0.0.dist-info")).is_err() {
+            return;
+        }
+        // .pth file shipped by the wheel but path inside doesn't exist on disk
+        if fs::write(
+            site_packages.join("r2x_reeds.pth"),
+            "/nonexistent/path/that/does/not/exist\n",
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-reeds", None),
+            PackageSource::Pypi
+        );
+    }
+
+    #[test]
+    fn test_editable_pth_in_site_packages_is_local() {
+        // uv creates __editable__.{pkg}-{version}.pth in site-packages for editable
+        // installs. That file must be detected and the package classified as Local.
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let source_dir = site_packages.join("src");
+        if fs::create_dir(&source_dir).is_err() {
+            return;
+        }
+        if fs::create_dir(site_packages.join("r2x_reeds-1.0.0.dist-info")).is_err() {
+            return;
+        }
+        if fs::write(
+            site_packages.join("__editable__.r2x_reeds-1.0.0.pth"),
+            format!("{}\n", source_dir.display()),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.detect_package_source("r2x-reeds", None),
+            PackageSource::Local
         );
     }
 
@@ -1181,7 +1223,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1213,7 +1255,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1242,7 +1284,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1266,7 +1308,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1285,7 +1327,7 @@ my_transform = r2x_transforms.transform:MyTransform
         }
         // No METADATA file
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1299,7 +1341,7 @@ my_transform = r2x_transforms.transform:MyTransform
         };
         let site_packages = temp_dir.path();
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1322,7 +1364,7 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 
@@ -1337,7 +1379,7 @@ my_transform = r2x_transforms.transform:MyTransform
         };
         let site_packages = temp_dir.path();
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
 

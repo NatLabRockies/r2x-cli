@@ -1421,15 +1421,24 @@ shell(
     let stdin_is_tty = atty::is(Stream::Stdin);
     let stdout_is_tty = atty::is(Stream::Stdout);
     let interactive_prompt = stdin_is_tty && stdout_is_tty;
-    let (_tty_attached, stdin_tty, stdout_tty, stderr_tty) = acquire_tty_stdio();
+
+    // Only redirect stdio to /dev/tty when running interactively. In non-interactive
+    // contexts (tests, piped output) we must use inherited stdio so that Python's
+    // stderr (e.g. sidecar validation errors) reaches the caller's captured fd 2.
+    let (stdin_stdio, stdout_stdio, stderr_stdio) = if interactive_prompt {
+        let (_tty_attached, stdin_tty, stdout_tty, stderr_tty) = acquire_tty_stdio();
+        (stdin_tty, stdout_tty, stderr_tty)
+    } else {
+        (Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
+    };
 
     // Spawn IPython bootstrap script with interactive embed
     let mut command = build_python_launch_command(&python_exe, &bootstrap_script);
 
     command
-        .stdin(stdin_tty)
-        .stdout(stdout_tty)
-        .stderr(stderr_tty);
+        .stdin(stdin_stdio)
+        .stdout(stdout_stdio)
+        .stderr(stderr_stdio);
 
     // Pass quiet and no-banner flags as environment variables
     if opts.quiet > 0 {

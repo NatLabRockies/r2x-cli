@@ -511,7 +511,7 @@ mod tests {
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
         let package = package_with_source(PackageSource::Pypi);
@@ -538,7 +538,7 @@ mod tests {
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
             return;
         };
         let package = Package {
@@ -600,7 +600,7 @@ mod tests {
         let Ok(temp_dir) = TempDir::new() else {
             return;
         };
-        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf()) else {
             return;
         };
 
@@ -621,7 +621,7 @@ mod tests {
         let mut package = package_with_source(PackageSource::Local);
         package.source_uri = Some(Arc::from(path_str.as_str()));
 
-        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf()) else {
             return;
         };
 
@@ -650,7 +650,7 @@ mod tests {
             return;
         }
 
-        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf(), None) else {
+        let Ok(locator) = PackageLocator::new(temp_dir.path().to_path_buf()) else {
             return;
         };
 
