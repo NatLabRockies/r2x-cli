@@ -307,7 +307,7 @@ mod tests {
                 return;
             }
         };
-        let locator = match PackageLocator::new(site_packages.path().to_path_buf(), None) {
+        let locator = match PackageLocator::new(site_packages.path().to_path_buf()) {
             Ok(locator) => locator,
             Err(err) => {
                 assert!(

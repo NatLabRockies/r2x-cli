@@ -40,8 +40,7 @@ impl PluginContext {
         let site_packages = resolve_site_package_path(&PathBuf::from(&venv_path))
             .map_err(|e| PluginError::Python(format!("Failed to resolve site-packages: {e}")))?;
 
-        let uv_cache_dir = resolve_uv_cache_dir();
-        let locator = PackageLocator::new(site_packages, uv_cache_dir).map_err(|e| {
+        let locator = PackageLocator::new(site_packages).map_err(|e| {
             PluginError::Locator(format!("Failed to initialize package locator: {e}"))
         })?;
 
@@ -64,10 +63,4 @@ impl PluginContext {
     }
 }
 
-fn resolve_uv_cache_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("UV_CACHE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::cache_dir().map(|cache| cache.join("uv")));
-    base.map(|root| root.join("archive-v0"))
-        .filter(|path| path.exists())
-}
+
