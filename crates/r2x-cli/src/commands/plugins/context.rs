@@ -62,5 +62,3 @@ impl PluginContext {
             .map_err(|e| PluginError::Locator(format!("Failed to refresh package locator: {e}")))
     }
 }
-
-
