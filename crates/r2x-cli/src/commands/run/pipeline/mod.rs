@@ -5,6 +5,7 @@ use crate::manifest_lookup::{resolve_plugin_ref, PluginRefError};
 use crate::package_verification;
 use crate::pipeline_config::PipelineConfig;
 use colored::Colorize;
+use r2x_artifacts::pipeline_artifact::{write_bundle_output, PipelineArtifactWorkspace};
 use r2x_logger as logger;
 use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
@@ -16,7 +17,6 @@ use r2x_python::python_bridge::Bridge;
 use std::path::Path;
 use std::time::Instant;
 
-mod artifact;
 mod builder;
 mod config;
 mod constants;
@@ -27,8 +27,6 @@ use builder::build_plugin_config;
 use config::resolve_plugin_config_json;
 use overrides::{prepare_pipeline_artifact_overrides, prepare_pipeline_overrides};
 use validation::validate_pipeline_configs;
-
-use artifact::{write_bundle_output, PipelineArtifactWorkspace};
 
 enum PipelinePayload {
     Inline(String),
@@ -54,17 +52,21 @@ impl PipelineInvocation {
     }
 }
 
+pub(super) struct PipelineModeOptions {
+    pub list: bool,
+    pub print: bool,
+    pub dry_run: bool,
+    pub output: Option<String>,
+    pub zip_output: bool,
+}
+
 pub(super) fn handle_pipeline_mode(
     yaml_path: String,
     pipeline_name: Option<String>,
-    list: bool,
-    print: bool,
-    dry_run: bool,
-    output: Option<String>,
-    zip_output: bool,
+    options: PipelineModeOptions,
     opts: &GlobalOpts,
 ) -> Result<(), RunError> {
-    if zip_output && (list || print || dry_run) {
+    if options.zip_output && (options.list || options.print || options.dry_run) {
         return Err(RunError::InvalidArgs(
             "--zip can only be used while executing a pipeline".to_string(),
         ));
@@ -72,9 +74,9 @@ pub(super) fn handle_pipeline_mode(
 
     let config = PipelineConfig::load(&yaml_path)?;
 
-    if list {
+    if options.list {
         list_pipelines(&config);
-    } else if print {
+    } else if options.print {
         if let Some(name) = pipeline_name {
             print_pipeline_config(&config, &name)?;
         } else {
@@ -84,10 +86,16 @@ pub(super) fn handle_pipeline_mode(
             ));
         }
     } else if let Some(name) = pipeline_name {
-        if dry_run {
+        if options.dry_run {
             show_pipeline_flow(&config, &name)?;
         } else {
-            run_pipeline(&config, &name, output.as_deref(), zip_output, opts)?;
+            run_pipeline(
+                &config,
+                &name,
+                options.output.as_deref(),
+                options.zip_output,
+                opts,
+            )?;
         }
     } else {
         return Err(RunError::InvalidArgs(

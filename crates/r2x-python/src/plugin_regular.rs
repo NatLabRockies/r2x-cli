@@ -473,7 +473,6 @@ impl Bridge {
     }
 
     pub(crate) fn save_system_artifact_as_zip_native(
-        &self,
         input: &ArtifactBundle,
         output: &Path,
     ) -> Result<(), BridgeError> {

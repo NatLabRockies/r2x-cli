@@ -171,7 +171,7 @@ impl crate::python_bridge::Bridge {
         input: &ArtifactBundle,
         output: &Path,
     ) -> Result<(), BridgeError> {
-        self.save_system_artifact_as_zip_native(input, output)
+        Self::save_system_artifact_as_zip_native(input, output)
     }
 
     /// Invoke a plugin using directory-backed input and output artifacts.

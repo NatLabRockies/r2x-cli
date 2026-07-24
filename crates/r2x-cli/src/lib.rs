@@ -2,7 +2,6 @@
 //!
 //! This library exposes core modules needed for testing and integration.
 
-pub(crate) mod artifact_handoff;
 pub mod commands;
 pub mod common;
 pub mod errors;

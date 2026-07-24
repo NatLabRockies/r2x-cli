@@ -12,7 +12,7 @@ const PIPELINE_ARTIFACTS_DIR: &str = "pipeline-artifacts";
 const HANDOFFS_DIR: &str = "handoffs";
 
 #[derive(Debug, Error)]
-pub(crate) enum ArtifactHandoffError {
+pub enum ArtifactHandoffError {
     #[error("invalid artifact handoff: {0}")]
     Invalid(String),
 
@@ -29,7 +29,7 @@ pub(crate) enum ArtifactHandoffError {
 /// never a caller-controlled filesystem path.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ArtifactHandoffEnvelope {
+pub struct ArtifactHandoffEnvelope {
     #[serde(rename = "r2x_artifact_handoff")]
     version: u8,
     id: String,
@@ -48,12 +48,12 @@ impl ArtifactHandoffEnvelope {
 
 /// A claimed artifact handoff. Its bundle is deleted when the reader exits.
 #[derive(Debug)]
-pub(crate) struct ClaimedArtifactHandoff {
+pub struct ClaimedArtifactHandoff {
     bundle: ArtifactBundle,
 }
 
 impl ClaimedArtifactHandoff {
-    pub(crate) fn entrypoint_path(&self) -> PathBuf {
+    pub fn entrypoint_path(&self) -> PathBuf {
         self.bundle.entrypoint_path()
     }
 }
@@ -64,7 +64,7 @@ impl Drop for ClaimedArtifactHandoff {
     }
 }
 
-pub(crate) fn parse_handoff_envelope(
+pub fn parse_handoff_envelope(
     input: &str,
 ) -> Result<Option<ArtifactHandoffEnvelope>, ArtifactHandoffError> {
     let value: serde_json::Value = match serde_json::from_str(input) {
@@ -83,7 +83,7 @@ pub(crate) fn parse_handoff_envelope(
     Ok(Some(envelope))
 }
 
-pub(crate) fn publish_handoff(
+pub fn publish_handoff(
     cache_root: &Path,
     bundle: &ArtifactBundle,
 ) -> Result<ArtifactHandoffEnvelope, ArtifactHandoffError> {
@@ -123,7 +123,7 @@ pub(crate) fn publish_handoff(
     ))
 }
 
-pub(crate) fn revoke_handoff(
+pub fn revoke_handoff(
     cache_root: &Path,
     envelope: &ArtifactHandoffEnvelope,
 ) -> Result<(), ArtifactHandoffError> {
@@ -140,7 +140,7 @@ pub(crate) fn revoke_handoff(
     Ok(())
 }
 
-pub(crate) fn claim_handoff(
+pub fn claim_handoff(
     cache_root: &Path,
     envelope: &ArtifactHandoffEnvelope,
 ) -> Result<ClaimedArtifactHandoff, ArtifactHandoffError> {

@@ -1655,6 +1655,7 @@ dependencies = [
  "indicatif",
  "once_cell",
  "predicates",
+ "r2x-artifacts",
  "r2x-ast",
  "r2x-config",
  "r2x-logger",
@@ -1673,6 +1674,19 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "which 8.0.5",
+]
+
+[[package]]
+name = "r2x-artifacts"
+version = "0.1.0"
+dependencies = [
+ "r2x-config",
+ "r2x-logger",
+ "r2x-python",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

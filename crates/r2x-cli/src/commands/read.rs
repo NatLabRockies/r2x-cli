@@ -1,7 +1,9 @@
-use crate::artifact_handoff::{claim_handoff, parse_handoff_envelope, ClaimedArtifactHandoff};
 use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
+use r2x_artifacts::artifact_handoff::{
+    claim_handoff, parse_handoff_envelope, ClaimedArtifactHandoff,
+};
 use r2x_config::Config;
 use r2x_logger as logger;
 use std::fs;

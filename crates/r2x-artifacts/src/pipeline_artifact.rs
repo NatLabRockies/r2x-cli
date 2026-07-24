@@ -1,6 +1,5 @@
 use crate::artifact_handoff::{publish_handoff, revoke_handoff};
-use crate::commands::run::RunError;
-use crate::errors::PipelineError;
+use crate::ArtifactError;
 use r2x_config::Config;
 use r2x_logger as logger;
 use r2x_python::plugin_invoker::ArtifactBundle;
@@ -12,38 +11,39 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(super) struct PipelineArtifactWorkspace {
+pub struct PipelineArtifactWorkspace {
     root: PathBuf,
 }
 
 impl PipelineArtifactWorkspace {
-    pub(super) fn create() -> Result<Self, RunError> {
-        let mut config = Config::load().map_err(|error| RunError::Config(error.to_string()))?;
+    pub fn create() -> Result<Self, ArtifactError> {
+        let mut config =
+            Config::load().map_err(|error| ArtifactError::Config(error.to_string()))?;
         let cache_root = config
             .ensure_cache_path()
-            .map_err(|error| RunError::Config(error.to_string()))?;
+            .map_err(|error| ArtifactError::Config(error.to_string()))?;
         let parent = PathBuf::from(cache_root).join("pipeline-artifacts");
-        fs::create_dir_all(&parent).map_err(PipelineError::Io)?;
+        fs::create_dir_all(&parent).map_err(ArtifactError::Io)?;
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|error| RunError::Config(format!("System clock error: {error}")))?
+            .map_err(|error| ArtifactError::Config(format!("System clock error: {error}")))?
             .as_nanos();
         let root = parent.join(format!(
             "run_{timestamp}_{}_{}",
             std::process::id(),
             next_workspace_id()
         ));
-        fs::create_dir(&root).map_err(PipelineError::Io)?;
+        fs::create_dir(&root).map_err(ArtifactError::Io)?;
         Ok(Self { root })
     }
 
-    pub(super) fn step_bundle(&self, step_index: usize) -> Result<ArtifactBundle, RunError> {
+    pub fn step_bundle(&self, step_index: usize) -> Result<ArtifactBundle, ArtifactError> {
         ArtifactBundle::new(
             self.root.join(format!("step_{step_index:04}")),
             "system.json",
         )
-        .map_err(RunError::Bridge)
+        .map_err(ArtifactError::Bridge)
     }
 }
 
@@ -53,12 +53,12 @@ impl Drop for PipelineArtifactWorkspace {
     }
 }
 
-pub(super) fn write_bundle_output(
+pub fn write_bundle_output(
     bundle: &ArtifactBundle,
     output_path: Option<&Path>,
     zip_output: bool,
     suppress_stdout: bool,
-) -> Result<(), RunError> {
+) -> Result<(), ArtifactError> {
     if let Some(output_path) = output_path {
         if zip_output {
             save_bundle_as_zip(bundle, output_path)?;
@@ -67,27 +67,28 @@ pub(super) fn write_bundle_output(
         }
     } else if !suppress_stdout {
         let mut has_sidecars = false;
-        for entry in fs::read_dir(bundle.root()).map_err(PipelineError::Io)? {
-            let entry = entry.map_err(PipelineError::Io)?;
+        for entry in fs::read_dir(bundle.root()).map_err(ArtifactError::Io)? {
+            let entry = entry.map_err(ArtifactError::Io)?;
             if entry.path() != bundle.entrypoint_path() {
                 has_sidecars = true;
                 break;
             }
         }
         if has_sidecars {
-            let mut config = Config::load().map_err(|error| RunError::Config(error.to_string()))?;
+            let mut config =
+                Config::load().map_err(|error| ArtifactError::Config(error.to_string()))?;
             let cache_root = PathBuf::from(
                 config
                     .ensure_cache_path()
-                    .map_err(|error| RunError::Config(error.to_string()))?,
+                    .map_err(|error| ArtifactError::Config(error.to_string()))?,
             );
             let handoff = publish_handoff(&cache_root, bundle)
-                .map_err(|error| RunError::Config(error.to_string()))?;
+                .map_err(|error| ArtifactError::Config(error.to_string()))?;
             let serialized = match serde_json::to_string(&handoff) {
                 Ok(serialized) => serialized,
                 Err(error) => {
                     let _ = revoke_handoff(&cache_root, &handoff);
-                    return Err(RunError::Config(format!(
+                    return Err(ArtifactError::Config(format!(
                         "Failed to serialize artifact handoff: {error}"
                     )));
                 }
@@ -97,24 +98,24 @@ pub(super) fn write_bundle_output(
             let mut output = stdout.lock();
             if let Err(error) = writeln!(output, "{serialized}") {
                 let _ = revoke_handoff(&cache_root, &handoff);
-                return Err(RunError::Pipeline(PipelineError::Io(error)));
+                return Err(ArtifactError::Io(error));
             }
             return Ok(());
         }
-        let mut input = fs::File::open(bundle.entrypoint_path()).map_err(PipelineError::Io)?;
+        let mut input = fs::File::open(bundle.entrypoint_path()).map_err(ArtifactError::Io)?;
         let stdout = io::stdout();
         let mut output = stdout.lock();
-        io::copy(&mut input, &mut output).map_err(PipelineError::Io)?;
+        io::copy(&mut input, &mut output).map_err(ArtifactError::Io)?;
     }
     Ok(())
 }
 
-fn save_bundle_as_zip(bundle: &ArtifactBundle, output_path: &Path) -> Result<(), RunError> {
+fn save_bundle_as_zip(bundle: &ArtifactBundle, output_path: &Path) -> Result<(), ArtifactError> {
     let extension = output_path
         .extension()
         .and_then(|extension| extension.to_str());
     if !extension.is_some_and(|extension| extension == "zip") {
-        return Err(RunError::Config(
+        return Err(ArtifactError::Config(
             "ZIP pipeline output must use a lowercase .zip filename".to_string(),
         ));
     }
@@ -123,27 +124,27 @@ fn save_bundle_as_zip(bundle: &ArtifactBundle, output_path: &Path) -> Result<(),
     ensure_destination_absent(output_path)?;
     ensure_destination_absent(&archive_base)?;
 
-    let bridge = r2x_python::python_bridge::Bridge::get().map_err(RunError::Bridge)?;
+    let bridge = r2x_python::python_bridge::Bridge::get().map_err(ArtifactError::Bridge)?;
     bridge
         .save_system_artifact_as_zip(bundle, output_path)
-        .map_err(RunError::Bridge)
+        .map_err(ArtifactError::Bridge)
 }
 
-fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<(), RunError> {
+fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<(), ArtifactError> {
     let source_entrypoint = bundle.entrypoint_path();
     if bundle
         .relative_entrypoint()
         .parent()
         .is_some_and(|parent| !parent.as_os_str().is_empty())
     {
-        return Err(RunError::Config(
+        return Err(ArtifactError::Config(
             "Pipeline output entrypoint must be at the artifact bundle root".to_string(),
         ));
     }
     let output_parent = output_path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(output_parent).map_err(PipelineError::Io)?;
+    fs::create_dir_all(output_parent).map_err(ArtifactError::Io)?;
     let output_name = output_path.file_name().ok_or_else(|| {
-        RunError::Config(format!(
+        ArtifactError::Config(format!(
             "Pipeline output must name a file: {}",
             output_path.display()
         ))
@@ -152,9 +153,9 @@ fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<
     validate_source_entry(bundle.root())?;
 
     let entries = fs::read_dir(bundle.root())
-        .map_err(PipelineError::Io)?
+        .map_err(ArtifactError::Io)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(PipelineError::Io)?;
+        .map_err(ArtifactError::Io)?;
     let mut destinations = HashSet::new();
     let mut found_entrypoint = false;
     let mut plans = Vec::with_capacity(entries.len());
@@ -168,7 +169,7 @@ fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<
             output_parent.join(entry.file_name())
         };
         if !destinations.insert(destination.clone()) {
-            return Err(RunError::Config(format!(
+            return Err(ArtifactError::Config(format!(
                 "Pipeline artifact maps multiple entries to output: {}",
                 destination.display()
             )));
@@ -177,20 +178,20 @@ fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<
         plans.push((source, destination));
     }
     if !found_entrypoint {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact entrypoint is missing: {}",
             source_entrypoint.display()
         )));
     }
 
     let staging = create_staging_directory(output_parent)?;
-    let staged_copy = (|| -> Result<(), RunError> {
+    let staged_copy = (|| -> Result<(), ArtifactError> {
         for (source, destination) in &plans {
             let staged_name = if source == &source_entrypoint {
                 output_name
             } else {
                 destination.file_name().ok_or_else(|| {
-                    RunError::Config(format!(
+                    ArtifactError::Config(format!(
                         "Pipeline output has no file name: {}",
                         destination.display()
                     ))
@@ -212,7 +213,7 @@ fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<
             output_name
         } else {
             destination.file_name().ok_or_else(|| {
-                RunError::Config(format!(
+                ArtifactError::Config(format!(
                     "Pipeline output has no file name: {}",
                     destination.display()
                 ))
@@ -238,21 +239,21 @@ fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<
     Ok(())
 }
 
-fn validate_source_entry(source: &Path) -> Result<(), RunError> {
-    let metadata = fs::symlink_metadata(source).map_err(PipelineError::Io)?;
+fn validate_source_entry(source: &Path) -> Result<(), ArtifactError> {
+    let metadata = fs::symlink_metadata(source).map_err(ArtifactError::Io)?;
     if metadata.file_type().is_symlink() {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact contains unsupported symlink: {}",
             source.display()
         )));
     }
     if metadata.is_dir() {
-        for entry in fs::read_dir(source).map_err(PipelineError::Io)? {
-            let entry = entry.map_err(PipelineError::Io)?;
+        for entry in fs::read_dir(source).map_err(ArtifactError::Io)? {
+            let entry = entry.map_err(ArtifactError::Io)?;
             validate_source_entry(&entry.path())?;
         }
     } else if !metadata.is_file() {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact contains unsupported filesystem entry: {}",
             source.display()
         )));
@@ -260,22 +261,22 @@ fn validate_source_entry(source: &Path) -> Result<(), RunError> {
     Ok(())
 }
 
-fn ensure_destination_absent(destination: &Path) -> Result<(), RunError> {
+fn ensure_destination_absent(destination: &Path) -> Result<(), ArtifactError> {
     match fs::symlink_metadata(destination) {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(RunError::Pipeline(PipelineError::Io(error))),
-        Ok(_) => Err(RunError::Config(format!(
+        Err(error) => Err(ArtifactError::Io(error)),
+        Ok(_) => Err(ArtifactError::Config(format!(
             "Refusing to overwrite pipeline output: {}",
             destination.display()
         ))),
     }
 }
 
-fn create_staging_directory(parent: &Path) -> Result<PathBuf, RunError> {
+fn create_staging_directory(parent: &Path) -> Result<PathBuf, ArtifactError> {
     for _ in 0..16 {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|error| RunError::Config(format!("System clock error: {error}")))?
+            .map_err(|error| ArtifactError::Config(format!("System clock error: {error}")))?
             .as_nanos();
         let staging = parent.join(format!(
             ".r2x-output-{timestamp}-{}-{}",
@@ -285,18 +286,18 @@ fn create_staging_directory(parent: &Path) -> Result<PathBuf, RunError> {
         match fs::create_dir(&staging) {
             Ok(()) => return Ok(staging),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(RunError::Pipeline(PipelineError::Io(error))),
+            Err(error) => return Err(ArtifactError::Io(error)),
         }
     }
-    Err(RunError::Config(
+    Err(ArtifactError::Config(
         "Unable to allocate a pipeline output staging directory".to_string(),
     ))
 }
 
-fn copy_entry(source: &Path, destination: &Path) -> Result<(), RunError> {
-    let metadata = fs::symlink_metadata(source).map_err(PipelineError::Io)?;
+fn copy_entry(source: &Path, destination: &Path) -> Result<(), ArtifactError> {
+    let metadata = fs::symlink_metadata(source).map_err(ArtifactError::Io)?;
     if metadata.file_type().is_symlink() {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact contains unsupported symlink: {}",
             source.display()
         )));
@@ -304,16 +305,16 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<(), RunError> {
 
     if metadata.is_dir() {
         ensure_destination_absent(destination)?;
-        fs::create_dir(destination).map_err(PipelineError::Io)?;
-        for entry in fs::read_dir(source).map_err(PipelineError::Io)? {
-            let entry = entry.map_err(PipelineError::Io)?;
+        fs::create_dir(destination).map_err(ArtifactError::Io)?;
+        for entry in fs::read_dir(source).map_err(ArtifactError::Io)? {
+            let entry = entry.map_err(ArtifactError::Io)?;
             copy_entry(&entry.path(), &destination.join(entry.file_name()))?;
         }
     } else if metadata.is_file() {
         ensure_destination_absent(destination)?;
-        fs::copy(source, destination).map_err(PipelineError::Io)?;
+        fs::copy(source, destination).map_err(ArtifactError::Io)?;
     } else {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact contains unsupported filesystem entry: {}",
             source.display()
         )));
@@ -326,33 +327,33 @@ fn publish_staged_entry(
     source: &Path,
     destination: &Path,
     published: &mut Vec<PathBuf>,
-) -> Result<(), RunError> {
-    let metadata = fs::symlink_metadata(source).map_err(PipelineError::Io)?;
+) -> Result<(), ArtifactError> {
+    let metadata = fs::symlink_metadata(source).map_err(ArtifactError::Io)?;
     if metadata.file_type().is_symlink() {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact staging contains unsupported symlink: {}",
             source.display()
         )));
     }
 
     if metadata.is_dir() {
-        fs::create_dir(destination).map_err(PipelineError::Io)?;
+        fs::create_dir(destination).map_err(ArtifactError::Io)?;
         published.push(destination.to_path_buf());
-        for entry in fs::read_dir(source).map_err(PipelineError::Io)? {
-            let entry = entry.map_err(PipelineError::Io)?;
+        for entry in fs::read_dir(source).map_err(ArtifactError::Io)? {
+            let entry = entry.map_err(ArtifactError::Io)?;
             publish_staged_entry(
                 &entry.path(),
                 &destination.join(entry.file_name()),
                 published,
             )?;
         }
-        fs::remove_dir(source).map_err(PipelineError::Io)?;
+        fs::remove_dir(source).map_err(ArtifactError::Io)?;
     } else if metadata.is_file() {
-        fs::hard_link(source, destination).map_err(PipelineError::Io)?;
+        fs::hard_link(source, destination).map_err(ArtifactError::Io)?;
         published.push(destination.to_path_buf());
-        fs::remove_file(source).map_err(PipelineError::Io)?;
+        fs::remove_file(source).map_err(ArtifactError::Io)?;
     } else {
-        return Err(RunError::Config(format!(
+        return Err(ArtifactError::Config(format!(
             "Pipeline artifact staging contains unsupported filesystem entry: {}",
             source.display()
         )));
@@ -381,7 +382,7 @@ fn next_workspace_id() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::run::pipeline::artifact::{copy_bundle_to_output, publish_staged_entry};
+    use crate::pipeline_artifact::{copy_bundle_to_output, publish_staged_entry};
     use r2x_python::plugin_invoker::ArtifactBundle;
     use std::error::Error;
     use std::fs;

@@ -2,8 +2,9 @@ use crate::common::GlobalOpts;
 use crate::errors::PipelineError;
 use crate::help;
 use clap::Parser;
-use pipeline::handle_pipeline_mode;
+use pipeline::{handle_pipeline_mode, PipelineModeOptions};
 use plugin::handle_plugin_command;
+use r2x_artifacts::ArtifactError;
 use r2x_logger as logger;
 use r2x_manifest::errors::ManifestError;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
@@ -20,6 +21,7 @@ mod plugin;
 pub enum RunError {
     Manifest(ManifestError),
     Bridge(BridgeError),
+    Artifact(ArtifactError),
     Pipeline(PipelineError),
     Config(String),
     PluginNotFound(String),
@@ -32,6 +34,7 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Manifest(e) => write!(f, "Manifest error: {}", e),
             RunError::Bridge(e) => write!(f, "Python bridge error: {}", e),
+            RunError::Artifact(e) => write!(f, "Artifact error: {}", e),
             RunError::Pipeline(e) => write!(f, "Pipeline error: {}", e),
             RunError::Config(msg) => write!(f, "Configuration error: {}", msg),
             RunError::PluginNotFound(name) => {
@@ -56,6 +59,12 @@ impl From<ManifestError> for RunError {
 impl From<BridgeError> for RunError {
     fn from(e: BridgeError) -> Self {
         RunError::Bridge(e)
+    }
+}
+
+impl From<ArtifactError> for RunError {
+    fn from(e: ArtifactError) -> Self {
+        RunError::Artifact(e)
     }
 }
 
@@ -134,11 +143,13 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
             handle_pipeline_mode(
                 yaml_path,
                 cmd.pipeline_name,
-                cmd.list,
-                cmd.print,
-                cmd.dry_run,
-                cmd.output,
-                cmd.zip,
+                PipelineModeOptions {
+                    list: cmd.list,
+                    print: cmd.print,
+                    dry_run: cmd.dry_run,
+                    output: cmd.output,
+                    zip_output: cmd.zip,
+                },
                 &opts,
             )
         }
