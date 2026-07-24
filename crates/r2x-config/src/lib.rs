@@ -188,7 +188,8 @@ impl Config {
         Ok(())
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
         self.cache_path.is_none()
             && self.uv_path.is_none()
             && self.python_version.is_none()
@@ -198,38 +199,6 @@ impl Config {
             && self.no_stdout.is_none()
             && self.log_path.is_none()
             && self.log_max_size.is_none()
-    }
-
-    pub fn values_iter(&self) -> Vec<(&str, String)> {
-        let mut values = Vec::new();
-        if let Some(ref val) = self.cache_path {
-            values.push(("cache-path", val.clone()));
-        }
-        if let Some(ref val) = self.uv_path {
-            values.push(("uv-path", val.clone()));
-        }
-        if let Some(ref val) = self.python_version {
-            values.push(("python-version", val.clone()));
-        }
-        if let Some(ref val) = self.venv_path {
-            values.push(("venv-path", val.clone()));
-        }
-        if let Some(ref val) = self.r2x_core_version {
-            values.push(("r2x-core-version", val.clone()));
-        }
-        if let Some(val) = self.log_python {
-            values.push(("log-python", val.to_string()));
-        }
-        if let Some(val) = self.no_stdout {
-            values.push(("no-stdout", val.to_string()));
-        }
-        if let Some(ref val) = self.log_path {
-            values.push(("log-path", val.clone()));
-        }
-        if let Some(val) = self.log_max_size {
-            values.push(("log-max-size", val.to_string()));
-        }
-        values
     }
 
     pub fn reset() -> Result<(), ConfigError> {
@@ -608,7 +577,7 @@ impl PythonRuntimeVersion {
     }
 }
 
-pub fn runtime_python_version(
+fn runtime_python_version(
     configured_version: Option<&str>,
 ) -> Result<PythonRuntimeVersion, ConfigError> {
     let requested = match configured_version.map(str::trim) {

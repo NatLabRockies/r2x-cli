@@ -77,22 +77,22 @@ impl From<PipelineError> for RunError {
 #[derive(Parser, Debug)]
 pub struct RunCommand {
     #[command(subcommand)]
-    pub command: Option<RunSubcommand>,
+    command: Option<RunSubcommand>,
     #[arg(value_name = "YAML_PATH")]
-    pub yaml_path: Option<String>,
+    yaml_path: Option<String>,
     #[arg(value_name = "NAME")]
-    pub pipeline_name: Option<String>,
+    pipeline_name: Option<String>,
     #[arg(long)]
-    pub list: bool,
+    list: bool,
     #[arg(long)]
-    pub print: bool,
+    print: bool,
     #[arg(short = 'n', long)]
-    pub dry_run: bool,
+    dry_run: bool,
     #[arg(short = 'o', long, value_name = "FILE")]
-    pub output: Option<String>,
+    output: Option<String>,
     /// Save a system pipeline output as an infrasys ZIP archive
     #[arg(long)]
-    pub zip: bool,
+    zip: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -102,29 +102,29 @@ pub enum RunSubcommand {
 
 #[derive(Parser, Debug)]
 pub struct PluginCommand {
-    pub plugin_name: Option<String>,
+    plugin_name: Option<String>,
     #[arg(long)]
-    pub show_help: bool,
+    show_help: bool,
     #[arg(
         long,
         value_name = "FILE",
         help = "Write plugin JSON output to a UTF-8 file instead of stdout"
     )]
-    pub output: Option<String>,
+    output: Option<String>,
     #[arg(
         long,
         value_name = "N",
         default_value = "1",
         help = "Repeat plugin invocation N times"
     )]
-    pub repeat: NonZeroUsize,
+    repeat: NonZeroUsize,
     #[arg(
         long,
         help = "Print benchmark summary (also implied when --repeat > 1)"
     )]
-    pub benchmark: bool,
+    benchmark: bool,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
+    args: Vec<String>,
 }
 
 pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
@@ -180,7 +180,7 @@ pub(super) fn build_call_target(bindings: &RuntimeBindings) -> Result<String, Ru
     Ok(target)
 }
 
-pub(super) fn format_duration(duration: Duration) -> String {
+fn format_duration(duration: Duration) -> String {
     let total_ms = duration.as_millis();
     if total_ms < 1000 {
         format!("{}ms", total_ms)
@@ -189,7 +189,7 @@ pub(super) fn format_duration(duration: Duration) -> String {
     }
 }
 
-pub(super) fn print_plugin_timing_breakdown(timings: &PluginInvocationTimings) {
+fn print_plugin_timing_breakdown(timings: &PluginInvocationTimings) {
     logger::debug(&format!(
         "Plugin python invocation {}",
         format_duration(timings.python_invocation)

@@ -5,7 +5,7 @@ use r2x_manifest::types::Manifest;
 use std::collections::BTreeSet;
 
 /// Show help for the run command when invoked with no arguments
-pub fn show_run_help() -> Result<(), String> {
+pub(crate) fn show_run_help() -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
     println!();
@@ -56,7 +56,7 @@ pub fn show_run_help() -> Result<(), String> {
 }
 
 /// Show detailed help for a specific plugin
-pub fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
+pub(crate) fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
     let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|e| e.to_string())?;

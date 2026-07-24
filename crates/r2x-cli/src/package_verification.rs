@@ -6,7 +6,6 @@ use r2x_config::Config;
 use r2x_logger as logger;
 use r2x_manifest::types::{Manifest, Package, PackageSource};
 use r2x_python::utils::resolve_site_package_path;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -56,7 +55,7 @@ impl std::error::Error for VerificationError {}
 /// * `Ok(VerificationResult::Valid)` - All packages installed and valid
 /// * `Ok(VerificationResult::Missing(packages))` - List of missing/changed packages
 /// * `Err(VerificationError)` - Critical error during verification
-pub fn verify_plugin_packages(
+fn verify_plugin_packages(
     manifest: &Manifest,
     plugin_key: &str,
 ) -> Result<VerificationResult, VerificationError> {
@@ -155,32 +154,6 @@ fn dist_info_exists(site_packages: &Path, pattern: &str) -> bool {
     }
 
     false
-}
-
-/// Reinstall missing packages using uv
-///
-/// # Arguments
-/// * `packages` - List of package names to install
-/// * `config` - Configuration with uv path and venv settings
-///
-/// # Returns
-/// * `Ok(())` - Packages successfully installed
-/// * `Err(VerificationError)` - Installation failed
-pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), VerificationError> {
-    if packages.is_empty() {
-        return Ok(());
-    }
-
-    logger::info(&format!(
-        "Installing missing packages: {}",
-        packages.join(", ")
-    ));
-
-    let python_exe = config.get_venv_python_path();
-    let package_refs: Vec<&str> = packages.iter().map(String::as_str).collect();
-    let install_args = build_pip_install_args(&python_exe, &package_refs, false);
-
-    run_pip_install(config, &install_args, packages.len())
 }
 
 fn ensure_manifest_package(package: &Package, config: &Config) -> Result<(), VerificationError> {
@@ -302,7 +275,7 @@ fn run_pip_install(
 ///
 /// // Now safe to run the plugin
 /// ```
-pub fn verify_and_ensure_plugin(
+pub(crate) fn verify_and_ensure_plugin(
     manifest: &Manifest,
     plugin_key: &str,
 ) -> Result<(), VerificationError> {
@@ -328,44 +301,6 @@ pub fn verify_and_ensure_plugin(
             Ok(())
         }
     }
-}
-
-/// Verify all packages in the manifest (for batch operations)
-///
-/// # Arguments
-/// * `manifest` - Plugin manifest to verify
-///
-/// # Returns
-/// Set of package names that need to be installed
-pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, VerificationError> {
-    let mut missing_packages = HashSet::new();
-
-    // Get venv path
-    let config = Config::load().map_err(|e| {
-        VerificationError::VerificationFailed(format!("Failed to load config: {}", e))
-    })?;
-    let venv_path = PathBuf::from(config.get_venv_path());
-
-    if !venv_path.exists() {
-        return Err(VerificationError::VenvNotFound(venv_path));
-    }
-
-    // Collect all unique package names from manifest
-    let mut all_packages: HashSet<String> = HashSet::new();
-    for pkg in &manifest.packages {
-        all_packages.insert(pkg.name.to_string());
-    }
-
-    // Check which packages are missing
-    let packages_vec: Vec<String> = all_packages.into_iter().collect();
-    let packages_refs: Vec<&str> = packages_vec.iter().map(|s| s.as_str()).collect();
-    let missing = check_packages_installed(&venv_path, &packages_refs)?;
-
-    for package in missing {
-        missing_packages.insert(package);
-    }
-
-    Ok(missing_packages)
 }
 
 #[cfg(test)]

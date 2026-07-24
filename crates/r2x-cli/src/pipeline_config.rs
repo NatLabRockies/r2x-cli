@@ -9,24 +9,24 @@ use std::path::{Path, PathBuf};
 pub struct PipelineConfig {
     /// Variables for substitution (${var} and $(var) syntax)
     #[serde(default)]
-    pub variables: HashMap<String, serde_yaml::Value>,
+    variables: HashMap<String, serde_yaml::Value>,
 
     /// Named pipelines (each is a list of plugin names)
     #[serde(default)]
-    pub pipelines: HashMap<String, Vec<String>>,
+    pipelines: HashMap<String, Vec<String>>,
 
     /// Output folder for pipeline results
     #[serde(default)]
-    pub output_folder: Option<String>,
+    pub(crate) output_folder: Option<String>,
 
     /// Plugin configuration (keyed by plugin name)
     #[serde(default)]
-    pub config: HashMap<String, serde_yaml::Value>,
+    pub(crate) config: HashMap<String, serde_yaml::Value>,
 }
 
 impl PipelineConfig {
     /// Load pipeline configuration from YAML file
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, PipelineError> {
+    pub(crate) fn load<P: AsRef<Path>>(path: P) -> Result<Self, PipelineError> {
         let path_ref = path.as_ref();
         let content = match fs::read_to_string(path_ref) {
             Ok(content) => content,
@@ -44,19 +44,19 @@ impl PipelineConfig {
     }
 
     /// List all available pipeline names
-    pub fn list_pipelines(&self) -> Vec<String> {
+    pub(crate) fn list_pipelines(&self) -> Vec<String> {
         let mut names: Vec<String> = self.pipelines.keys().cloned().collect();
         names.sort();
         names
     }
 
     /// Get a specific pipeline by name
-    pub fn get_pipeline(&self, name: &str) -> Option<&Vec<String>> {
+    pub(crate) fn get_pipeline(&self, name: &str) -> Option<&Vec<String>> {
         self.pipelines.get(name)
     }
 
     /// Substitute variables in a string (supports ${var} and $(var) syntax)
-    pub fn substitute_string(&self, input: &str) -> Result<String, PipelineError> {
+    pub(crate) fn substitute_string(&self, input: &str) -> Result<String, PipelineError> {
         let mut result = input.to_string();
 
         // Handle ${var} syntax
@@ -108,7 +108,7 @@ impl PipelineConfig {
     }
 
     /// Substitute variables in a YAML value recursively
-    pub fn substitute_value(
+    fn substitute_value(
         &self,
         value: &serde_yaml::Value,
     ) -> Result<serde_yaml::Value, PipelineError> {
@@ -139,7 +139,7 @@ impl PipelineConfig {
     }
 
     /// Get plugin configuration with variable substitution
-    pub fn get_plugin_config(&self, plugin_name: &str) -> Result<serde_yaml::Value, PipelineError> {
+    fn get_plugin_config(&self, plugin_name: &str) -> Result<serde_yaml::Value, PipelineError> {
         let config = self.config.get(plugin_name).ok_or_else(|| {
             PipelineError::InvalidConfig(format!(
                 "No configuration found for plugin '{}'",
@@ -151,24 +151,21 @@ impl PipelineConfig {
     }
 
     /// Get plugin configuration as JSON string (for Python bridge)
-    pub fn get_plugin_config_json(&self, plugin_name: &str) -> Result<String, PipelineError> {
+    pub(crate) fn get_plugin_config_json(
+        &self,
+        plugin_name: &str,
+    ) -> Result<String, PipelineError> {
         let config = self.get_plugin_config(plugin_name)?;
         serde_json::to_string(&config).map_err(|e| {
             PipelineError::InvalidConfig(format!("Failed to serialize config to JSON: {}", e))
         })
     }
 
-    /// Get all plugin configurations with variable substitution
-    pub fn get_all_configs(&self) -> Result<HashMap<String, serde_yaml::Value>, PipelineError> {
-        let mut configs = HashMap::new();
-        for (name, config) in &self.config {
-            configs.insert(name.clone(), self.substitute_value(config)?);
-        }
-        Ok(configs)
-    }
-
     /// Resolve and print the configuration for a specific pipeline
-    pub fn print_pipeline_config(&self, pipeline_name: &str) -> Result<String, PipelineError> {
+    pub(crate) fn print_pipeline_config(
+        &self,
+        pipeline_name: &str,
+    ) -> Result<String, PipelineError> {
         let pipeline = self
             .get_pipeline(pipeline_name)
             .ok_or_else(|| PipelineError::PipelineNotFound(pipeline_name.to_string()))?;

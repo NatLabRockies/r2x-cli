@@ -366,7 +366,7 @@ pub fn handle_python(action: PythonAction, opts: GlobalOpts) {
 }
 
 /// Handle virtual environment management
-pub fn handle_venv(action: VenvAction, opts: GlobalOpts) {
+pub(crate) fn handle_venv(action: VenvAction, opts: GlobalOpts) {
     match action {
         VenvAction::Create { yes } => {
             handle_venv_create(yes);
@@ -378,7 +378,7 @@ pub fn handle_venv(action: VenvAction, opts: GlobalOpts) {
 }
 
 /// Handle cache management
-pub fn handle_cache(action: CacheAction, opts: GlobalOpts) {
+pub(crate) fn handle_cache(action: CacheAction, opts: GlobalOpts) {
     match action {
         CacheAction::Clean => {
             clean_cache(opts);
@@ -709,7 +709,7 @@ fn clean_cache(_opts: GlobalOpts) {
 /// Clean the configured cache folder.
 ///
 /// Shared by `r2x config cache clean` and `r2x clean`.
-pub fn clean_cache_folder() {
+pub(crate) fn clean_cache_folder() {
     match Config::load() {
         Ok(config) => {
             let cache_path = config.get_cache_path();

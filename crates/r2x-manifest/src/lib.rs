@@ -18,5 +18,6 @@ pub mod errors;
 pub mod manifest;
 pub mod package_discovery;
 pub mod runtime;
-pub mod sync;
+#[cfg(test)]
+mod sync;
 pub mod types;

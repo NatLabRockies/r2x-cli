@@ -1,0 +1,27 @@
+# Keep intentional uniform field visibility audited instead of excluding whole files.
+preserve-uniform-field-visibility = true
+
+[[production]]
+package = "r2x"
+bin = "r2x"
+reason = "shipped command-line application"
+
+# These helpers are used by the Windows Python DLL setup, which is outside
+# the host-target analysis performed in CI.
+[[override]]
+lint = "hawk::unnecessary_public"
+crate = "r2x_config"
+item = "PythonRuntimeVersion::install_hint"
+kind = "inherent_method"
+level = "expect"
+target = "cfg(not(windows))"
+reason = "used by the Windows Python runtime setup"
+
+[[override]]
+lint = "hawk::unnecessary_public"
+crate = "r2x_config"
+item = "PythonRuntimeVersion::find_hint"
+kind = "inherent_method"
+level = "expect"
+target = "cfg(not(windows))"
+reason = "used by the Windows Python runtime setup"

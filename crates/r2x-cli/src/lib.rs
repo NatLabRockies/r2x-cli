@@ -5,7 +5,7 @@
 pub mod commands;
 pub mod common;
 pub mod errors;
-pub mod help;
+pub(crate) mod help;
 mod install_source;
 pub mod manifest_lookup;
 pub mod package_verification;

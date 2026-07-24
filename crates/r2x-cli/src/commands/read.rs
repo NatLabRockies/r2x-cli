@@ -15,23 +15,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Parser, Debug)]
 pub struct ReadCommand {
     /// Path to JSON or ZIP file to read. If not provided, reads from stdin
-    pub file: Option<PathBuf>,
+    file: Option<PathBuf>,
 
     /// Treat the input file as an infrasys ZIP archive
     #[arg(long)]
-    pub zip: bool,
+    zip: bool,
 
     /// Suppress the startup banner
     #[arg(long = "no-banner")]
-    pub no_banner: bool,
+    no_banner: bool,
 
     /// Execute a Python script against the loaded system
     #[arg(long = "exec", value_name = "SCRIPT")]
-    pub exec: Option<PathBuf>,
+    exec: Option<PathBuf>,
 
     /// Drop into interactive IPython session after script execution (use with --exec)
     #[arg(short = 'i', long = "interactive")]
-    pub interactive: bool,
+    interactive: bool,
 }
 
 pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {

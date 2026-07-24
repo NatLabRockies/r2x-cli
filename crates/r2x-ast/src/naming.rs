@@ -13,7 +13,7 @@
 /// Handles acronyms (consecutive uppercase) correctly:
 /// - XMLParser -> xml-parser
 /// - HTTPClient -> http-client
-pub fn camel_to_kebab(class_name: &str) -> String {
+pub(crate) fn camel_to_kebab(class_name: &str) -> String {
     let mut result = String::new();
 
     for (i, ch) in class_name.chars().enumerate() {
@@ -50,7 +50,7 @@ pub fn camel_to_kebab(class_name: &str) -> String {
 }
 
 /// Convert snake_case function name to kebab-case plugin name
-pub fn snake_to_kebab(func_name: &str) -> String {
+pub(crate) fn snake_to_kebab(func_name: &str) -> String {
     func_name.replace('_', "-")
 }
 
@@ -58,7 +58,7 @@ pub fn snake_to_kebab(func_name: &str) -> String {
 ///
 /// Returns the index of the closing paren that matches the implicit opening paren
 /// at position -1 (i.e., we start at depth 0 looking for the first ')' at depth 0).
-pub fn find_matching_paren(text: &str) -> Option<usize> {
+pub(crate) fn find_matching_paren(text: &str) -> Option<usize> {
     let mut depth = 0;
     for (i, ch) in text.char_indices() {
         match ch {

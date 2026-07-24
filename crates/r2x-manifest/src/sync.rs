@@ -17,11 +17,11 @@ use std::sync::Arc;
 
 /// Result of a sync operation
 #[derive(Debug, Default)]
-pub struct SyncResult {
-    pub packages_inserted: usize,
-    pub packages_updated: usize,
-    pub packages_unchanged: usize,
-    pub total_plugins: usize,
+pub(crate) struct SyncResult {
+    packages_inserted: usize,
+    packages_updated: usize,
+    packages_unchanged: usize,
+    total_plugins: usize,
 }
 
 // =============================================================================
@@ -30,10 +30,9 @@ pub struct SyncResult {
 
 /// Represents a change to be applied to the manifest
 #[derive(Debug)]
-pub enum Change {
+pub(crate) enum Change {
     Insert(Package),
     Update(Package),
-    Remove(Arc<str>),
 }
 
 // =============================================================================
@@ -43,45 +42,22 @@ pub enum Change {
 /// Engine for syncing packages to the manifest
 ///
 /// Uses parallel discovery and incremental updates with minimal locking
-pub struct SyncEngine {
+struct SyncEngine {
     manifest: Arc<RwLock<Manifest>>,
-    interner: StringInterner,
 }
 
 impl SyncEngine {
     /// Create a new sync engine with the given manifest
-    pub fn new(manifest: Manifest) -> Self {
+    fn new(manifest: Manifest) -> Self {
         SyncEngine {
             manifest: Arc::new(RwLock::new(manifest)),
-            interner: StringInterner::new(),
         }
-    }
-
-    /// Get a reference to the interner for string deduplication
-    pub fn interner(&self) -> &StringInterner {
-        &self.interner
-    }
-
-    /// Get a read lock on the manifest
-    pub fn manifest(&self) -> parking_lot::RwLockReadGuard<'_, Manifest> {
-        self.manifest.read()
-    }
-
-    /// Get a write lock on the manifest
-    pub fn manifest_mut(&self) -> parking_lot::RwLockWriteGuard<'_, Manifest> {
-        self.manifest.write()
-    }
-
-    /// Take ownership of the manifest
-    pub fn into_manifest(self) -> Manifest {
-        Arc::try_unwrap(self.manifest)
-            .map_or_else(|arc| arc.read().clone(), |lock| lock.into_inner())
     }
 
     /// Sync packages - HOT PATH
     ///
     /// Takes discovered packages and efficiently updates the manifest
-    pub fn sync_packages(&self, discovered: Vec<Package>) -> SyncResult {
+    fn sync_packages(&self, discovered: Vec<Package>) -> SyncResult {
         // 1. Compute hashes for all discovered packages in parallel
         let packages_with_hashes: Vec<Package> = discovered
             .into_par_iter()
@@ -103,7 +79,6 @@ impl SyncEngine {
             match change {
                 Change::Insert(_) => result.packages_inserted += 1,
                 Change::Update(_) => result.packages_updated += 1,
-                Change::Remove(_) => {}
             }
         }
         result.packages_unchanged =
@@ -154,38 +129,8 @@ impl SyncEngine {
                         }
                     }
                 }
-                Change::Remove(name) => {
-                    manifest.packages.retain(|p| p.name != name);
-                }
             }
         }
-    }
-
-    /// Update a single package in the manifest
-    pub fn update_package(&self, package: Package) {
-        let mut manifest = self.manifest.write();
-        if let Some(idx) = manifest
-            .packages
-            .iter()
-            .position(|p| p.name == package.name)
-        {
-            manifest.packages[idx] = package;
-        } else {
-            manifest.packages.push(package);
-        }
-        manifest.rebuild_indexes();
-    }
-
-    /// Remove a package from the manifest
-    pub fn remove_package(&self, name: &str) -> bool {
-        let mut manifest = self.manifest.write();
-        let initial_len = manifest.packages.len();
-        manifest.packages.retain(|p| p.name.as_ref() != name);
-        let removed = manifest.packages.len() < initial_len;
-        if removed {
-            manifest.rebuild_indexes();
-        }
-        removed
     }
 }
 
@@ -196,13 +141,13 @@ impl SyncEngine {
 /// String interner for deduplication
 ///
 /// Uses hash-based lookup for O(1) average case deduplication
-pub struct StringInterner {
+pub(crate) struct StringInterner {
     map: RwLock<AHashMap<u64, Arc<str>>>,
 }
 
 impl StringInterner {
     /// Create a new empty interner
-    pub fn new() -> Self {
+    fn new() -> Self {
         StringInterner {
             map: RwLock::new(AHashMap::new()),
         }
@@ -213,7 +158,7 @@ impl StringInterner {
     /// If the string already exists, returns the existing Arc.
     /// Otherwise, creates a new Arc and stores it.
     #[inline]
-    pub fn intern(&self, s: &str) -> Arc<str> {
+    fn intern(&self, s: &str) -> Arc<str> {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = ahash::AHasher::default();
@@ -235,7 +180,7 @@ impl StringInterner {
 
     /// Intern a string that's already an Arc
     #[inline]
-    pub fn intern_arc(&self, s: Arc<str>) -> Arc<str> {
+    fn intern_arc(&self, s: Arc<str>) -> Arc<str> {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = ahash::AHasher::default();
@@ -256,18 +201,8 @@ impl StringInterner {
     }
 
     /// Get the number of interned strings
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.map.read().len()
-    }
-
-    /// Check if the interner is empty
-    pub fn is_empty(&self) -> bool {
-        self.map.read().is_empty()
-    }
-
-    /// Clear all interned strings
-    pub fn clear(&self) {
-        self.map.write().clear();
     }
 }
 

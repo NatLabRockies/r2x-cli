@@ -391,28 +391,28 @@ impl Parameter {
 /// Configuration class definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigClass {
-    pub name: Arc<str>,
-    pub module: Arc<str>,
+    name: Arc<str>,
+    module: Arc<str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub base: Option<Arc<str>>,
+    base: Option<Arc<str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_module: Option<Arc<str>>,
+    base_module: Option<Arc<str>>,
     #[serde(default)]
-    pub fields: Vec<ConfigField>,
+    fields: Vec<ConfigField>,
 }
 
 /// Field definition within a config class
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigField {
-    pub name: Arc<str>,
+    name: Arc<str>,
     #[serde(rename = "type")]
-    pub field_type: Arc<str>,
+    field_type: Arc<str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<Arc<str>>,
+    module: Option<Arc<str>>,
     #[serde(default)]
-    pub required: bool,
+    required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<DefaultValue>,
+    default: Option<DefaultValue>,
 }
 
 // =============================================================================
@@ -432,7 +432,7 @@ impl Manifest {
 
 impl Package {
     /// Rebuild plugin index
-    pub fn rebuild_plugin_index(&mut self) {
+    pub(crate) fn rebuild_plugin_index(&mut self) {
         self.plugin_index.clear();
         for (idx, plugin) in self.plugins.iter().enumerate() {
             self.plugin_index.insert(plugin.name.clone(), idx);
@@ -440,7 +440,8 @@ impl Package {
     }
 
     /// Pre-compute hash for fast equality check
-    pub fn compute_hash(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn compute_hash(&mut self) {
         use std::hash::{Hash, Hasher};
         let mut hasher = ahash::AHasher::default();
         self.name.hash(&mut hasher);

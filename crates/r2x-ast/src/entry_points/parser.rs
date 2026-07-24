@@ -12,7 +12,7 @@ use r2x_logger as logger;
 /// - `[r2x.*]` - any section starting with "r2x." (e.g., r2x.transforms, r2x.parsers)
 ///
 /// Returns a vector of EntryPointInfo for all discovered entry points.
-pub fn parse_all_entry_points(content: &str) -> Vec<EntryPointInfo> {
+pub(crate) fn parse_all_entry_points(content: &str) -> Vec<EntryPointInfo> {
     let mut entries = Vec::new();
     let mut current_section: Option<String> = None;
 
@@ -52,12 +52,12 @@ pub fn parse_all_entry_points(content: &str) -> Vec<EntryPointInfo> {
 }
 
 /// Check if a section name is r2x-related
-pub fn is_r2x_section(section: &str) -> bool {
+pub(crate) fn is_r2x_section(section: &str) -> bool {
     section == "r2x_plugin" || section.starts_with("r2x.")
 }
 
 /// Parse a single entry point line in the format: name = module:symbol
-pub fn parse_entry_point_line(line: &str, section: &str) -> Option<EntryPointInfo> {
+pub(crate) fn parse_entry_point_line(line: &str, section: &str) -> Option<EntryPointInfo> {
     let eq_idx = line.find('=')?;
     let name = line[..eq_idx].trim();
     let value = line[eq_idx + 1..].trim();

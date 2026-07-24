@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 /// 2. Parent of package_path
 /// 3. Parent of discovery_root
 /// 4. Grandparent of discovery_root
-pub fn find_pyproject_toml_path(package_path: &Path, discovery_root: &Path) -> Option<PathBuf> {
+pub(crate) fn find_pyproject_toml_path(
+    package_path: &Path,
+    discovery_root: &Path,
+) -> Option<PathBuf> {
     let mut seen = HashSet::new();
     let candidates = [
         Some(package_path),
@@ -42,7 +45,7 @@ pub fn find_pyproject_toml_path(package_path: &Path, discovery_root: &Path) -> O
 /// Parse entry points from pyproject.toml content (PEP 621 format)
 ///
 /// Looks for entry points in `[project.entry-points]` table.
-pub fn parse_pyproject_entry_points(content: &str) -> Vec<EntryPointInfo> {
+pub(crate) fn parse_pyproject_entry_points(content: &str) -> Vec<EntryPointInfo> {
     let mut entries = Vec::new();
     let parsed: toml::Value = match toml::from_str(content) {
         Ok(parsed) => parsed,

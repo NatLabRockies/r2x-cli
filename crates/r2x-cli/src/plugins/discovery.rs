@@ -12,21 +12,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Options for plugin discovery and registration
-pub struct DiscoveryOptions {
-    pub package: String,
-    pub package_name_full: String,
-    pub dependencies: Vec<String>,
-    pub package_version: Option<String>,
-    pub no_cache: bool,
-    pub editable: bool,
+pub(crate) struct DiscoveryOptions {
+    pub(crate) package: String,
+    pub(crate) package_name_full: String,
+    pub(crate) dependencies: Vec<String>,
+    pub(crate) package_version: Option<String>,
+    pub(crate) no_cache: bool,
+    pub(crate) editable: bool,
     /// Local filesystem path for editable installs (used for AST discovery)
-    pub source_path: Option<String>,
+    pub(crate) source_path: Option<String>,
     /// Display URI stored in manifest (git URL or local path)
-    pub source_uri: Option<String>,
+    pub(crate) source_uri: Option<String>,
 }
 
 /// Discover and register plugins from a package and its dependencies
-pub fn discover_and_register_entry_points_with_deps(
+pub(crate) fn discover_and_register_entry_points_with_deps(
     locator: &PackageLocator,
     venv_path: Option<&str>,
     manifest: &mut Manifest,

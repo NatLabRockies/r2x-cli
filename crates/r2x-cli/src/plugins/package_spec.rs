@@ -1,7 +1,7 @@
 use crate::plugins::error::PluginError;
 
 /// Check if a string looks like a local filesystem path.
-pub fn is_local_path(s: &str) -> bool {
+pub(crate) fn is_local_path(s: &str) -> bool {
     s.starts_with("./") || s.starts_with("../") || s.starts_with('/') || s == "." || s == ".."
 }
 
@@ -14,7 +14,7 @@ pub fn is_local_path(s: &str) -> bool {
 ///   - `https://github.com/org/repo`           (HTTPS without .git)
 ///   - `http://github.com/org/repo`            (HTTP)
 ///   - `git+ssh://...` / `git+https://...`     (pip-style prefixed)
-pub fn is_git_url(s: &str) -> bool {
+pub(crate) fn is_git_url(s: &str) -> bool {
     s.starts_with("git+")
         || s.starts_with("git@")
         || s.starts_with("ssh://")
@@ -23,7 +23,8 @@ pub fn is_git_url(s: &str) -> bool {
 }
 
 /// Check if a string uses the `gh:owner/repo` shorthand.
-pub fn is_github_shorthand(s: &str) -> bool {
+#[cfg(test)]
+fn is_github_shorthand(s: &str) -> bool {
     let Some(rest) = s.strip_prefix("gh:") else {
         return false;
     };
@@ -106,7 +107,7 @@ fn strip_git_ref(url: &str) -> &str {
 ///   - `https://github.com/org/R2X.git@main` → `R2X`
 ///   - `git+ssh://git@host/org/R2X.git`      → `R2X`
 ///   - `r2x-reeds`                            → `r2x-reeds`
-pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
+pub(crate) fn extract_package_name(package: &str) -> Result<String, PluginError> {
     let pkg = strip_git_ref(package);
 
     if let Some(repo_path) = pkg.strip_prefix("gh:") {
@@ -152,7 +153,7 @@ pub fn extract_package_name(package: &str) -> Result<String, PluginError> {
 /// Build package specifier for pip install.
 ///
 /// Handles PyPI packages, local paths, git URLs (any format), and `gh:owner/repo` shorthand.
-pub fn build_package_spec(
+pub(crate) fn build_package_spec(
     package: &str,
     host: Option<String>,
     branch: Option<String>,

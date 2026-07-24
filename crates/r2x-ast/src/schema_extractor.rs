@@ -52,7 +52,7 @@ pub struct SchemaExtractor {
 
 impl SchemaExtractor {
     /// Create a new schema extractor
-    pub fn new() -> Self {
+    fn new() -> Self {
         SchemaExtractor {
             import_map: HashMap::new(),
             type_resolver: None,
@@ -60,17 +60,8 @@ impl SchemaExtractor {
         }
     }
 
-    /// Create a schema extractor with an import map for type resolution
-    pub fn with_imports(import_map: HashMap<String, String>) -> Self {
-        SchemaExtractor {
-            import_map,
-            type_resolver: None,
-            max_depth: DEFAULT_MAX_DEPTH,
-        }
-    }
-
     /// Create a schema extractor with a type resolver for nested type extraction
-    pub fn with_resolver(
+    pub(crate) fn with_resolver(
         import_map: HashMap<String, String>,
         resolver: Arc<dyn TypeResolver>,
     ) -> Self {
@@ -85,7 +76,7 @@ impl SchemaExtractor {
     ///
     /// Optimized to use a single AST parse - finds the class and extracts
     /// fields in one pass without re-parsing.
-    pub fn extract(&self, content: &str, class_name: &str) -> Result<SchemaFields> {
+    fn extract(&self, content: &str, class_name: &str) -> Result<SchemaFields> {
         let mut fields = SchemaFields::default();
 
         let sg = AstGrep::new(content, Python);
@@ -117,7 +108,11 @@ impl SchemaExtractor {
     ///
     /// # Returns
     /// SchemaFields with nested properties populated for object types
-    pub fn extract_with_nesting(&self, content: &str, class_name: &str) -> Result<SchemaFields> {
+    pub(crate) fn extract_with_nesting(
+        &self,
+        content: &str,
+        class_name: &str,
+    ) -> Result<SchemaFields> {
         let mut visited = std::collections::HashSet::new();
         self.extract_recursive(content, class_name, 0, &mut visited)
     }
@@ -506,7 +501,7 @@ fn find_first_arg_end(text: &str) -> Option<usize> {
 }
 
 /// Extract description from Field(description="...") or Field(..., description="...")
-pub fn extract_description_from_field(text: &str) -> Option<String> {
+pub(crate) fn extract_description_from_field(text: &str) -> Option<String> {
     if let Some(start) = text.find("description=") {
         let rest = &text[start + 12..];
         // Find opening quote
@@ -526,7 +521,7 @@ pub fn extract_description_from_field(text: &str) -> Option<String> {
 /// - "int | str | None" -> vec!["int", "str", "None"]
 /// - "Annotated[int | str, Field(...)]" -> vec!["int", "str"]
 /// - "str" -> vec!["str"]
-pub fn parse_union_types_from_annotation(annotation: &str) -> Vec<String> {
+pub(crate) fn parse_union_types_from_annotation(annotation: &str) -> Vec<String> {
     let annotation = annotation.trim();
 
     // Handle Annotated[X, Field(...)] - extract the actual type first

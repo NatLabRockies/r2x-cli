@@ -64,6 +64,35 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  hawk:
+    name: Hawk visibility analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.97.1
+          rustflags: ""
+
+      - name: Setup uv & Python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
+
+      - name: Install Hawk
+        env:
+          # renovate: datasource=github-releases depName=astral-sh/hawk
+          HAWK_VERSION: "0.1.9"
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/astral-sh/hawk/releases/download/${HAWK_VERSION}/cargo-hawk-installer.sh" | sh
+
+      - name: Hawk
+        run: cargo +1.97.1 hawk check --target-dir target/hawk -D warnings
+
   test:
     name: Tests (${{ matrix.toolchain }}, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

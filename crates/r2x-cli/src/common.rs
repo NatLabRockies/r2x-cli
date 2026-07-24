@@ -47,7 +47,7 @@ impl GlobalOpts {
     }
 
     /// Returns true when output (plugin stdout) should be fully suppressed
-    pub fn suppress_stdout(&self) -> bool {
+    pub(crate) fn suppress_stdout(&self) -> bool {
         self.quiet >= 2
     }
 }

@@ -4,7 +4,9 @@
 //! including CRUD operations, dependency tracking, and persistence.
 
 use crate::errors::ManifestError;
-use crate::types::{InstallType, Manifest, Package, PackageSource, Plugin};
+#[cfg(test)]
+use crate::types::Plugin;
+use crate::types::{InstallType, Manifest, Package, PackageSource};
 use smallvec::SmallVec;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,7 @@ pub struct RemovedPackage {
 
 impl Manifest {
     /// Get the default path to the manifest file
-    pub fn path() -> PathBuf {
+    fn path() -> PathBuf {
         // On Unix/macOS: use ~/.cache/r2x/manifest.toml
         // On Windows: use AppData/Local/r2x/manifest.toml
         #[cfg(not(target_os = "windows"))]
@@ -45,7 +47,7 @@ impl Manifest {
     }
 
     /// Load manifest from a specific path
-    pub fn load_from_path(path: &Path) -> Result<Self, ManifestError> {
+    fn load_from_path(path: &Path) -> Result<Self, ManifestError> {
         if !path.exists() {
             return Ok(Manifest::default());
         }
@@ -63,7 +65,7 @@ impl Manifest {
     }
 
     /// Save manifest to a specific path with atomic write
-    pub fn save_to_path(&self, path: &Path) -> Result<(), ManifestError> {
+    fn save_to_path(&self, path: &Path) -> Result<(), ManifestError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -100,7 +102,7 @@ impl Manifest {
 
     /// O(1) mutable package lookup by name
     #[inline]
-    pub fn get_package_mut(&mut self, name: &str) -> Option<&mut Package> {
+    fn get_package_mut(&mut self, name: &str) -> Option<&mut Package> {
         self.package_index
             .get(name)
             .copied()
@@ -136,7 +138,7 @@ impl Manifest {
     }
 
     /// Remove a package from the manifest
-    pub fn remove_package(&mut self, name: &str) -> bool {
+    fn remove_package(&mut self, name: &str) -> bool {
         if let Some(&idx) = self.package_index.get(name) {
             self.packages.remove(idx);
             self.rebuild_indexes();
@@ -146,38 +148,9 @@ impl Manifest {
         }
     }
 
-    /// Remove all plugins belonging to a package from the manifest
-    pub fn remove_plugins_by_package(&mut self, package_name: &str) -> usize {
-        if let Some(pkg) = self.get_package_mut(package_name) {
-            let count = pkg.plugins.len();
-            pkg.plugins.clear();
-            pkg.plugin_index.clear();
-            count
-        } else {
-            0
-        }
-    }
-
-    /// List all plugins (compatibility method) - returns (plugin_name, package_name) tuples
-    pub fn list_plugins(&self) -> Vec<(String, String)> {
-        self.packages
-            .iter()
-            .flat_map(|pkg| {
-                pkg.plugins
-                    .iter()
-                    .map(move |plugin| (plugin.name.to_string(), pkg.name.to_string()))
-            })
-            .collect()
-    }
-
     /// Check if manifest has no packages
     pub fn is_empty(&self) -> bool {
         self.packages.is_empty()
-    }
-
-    /// List all plugins across all packages (compatibility helper)
-    pub fn list_all_plugins(&self) -> Vec<(String, String)> {
-        self.list_plugins()
     }
 
     /// Count total plugins across all packages
@@ -267,68 +240,26 @@ impl Manifest {
 
     /// Remove a package and its dependencies if no other packages depend on them
     /// Returns list of packages removed
-    pub fn remove_package_with_deps(&mut self, package_name: &str) -> Vec<String> {
+    #[cfg(test)]
+    fn remove_package_with_deps(&mut self, package_name: &str) -> Vec<String> {
         self.remove_package_with_deps_summary(package_name)
             .into_iter()
             .map(|removed| removed.name)
             .collect()
-    }
-
-    /// Check if a package can be safely removed (has no dependents)
-    pub fn can_remove_package(&self, package_name: &str) -> bool {
-        // Check if any other package depends on this one
-        !self.packages.iter().any(|pkg| {
-            pkg.dependencies
-                .iter()
-                .any(|dep| dep.as_ref() == package_name)
-        })
-    }
-
-    /// Get all packages that depend on the given package
-    pub fn get_dependents(&self, package_name: &str) -> Vec<String> {
-        self.packages
-            .iter()
-            .filter(|pkg| {
-                pkg.dependencies
-                    .iter()
-                    .any(|dep| dep.as_ref() == package_name)
-            })
-            .map(|pkg| pkg.name.to_string())
-            .collect()
-    }
-
-    /// Serialize this Manifest to a JSON string
-    pub fn to_json_string(&self) -> String {
-        serde_json::to_string_pretty(&self).unwrap_or_else(|_| "{}".to_string())
-    }
-
-    /// Return the manifest JSON for CLI/UI consumers
-    pub fn get_manifest_json() -> String {
-        match Manifest::load() {
-            Ok(manifest) => manifest.to_json_string(),
-            Err(_) => "{}".to_string(),
-        }
     }
 }
 
 impl Package {
     /// Get a plugin by name with O(1) lookup
     #[inline]
-    pub fn get_plugin(&self, name: &str) -> Option<&Plugin> {
+    #[cfg(test)]
+    fn get_plugin(&self, name: &str) -> Option<&Plugin> {
         self.plugin_index.get(name).map(|&idx| &self.plugins[idx])
     }
 
-    /// Get a mutable plugin by name
-    #[inline]
-    pub fn get_plugin_mut(&mut self, name: &str) -> Option<&mut Plugin> {
-        self.plugin_index
-            .get(name)
-            .copied()
-            .map(move |idx| &mut self.plugins[idx])
-    }
-
     /// Add a plugin to the package
-    pub fn add_plugin(&mut self, plugin: Plugin) {
+    #[cfg(test)]
+    fn add_plugin(&mut self, plugin: Plugin) {
         let name = plugin.name.clone();
         let idx = self.plugins.len();
         self.plugins.push(plugin);
@@ -336,7 +267,8 @@ impl Package {
     }
 
     /// Remove a plugin from the package
-    pub fn remove_plugin(&mut self, name: &str) -> bool {
+    #[cfg(test)]
+    fn remove_plugin(&mut self, name: &str) -> bool {
         if let Some(&idx) = self.plugin_index.get(name) {
             self.plugins.remove(idx);
             self.rebuild_plugin_index();
@@ -350,7 +282,7 @@ impl Package {
 #[cfg(test)]
 mod tests {
     use crate::manifest::*;
-    use crate::types::PluginType;
+    use crate::types::{Plugin, PluginType};
 
     #[test]
     fn test_manifest_default() {

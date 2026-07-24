@@ -35,7 +35,7 @@ pub fn get_log_python() -> bool {
 }
 
 /// Set whether Python logging to console is enabled
-pub fn set_log_python(enabled: bool) {
+fn set_log_python(enabled: bool) {
     if let Ok(mut v) = LOG_PYTHON.lock() {
         *v = enabled;
     }
@@ -47,15 +47,10 @@ pub fn get_no_stdout() -> bool {
 }
 
 /// Set whether stdout logging is disabled
-pub fn set_no_stdout(disabled: bool) {
+fn set_no_stdout(disabled: bool) {
     if let Ok(mut v) = NO_STDOUT.lock() {
         *v = disabled;
     }
-}
-
-/// Get the current plugin name being executed
-pub fn get_current_plugin() -> Option<String> {
-    CURRENT_PLUGIN.lock().ok().and_then(|guard| guard.clone())
 }
 
 /// Set the current plugin name being executed
@@ -63,21 +58,6 @@ pub fn set_current_plugin(plugin_name: Option<String>) {
     if let Ok(mut v) = CURRENT_PLUGIN.lock() {
         *v = plugin_name;
     }
-}
-
-/// Convert verbosity level to loguru log level string
-/// 0 = warn only, 1 = debug (-v), 2 = trace (-vv)
-pub fn verbosity_to_loguru_level() -> String {
-    match get_verbosity() {
-        0 => "WARNING".to_string(),
-        1 => "DEBUG".to_string(),
-        _ => "TRACE".to_string(),
-    }
-}
-
-/// Initialize the logger with a log file path and verbosity level
-pub fn init_with_verbosity(verbosity: u8, log_python: bool, no_stdout: bool) -> Result<(), String> {
-    init_with_config(verbosity, log_python, no_stdout, None, None)
 }
 
 /// Initialize logger with optional path override, file level, and max file size.
@@ -241,13 +221,6 @@ pub fn debug_lazy(message: impl FnOnce() -> String) {
     }
 }
 
-/// Log a debug message to console only (not to file)
-pub fn debug_console_only(message: &str) {
-    if get_verbosity() >= 1 {
-        eprintln!("{} {}", "DEBUG:".blue().bold(), message);
-    }
-}
-
 /// Log a warning message (to both file and console)
 pub fn warn(message: &str) {
     write_to_log(LogLevel::Warn, &format!("WARN {}", message));
@@ -340,17 +313,6 @@ pub fn get_log_path_string() -> String {
     }
 }
 
-/// Print the log file path to the user
-pub fn show_log_path() {
-    if let Some(path) = get_log_path() {
-        eprintln!("Log file: {}", path.display());
-    } else if let Ok(config_dir) = get_config_dir() {
-        eprintln!("Log file: {}", config_dir.join("r2x.log").display());
-    } else {
-        eprintln!("Log file location not available");
-    }
-}
-
 /// Start a spinner with the given message (only if not verbose)
 pub fn spinner_start(message: &str) {
     // Don't show spinner in verbose mode
@@ -405,15 +367,6 @@ pub fn spinner_error(message: &str) {
     }
     // Show error message with cross
     eprintln!("  {} {}", "✗".red().bold(), message);
-}
-
-/// Stop the spinner without any message
-pub fn spinner_stop() {
-    if let Ok(mut spinner_guard) = SPINNER.lock() {
-        if let Some(spinner) = spinner_guard.take() {
-            spinner.finish_and_clear();
-        }
-    }
 }
 
 #[cfg(test)]
