@@ -1,12 +1,15 @@
 //! Integration tests for r2x
 
-use assert_cmd::{cargo::cargo_bin_cmd, Command};
+use assert_cmd::{
+    cargo::{cargo_bin, cargo_bin_cmd},
+    Command,
+};
 use predicates::prelude::*;
 use std::cell::RefCell;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+use std::process::{Command as StdCommand, Stdio};
 use tempfile::TempDir;
 use which::which;
 
@@ -595,6 +598,132 @@ output_folder: "{output}"
 }
 
 #[test]
+fn test_pipeline_output_retains_system_sidecar_bundle() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+    let pipeline_path = env.home_path().join("pipelines").join("sidecar.yaml");
+    let output_path = env.home_path().join("exports").join("result.json");
+    let pipeline_yaml = "pipelines:
+  sidecar:
+    - r2x_reeds.system_with_sidecar
+";
+    if fs::write(&pipeline_path, pipeline_yaml).is_err() {
+        return;
+    }
+
+    env.command()
+        .arg("run")
+        .arg(pipeline_path.to_string_lossy().to_string())
+        .arg("sidecar")
+        .args(["--no-stdout", "--output"])
+        .arg(&output_path)
+        .assert()
+        .success();
+
+    assert!(output_path.is_file());
+    assert!(output_path.parent().is_some_and(|parent| parent
+        .join("system_time_series/time_series_metadata.db")
+        .is_file()));
+}
+
+#[test]
+fn test_pipeline_sidecar_handoff_pipes_to_read_and_cleans_up() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+    let pipeline_path = env
+        .home_path()
+        .join("pipelines")
+        .join("sidecar-handoff.yaml");
+    let pipeline_yaml = "pipelines:
+  sidecar-handoff:
+    - r2x_reeds.system_with_sidecar
+";
+    if fs::write(&pipeline_path, pipeline_yaml).is_err() {
+        return;
+    }
+    let empty_cwd = env.home_path().join("empty-cwd");
+    if fs::create_dir_all(&empty_cwd).is_err() {
+        return;
+    }
+
+    let mut pipeline = env.std_command();
+    pipeline
+        .current_dir(&empty_cwd)
+        .arg("run")
+        .arg(&pipeline_path)
+        .arg("sidecar-handoff")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let Ok(mut pipeline_child) = pipeline.spawn() else {
+        return;
+    };
+    let Some(pipeline_stdout) = pipeline_child.stdout.take() else {
+        return;
+    };
+
+    let read_output = env
+        .std_command()
+        .current_dir(&empty_cwd)
+        .env("R2X_READ_NONINTERACTIVE", "1")
+        .args(["read", "--no-banner"])
+        .stdin(Stdio::from(pipeline_stdout))
+        .output();
+    let Ok(read_output) = read_output else {
+        return;
+    };
+    let Ok(pipeline_status) = pipeline_child.wait() else {
+        return;
+    };
+
+    assert!(pipeline_status.success());
+    assert!(read_output.status.success());
+    let handoffs = env
+        .home_path()
+        .join(".cache")
+        .join("r2x")
+        .join("pipeline-artifacts")
+        .join("handoffs");
+    assert!(fs::read_dir(handoffs).is_ok_and(|mut entries| entries.next().is_none()));
+}
+
+#[test]
+fn test_pipeline_artifact_upgrader_preserves_sidecar_bundle() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+    let pipeline_path = env
+        .home_path()
+        .join("pipelines")
+        .join("artifact-upgrader.yaml");
+    let output_path = env.home_path().join("upgraded.json");
+    let pipeline_yaml = format!(
+        "pipelines:\n  artifact-upgrader:\n    - r2x_reeds.system_with_sidecar\n    - r2x-sienna.upgrader\n\nconfig:\n  r2x-sienna.upgrader:\n    path: \"{}\"\n",
+        env.home_path().display()
+    );
+    if fs::write(&pipeline_path, pipeline_yaml).is_err() {
+        return;
+    }
+
+    env.command()
+        .arg("run")
+        .arg(pipeline_path.to_string_lossy().to_string())
+        .arg("artifact-upgrader")
+        .args(["--no-stdout", "--output"])
+        .arg(&output_path)
+        .assert()
+        .success();
+
+    assert!(fs::read_to_string(&output_path).is_ok_and(|output| {
+        output.contains("\"upgraded\": \"sienna\"") && output.contains("pipeline-artifacts")
+    }));
+    assert!(output_path.parent().is_some_and(|parent| parent
+        .join("system_time_series/time_series_metadata.db")
+        .is_file()));
+}
+
+#[test]
 fn test_run_plugin_benchmark_repeat_outputs_summary() {
     let Ok(env) = PipelineHarness::new() else {
         return;
@@ -836,6 +965,8 @@ impl PipelineHarness {
         let sienna_data = data_root.join("sienna-store");
         fs::create_dir_all(&reeds_data)?;
         fs::create_dir_all(&sienna_data)?;
+        let sienna_system = sienna_data.join("system.json");
+        fs::write(&sienna_system, r#"{"system":"sienna","status":"input"}"#)?;
 
         let output_root = home_path.join("output");
         fs::create_dir_all(&output_root)?;
@@ -852,7 +983,10 @@ impl PipelineHarness {
             build_reeds_pipeline(&reeds_data, &reeds_output),
         )?;
         let s2p_pipeline = pipelines_dir.join("s2p.yaml");
-        fs::write(&s2p_pipeline, build_s2p_pipeline(&sienna_data, &s2p_output))?;
+        fs::write(
+            &s2p_pipeline,
+            build_s2p_pipeline(&sienna_system, &s2p_output),
+        )?;
 
         Ok(Self {
             _home: home,
@@ -865,6 +999,17 @@ impl PipelineHarness {
 
     fn command(&self) -> Command {
         let mut cmd = cargo_bin_cmd!("r2x");
+        cmd.env("HOME", self.home_path());
+        cmd.env("R2X_CONFIG", &self.config_path);
+        cmd.env(
+            "PYTHONPATH",
+            self.site_packages.to_string_lossy().to_string(),
+        );
+        cmd
+    }
+
+    fn std_command(&self) -> StdCommand {
+        let mut cmd = StdCommand::new(cargo_bin("r2x"));
         cmd.env("HOME", self.home_path());
         cmd.env("R2X_CONFIG", &self.config_path);
         cmd.env(
@@ -1058,6 +1203,12 @@ name = "r2x_reeds.with_system_function"
 type = "function"
 module = "r2x_reeds.parser"
 function_name = "with_system_function"
+
+[[packages.plugins]]
+name = "r2x_reeds.system_with_sidecar"
+type = "function"
+module = "r2x_reeds.parser"
+function_name = "system_with_sidecar"
 
 [[packages]]
 name = "r2x-sienna"

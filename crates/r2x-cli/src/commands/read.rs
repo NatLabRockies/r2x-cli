@@ -1,6 +1,9 @@
 use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
+use r2x_artifacts::artifact_handoff::{
+    claim_handoff, parse_handoff_envelope, ClaimedArtifactHandoff,
+};
 use r2x_config::Config;
 use r2x_logger as logger;
 use std::fs;
@@ -11,8 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser, Debug)]
 pub struct ReadCommand {
-    /// Path to JSON file to read. If not provided, reads from stdin
+    /// Path to JSON or ZIP file to read. If not provided, reads from stdin
     pub file: Option<PathBuf>,
+
+    /// Treat the input file as an infrasys ZIP archive
+    #[arg(long)]
+    pub zip: bool,
 
     /// Suppress the startup banner
     #[arg(long = "no-banner")]
@@ -29,6 +36,11 @@ pub struct ReadCommand {
 
 pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     logger::debug("Starting read command");
+
+    if cmd.zip && cmd.file.is_none() {
+        return Err("--zip requires a ZIP file path; it cannot be used with stdin".into());
+    }
+    let load_zip = cmd.zip;
 
     // Load configuration
     let mut config = Config::load()?;
@@ -49,13 +61,15 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
 
     ensure_prerequisites(&mut config, &python_exe)?;
 
-    // Determine if input is from stdin (for banner display)
-    let is_stdin = cmd.file.is_none();
-
-    // Load JSON input
-    let json_file_path = if let Some(file_path) = cmd.file {
+    let (json_file_path, source_is_stdin, display_source, _claimed_handoff): (
+        PathBuf,
+        bool,
+        String,
+        Option<ClaimedArtifactHandoff>,
+    ) = if let Some(file_path) = cmd.file {
         logger::debug(&format!("Reading JSON from file: {}", file_path.display()));
-        file_path
+        let display_source = file_path.display().to_string();
+        (file_path, false, display_source, None)
     } else {
         if atty::is(Stream::Stdin) {
             logger::info("No JSON input detected; please provide --file or pipe JSON via stdin.");
@@ -71,26 +85,35 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
             .map_err(|e| format!("Failed to read from stdin: {}", e))?;
 
         let cache_dir = config.ensure_cache_path()?;
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let temp_json = PathBuf::from(cache_dir).join(format!("stdin_input_{}.json", unique));
-        fs::write(&temp_json, &json_data)
-            .map_err(|e| format!("Failed to write temporary JSON file: {}", e))?;
+        let cache_root = PathBuf::from(&cache_dir);
+        if let Some(envelope) = parse_handoff_envelope(&json_data)? {
+            let handoff = claim_handoff(&cache_root, &envelope)?;
+            let entrypoint = handoff.entrypoint_path();
+            logger::debug(&format!(
+                "Claimed piped artifact handoff at {}",
+                entrypoint.display()
+            ));
+            (
+                entrypoint,
+                false,
+                "[piped artifact handoff]".to_string(),
+                Some(handoff),
+            )
+        } else {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let temp_json = cache_root.join(format!("stdin_input_{}.json", unique));
+            fs::write(&temp_json, &json_data)
+                .map_err(|e| format!("Failed to write temporary JSON file: {}", e))?;
 
-        logger::debug(&format!(
-            "Saved stdin to temporary file: {}",
-            temp_json.display()
-        ));
-        temp_json
-    };
-
-    // Determine the display source for the banner
-    let display_source = if is_stdin {
-        "[piped from stdin]".to_string()
-    } else {
-        json_file_path.display().to_string()
+            logger::debug(&format!(
+                "Saved stdin to temporary file: {}",
+                temp_json.display()
+            ));
+            (temp_json, true, "[piped from stdin]".to_string(), None)
+        }
     };
 
     // Generate Python initialization code
@@ -100,7 +123,7 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
         .replace('\\', "\\\\");
 
     let display_source_str = display_source.replace('\\', "\\\\").replace('\'', "\\'");
-    let source_is_stdin = if is_stdin { "True" } else { "False" };
+    let source_is_stdin = if source_is_stdin { "True" } else { "False" };
 
     let python_code = format!(
         r#"
@@ -725,7 +748,7 @@ class R2XMagics:
 
         Usage:
             %reload              - Reload from original file
-            %reload other.json   - Load a different file
+            %reload other.json   - Load a different JSON or ZIP file
         """
         line = line.strip()
 
@@ -752,25 +775,22 @@ class R2XMagics:
             print(f"  Error: Not a file: {{file_path}}")
             return
 
-        # Load and parse the JSON file
+        # Load and parse the JSON or ZIP file
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            if file_path.suffix.lower() == ".zip":
+                new_system = System.load(file_path)
+            else:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                time_series_parent_dir = Path(file_path).resolve().parent
+                missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
+                if missing_sidecar is not None:
+                    print(format_time_series_sidecar_error(*missing_sidecar))
+                    return
+                new_system = System.from_dict(data, time_series_parent_dir)
         except json.JSONDecodeError as e:
             print(format_json_error(str(file_path), e))
             return
-        except Exception as e:
-            print(f"  Error reading file: {{e}}")
-            return
-
-        # Create new System object
-        try:
-            time_series_parent_dir = Path(file_path).resolve().parent
-            missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
-            if missing_sidecar is not None:
-                print(format_time_series_sidecar_error(*missing_sidecar))
-                return
-            new_system = System.from_dict(data, time_series_parent_dir)
         except Exception as e:
             print(format_system_error(e))
             return
@@ -1138,6 +1158,7 @@ def print_startup_banner(display_source, plugins):
 DISPLAY_SOURCE = r'''{}'''
 JSON_PATH = r'''{}'''
 SOURCE_IS_STDIN = {}
+SOURCE_IS_ZIP = {}
 
 
 def format_json_error(json_path, error):
@@ -1234,7 +1255,7 @@ def format_time_series_sidecar_error(kind, path):
 
 
 def format_system_error(error):
-    """Format a System.from_dict error with suggestions for common fixes."""
+    """Format a system loading error with suggestions for common fixes."""
     msg_lines = []
     msg_lines.append("\n  System Loading Error")
     msg_lines.append("  " + "-" * 50)
@@ -1273,22 +1294,29 @@ def format_system_error(error):
 
 
 try:
-    with open(JSON_PATH, 'r', encoding='utf-8') as handle:
+    if SOURCE_IS_ZIP:
         try:
-            data = json.load(handle)
-        except json.JSONDecodeError as e:
-            print(format_json_error(JSON_PATH, e), file=py_sys.stderr)
+            system = System.load(JSON_PATH)
+        except Exception as e:
+            print(format_system_error(e), file=py_sys.stderr)
             py_sys.exit(1)
-    time_series_parent_dir = time_series_parent_dir_for(JSON_PATH, SOURCE_IS_STDIN)
-    missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
-    if missing_sidecar is not None:
-        print(format_time_series_sidecar_error(*missing_sidecar), file=py_sys.stderr)
-        py_sys.exit(1)
-    try:
-        system = System.from_dict(data, time_series_parent_dir)
-    except Exception as e:
-        print(format_system_error(e), file=py_sys.stderr)
-        py_sys.exit(1)
+    else:
+        with open(JSON_PATH, 'r', encoding='utf-8') as handle:
+            try:
+                data = json.load(handle)
+            except json.JSONDecodeError as e:
+                print(format_json_error(JSON_PATH, e), file=py_sys.stderr)
+                py_sys.exit(1)
+        time_series_parent_dir = time_series_parent_dir_for(JSON_PATH, SOURCE_IS_STDIN)
+        missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
+        if missing_sidecar is not None:
+            print(format_time_series_sidecar_error(*missing_sidecar), file=py_sys.stderr)
+            py_sys.exit(1)
+        try:
+            system = System.from_dict(data, time_series_parent_dir)
+        except Exception as e:
+            print(format_system_error(e), file=py_sys.stderr)
+            py_sys.exit(1)
 except FileNotFoundError:
     print(f"\n  Error: File not found: {{JSON_PATH}}", file=py_sys.stderr)
     py_sys.exit(1)
@@ -1405,7 +1433,10 @@ shell(
     global_ns=context,
 )
 "#,
-        display_source_str, file_path_str, source_is_stdin
+        display_source_str,
+        file_path_str,
+        source_is_stdin,
+        if load_zip { "True" } else { "False" }
     );
 
     logger::debug("Generated Python initialization code");
@@ -1420,17 +1451,16 @@ shell(
     let ipython_dir = ensure_ipython_dir();
     let stdin_is_tty = atty::is(Stream::Stdin);
     let stdout_is_tty = atty::is(Stream::Stdout);
-    let interactive_prompt = stdin_is_tty && stdout_is_tty;
 
-    // Only redirect stdio to /dev/tty when running interactively. In non-interactive
-    // contexts (tests, piped output) we must use inherited stdio so that Python's
-    // stderr (e.g. sidecar validation errors) reaches the caller's captured fd 2.
-    let (stdin_stdio, stdout_stdio, stderr_stdio) = if interactive_prompt {
-        let (_tty_attached, stdin_tty, stdout_tty, stderr_tty) = acquire_tty_stdio();
-        (stdin_tty, stdout_tty, stderr_tty)
+    // A pipeline gives stdin to the JSON payload, but `r2x read` must still
+    // attach its interactive session to the caller's terminal. Keep inherited
+    // streams when stdout is captured so tests and sidecar errors remain visible.
+    let (tty_attached, stdin_stdio, stdout_stdio, stderr_stdio) = if stdout_is_tty {
+        acquire_tty_stdio()
     } else {
-        (Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
+        (false, Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
     };
+    let interactive_prompt = stdout_is_tty && tty_attached;
 
     // Spawn IPython bootstrap script with interactive embed
     let mut command = build_python_launch_command(&python_exe, &bootstrap_script);
@@ -1461,7 +1491,10 @@ shell(
         command
             .env("PY_COLORS", "1")
             .env("CLICOLOR_FORCE", "1")
-            .env("R2X_FORCE_SIMPLE_PROMPT", "0");
+            .env(
+                "R2X_FORCE_SIMPLE_PROMPT",
+                if stdin_is_tty { "0" } else { "1" },
+            );
     } else {
         command.env("R2X_FORCE_SIMPLE_PROMPT", "1");
     }
@@ -1718,6 +1751,7 @@ mod tests {
     fn test_read_command_creation() {
         let cmd = ReadCommand {
             file: None,
+            zip: false,
             no_banner: false,
             exec: None,
             interactive: false,
@@ -1732,6 +1766,7 @@ mod tests {
     fn test_read_command_with_file() {
         let cmd = ReadCommand {
             file: Some(PathBuf::from("test.json")),
+            zip: false,
             no_banner: false,
             exec: None,
             interactive: false,
@@ -1743,6 +1778,7 @@ mod tests {
     fn test_read_command_with_no_banner_flag() {
         let cmd = ReadCommand {
             file: None,
+            zip: false,
             no_banner: true,
             exec: None,
             interactive: false,
@@ -1754,6 +1790,7 @@ mod tests {
     fn test_read_command_with_exec_flag() {
         let cmd = ReadCommand {
             file: Some(PathBuf::from("system.json")),
+            zip: false,
             no_banner: false,
             exec: Some(PathBuf::from("script.py")),
             interactive: false,
@@ -1769,6 +1806,7 @@ mod tests {
     fn test_read_command_with_interactive_flag() {
         let cmd = ReadCommand {
             file: None,
+            zip: false,
             no_banner: false,
             exec: Some(PathBuf::from("script.py")),
             interactive: true,

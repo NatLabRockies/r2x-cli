@@ -141,6 +141,9 @@ r2x run pipeline.yaml my-pipeline
 
 # Execute and save output
 r2x run pipeline.yaml my-pipeline -o output.json
+
+# Save a System and its time-series sidecars as an infrasys ZIP archive
+r2x run pipeline.yaml my-pipeline --output output.zip --zip
 ```
 
 ### Running Plugins Directly
@@ -244,6 +247,9 @@ exploration:
 
 ```bash
 r2x read system.json
+
+# Load an infrasys ZIP archive
+r2x read system.zip --zip
 ```
 
 The session exposes `sys` (the loaded system), `plugins`

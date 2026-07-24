@@ -139,6 +139,8 @@ pub enum InstallType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plugin {
     pub name: Arc<str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_point_group: Option<Arc<str>>,
     #[serde(rename = "type")]
     pub plugin_type: PluginType,
     pub module: Arc<str>,
@@ -170,6 +172,7 @@ impl Default for Plugin {
     fn default() -> Self {
         Plugin {
             name: Arc::from(""),
+            entry_point_group: None,
             plugin_type: PluginType::Class,
             module: Arc::from(""),
             class_name: None,
@@ -447,7 +450,33 @@ impl Package {
         self.source_uri.hash(&mut hasher);
         for plugin in &self.plugins {
             plugin.name.hash(&mut hasher);
+            plugin.entry_point_group.hash(&mut hasher);
         }
         self.content_hash = hasher.finish();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::{Package, Plugin};
+    use std::sync::Arc;
+
+    #[test]
+    fn package_hash_includes_plugin_entry_point_group() {
+        let mut parser_package = Package {
+            plugins: vec![Plugin {
+                name: Arc::from("operation"),
+                entry_point_group: Some(Arc::from("r2x.parsers")),
+                ..Plugin::default()
+            }],
+            ..Package::default()
+        };
+        let mut transform_package = parser_package.clone();
+        transform_package.plugins[0].entry_point_group = Some(Arc::from("r2x.transforms"));
+
+        parser_package.compute_hash();
+        transform_package.compute_hash();
+
+        assert_ne!(parser_package.content_hash, transform_package.content_hash);
     }
 }

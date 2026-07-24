@@ -2,8 +2,9 @@ use crate::common::GlobalOpts;
 use crate::errors::PipelineError;
 use crate::help;
 use clap::Parser;
-use pipeline::handle_pipeline_mode;
+use pipeline::{handle_pipeline_mode, PipelineModeOptions};
 use plugin::handle_plugin_command;
+use r2x_artifacts::ArtifactError;
 use r2x_logger as logger;
 use r2x_manifest::errors::ManifestError;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
@@ -20,6 +21,7 @@ mod plugin;
 pub enum RunError {
     Manifest(ManifestError),
     Bridge(BridgeError),
+    Artifact(ArtifactError),
     Pipeline(PipelineError),
     Config(String),
     PluginNotFound(String),
@@ -32,6 +34,7 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Manifest(e) => write!(f, "Manifest error: {}", e),
             RunError::Bridge(e) => write!(f, "Python bridge error: {}", e),
+            RunError::Artifact(e) => write!(f, "Artifact error: {}", e),
             RunError::Pipeline(e) => write!(f, "Pipeline error: {}", e),
             RunError::Config(msg) => write!(f, "Configuration error: {}", msg),
             RunError::PluginNotFound(name) => {
@@ -59,6 +62,12 @@ impl From<BridgeError> for RunError {
     }
 }
 
+impl From<ArtifactError> for RunError {
+    fn from(e: ArtifactError) -> Self {
+        RunError::Artifact(e)
+    }
+}
+
 impl From<PipelineError> for RunError {
     fn from(e: PipelineError) -> Self {
         RunError::Pipeline(e)
@@ -81,6 +90,9 @@ pub struct RunCommand {
     pub dry_run: bool,
     #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<String>,
+    /// Save a system pipeline output as an infrasys ZIP archive
+    #[arg(long)]
+    pub zip: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -131,10 +143,13 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
             handle_pipeline_mode(
                 yaml_path,
                 cmd.pipeline_name,
-                cmd.list,
-                cmd.print,
-                cmd.dry_run,
-                cmd.output,
+                PipelineModeOptions {
+                    list: cmd.list,
+                    print: cmd.print,
+                    dry_run: cmd.dry_run,
+                    output: cmd.output,
+                    zip_output: cmd.zip,
+                },
                 &opts,
             )
         }
