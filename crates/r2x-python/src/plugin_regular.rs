@@ -472,6 +472,73 @@ impl Bridge {
         })
     }
 
+    pub(crate) fn save_system_artifact_as_zip_native(
+        &self,
+        input: &ArtifactBundle,
+        output: &Path,
+    ) -> Result<(), BridgeError> {
+        pyo3::Python::attach(|py| {
+            let system_module = PyModule::import(py, "r2x_core.system")?;
+            let system_class = system_module.getattr("System")?;
+            let entrypoint = python_path(py, &input.entrypoint_path())?;
+            let system = system_class
+                .getattr("from_json")?
+                .call1((entrypoint,))
+                .map_err(|error| {
+                    BridgeError::Python(format_python_error(
+                        py,
+                        error,
+                        &format!(
+                            "Failed to load System artifact {}",
+                            input.entrypoint_path().display()
+                        ),
+                    ))
+                })?;
+
+            let archive_base = output.with_extension("");
+            let base_path = python_path(py, &archive_base)?;
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("filename", "system.json")?;
+            kwargs.set_item("zip", true)?;
+            kwargs.set_item("overwrite", false)?;
+            system
+                .call_method("save", (base_path,), Some(&kwargs))
+                .map_err(|error| {
+                    BridgeError::Python(format_python_error(
+                        py,
+                        error,
+                        &format!("Failed to save System ZIP archive {}", output.display()),
+                    ))
+                })?;
+
+            let archive_metadata = fs::symlink_metadata(output).map_err(|error| {
+                BridgeError::InvalidArtifact(format!(
+                    "System.save completed without creating ZIP archive {}: {}",
+                    output.display(),
+                    error
+                ))
+            })?;
+            if archive_metadata.file_type().is_symlink() || !archive_metadata.is_file() {
+                return Err(BridgeError::InvalidArtifact(format!(
+                    "System.save created a non-file ZIP archive at {}",
+                    output.display()
+                )));
+            }
+            match fs::symlink_metadata(&archive_base) {
+                Ok(_) => {
+                    return Err(BridgeError::InvalidArtifact(format!(
+                        "System.save left temporary archive directory behind: {}",
+                        archive_base.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+
+            Ok(())
+        })
+    }
+
     pub(crate) fn invoke_plugin_regular_with_artifacts(
         &self,
         target: &str,

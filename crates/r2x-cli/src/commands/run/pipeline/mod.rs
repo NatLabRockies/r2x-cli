@@ -61,8 +61,15 @@ pub(super) fn handle_pipeline_mode(
     print: bool,
     dry_run: bool,
     output: Option<String>,
+    zip_output: bool,
     opts: &GlobalOpts,
 ) -> Result<(), RunError> {
+    if zip_output && (list || print || dry_run) {
+        return Err(RunError::InvalidArgs(
+            "--zip can only be used while executing a pipeline".to_string(),
+        ));
+    }
+
     let config = PipelineConfig::load(&yaml_path)?;
 
     if list {
@@ -80,7 +87,7 @@ pub(super) fn handle_pipeline_mode(
         if dry_run {
             show_pipeline_flow(&config, &name)?;
         } else {
-            run_pipeline(&config, &name, output.as_deref(), opts)?;
+            run_pipeline(&config, &name, output.as_deref(), zip_output, opts)?;
         }
     } else {
         return Err(RunError::InvalidArgs(
@@ -160,10 +167,16 @@ fn run_pipeline(
     config: &PipelineConfig,
     pipeline_name: &str,
     output_file: Option<&str>,
+    zip_output: bool,
     opts: &GlobalOpts,
 ) -> Result<(), RunError> {
     let execution = execute_pipeline(config, pipeline_name, opts)?;
-    write_pipeline_output(execution.final_payload.as_ref(), output_file, opts)
+    write_pipeline_output(
+        execution.final_payload.as_ref(),
+        output_file,
+        zip_output,
+        opts,
+    )
 }
 
 fn execute_pipeline(
@@ -404,12 +417,29 @@ fn execute_pipeline(
 fn write_pipeline_output(
     final_output: Option<&PipelinePayload>,
     output_file: Option<&str>,
+    zip_output: bool,
     opts: &GlobalOpts,
 ) -> Result<(), RunError> {
+    if zip_output && output_file.is_none() {
+        return Err(RunError::InvalidArgs(
+            "--zip requires --output <FILE>.zip".to_string(),
+        ));
+    }
+    if zip_output && final_output.is_none() {
+        return Err(RunError::InvalidArgs(
+            "--zip requested, but the pipeline produced no output".to_string(),
+        ));
+    }
+
     if let Some(final_output) = final_output {
         let no_stdout = opts.no_stdout || logger::get_no_stdout();
         match final_output {
             PipelinePayload::Inline(final_output) => {
+                if zip_output {
+                    return Err(RunError::InvalidArgs(
+                        "--zip is only supported for System pipeline outputs".to_string(),
+                    ));
+                }
                 if let Some(output_path) = output_file {
                     logger::step(&format!("Writing output to: {}", output_path));
                     std::fs::write(output_path, final_output.as_bytes())
@@ -427,11 +457,21 @@ fn write_pipeline_output(
                     write_bundle_output(
                         final_output,
                         Some(Path::new(output_path)),
+                        zip_output,
                         opts.suppress_stdout() || no_stdout,
                     )?;
-                    logger::success(&format!("Output bundle saved to: {}", output_path));
+                    if zip_output {
+                        logger::success(&format!("System ZIP archive saved to: {}", output_path));
+                    } else {
+                        logger::success(&format!("Output bundle saved to: {}", output_path));
+                    }
                 } else {
-                    write_bundle_output(final_output, None, opts.suppress_stdout() || no_stdout)?;
+                    write_bundle_output(
+                        final_output,
+                        None,
+                        false,
+                        opts.suppress_stdout() || no_stdout,
+                    )?;
                 }
             }
         }

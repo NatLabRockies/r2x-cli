@@ -165,6 +165,15 @@ impl crate::python_bridge::Bridge {
         self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings)
     }
 
+    /// Save a System artifact as an infrasys ZIP archive.
+    pub fn save_system_artifact_as_zip(
+        &self,
+        input: &ArtifactBundle,
+        output: &Path,
+    ) -> Result<(), BridgeError> {
+        self.save_system_artifact_as_zip_native(input, output)
+    }
+
     /// Invoke a plugin using directory-backed input and output artifacts.
     ///
     /// Payload bytes remain in Python. In particular, Systems are loaded and

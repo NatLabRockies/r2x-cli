@@ -56,10 +56,15 @@ impl Drop for PipelineArtifactWorkspace {
 pub(super) fn write_bundle_output(
     bundle: &ArtifactBundle,
     output_path: Option<&Path>,
+    zip_output: bool,
     suppress_stdout: bool,
 ) -> Result<(), RunError> {
     if let Some(output_path) = output_path {
-        copy_bundle_to_output(bundle, output_path)?;
+        if zip_output {
+            save_bundle_as_zip(bundle, output_path)?;
+        } else {
+            copy_bundle_to_output(bundle, output_path)?;
+        }
     } else if !suppress_stdout {
         let mut has_sidecars = false;
         for entry in fs::read_dir(bundle.root()).map_err(PipelineError::Io)? {
@@ -102,6 +107,26 @@ pub(super) fn write_bundle_output(
         io::copy(&mut input, &mut output).map_err(PipelineError::Io)?;
     }
     Ok(())
+}
+
+fn save_bundle_as_zip(bundle: &ArtifactBundle, output_path: &Path) -> Result<(), RunError> {
+    let extension = output_path
+        .extension()
+        .and_then(|extension| extension.to_str());
+    if !extension.is_some_and(|extension| extension == "zip") {
+        return Err(RunError::Config(
+            "ZIP pipeline output must use a lowercase .zip filename".to_string(),
+        ));
+    }
+
+    let archive_base = output_path.with_extension("");
+    ensure_destination_absent(output_path)?;
+    ensure_destination_absent(&archive_base)?;
+
+    let bridge = r2x_python::python_bridge::Bridge::get().map_err(RunError::Bridge)?;
+    bridge
+        .save_system_artifact_as_zip(bundle, output_path)
+        .map_err(RunError::Bridge)
 }
 
 fn copy_bundle_to_output(bundle: &ArtifactBundle, output_path: &Path) -> Result<(), RunError> {

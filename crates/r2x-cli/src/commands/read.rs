@@ -12,8 +12,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser, Debug)]
 pub struct ReadCommand {
-    /// Path to JSON file to read. If not provided, reads from stdin
+    /// Path to JSON or ZIP file to read. If not provided, reads from stdin
     pub file: Option<PathBuf>,
+
+    /// Treat the input file as an infrasys ZIP archive
+    #[arg(long)]
+    pub zip: bool,
 
     /// Suppress the startup banner
     #[arg(long = "no-banner")]
@@ -30,6 +34,11 @@ pub struct ReadCommand {
 
 pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     logger::debug("Starting read command");
+
+    if cmd.zip && cmd.file.is_none() {
+        return Err("--zip requires a ZIP file path; it cannot be used with stdin".into());
+    }
+    let load_zip = cmd.zip;
 
     // Load configuration
     let mut config = Config::load()?;
@@ -737,7 +746,7 @@ class R2XMagics:
 
         Usage:
             %reload              - Reload from original file
-            %reload other.json   - Load a different file
+            %reload other.json   - Load a different JSON or ZIP file
         """
         line = line.strip()
 
@@ -764,25 +773,22 @@ class R2XMagics:
             print(f"  Error: Not a file: {{file_path}}")
             return
 
-        # Load and parse the JSON file
+        # Load and parse the JSON or ZIP file
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            if file_path.suffix.lower() == ".zip":
+                new_system = System.load(file_path)
+            else:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                time_series_parent_dir = Path(file_path).resolve().parent
+                missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
+                if missing_sidecar is not None:
+                    print(format_time_series_sidecar_error(*missing_sidecar))
+                    return
+                new_system = System.from_dict(data, time_series_parent_dir)
         except json.JSONDecodeError as e:
             print(format_json_error(str(file_path), e))
             return
-        except Exception as e:
-            print(f"  Error reading file: {{e}}")
-            return
-
-        # Create new System object
-        try:
-            time_series_parent_dir = Path(file_path).resolve().parent
-            missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
-            if missing_sidecar is not None:
-                print(format_time_series_sidecar_error(*missing_sidecar))
-                return
-            new_system = System.from_dict(data, time_series_parent_dir)
         except Exception as e:
             print(format_system_error(e))
             return
@@ -1150,6 +1156,7 @@ def print_startup_banner(display_source, plugins):
 DISPLAY_SOURCE = r'''{}'''
 JSON_PATH = r'''{}'''
 SOURCE_IS_STDIN = {}
+SOURCE_IS_ZIP = {}
 
 
 def format_json_error(json_path, error):
@@ -1246,7 +1253,7 @@ def format_time_series_sidecar_error(kind, path):
 
 
 def format_system_error(error):
-    """Format a System.from_dict error with suggestions for common fixes."""
+    """Format a system loading error with suggestions for common fixes."""
     msg_lines = []
     msg_lines.append("\n  System Loading Error")
     msg_lines.append("  " + "-" * 50)
@@ -1285,22 +1292,29 @@ def format_system_error(error):
 
 
 try:
-    with open(JSON_PATH, 'r', encoding='utf-8') as handle:
+    if SOURCE_IS_ZIP:
         try:
-            data = json.load(handle)
-        except json.JSONDecodeError as e:
-            print(format_json_error(JSON_PATH, e), file=py_sys.stderr)
+            system = System.load(JSON_PATH)
+        except Exception as e:
+            print(format_system_error(e), file=py_sys.stderr)
             py_sys.exit(1)
-    time_series_parent_dir = time_series_parent_dir_for(JSON_PATH, SOURCE_IS_STDIN)
-    missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
-    if missing_sidecar is not None:
-        print(format_time_series_sidecar_error(*missing_sidecar), file=py_sys.stderr)
-        py_sys.exit(1)
-    try:
-        system = System.from_dict(data, time_series_parent_dir)
-    except Exception as e:
-        print(format_system_error(e), file=py_sys.stderr)
-        py_sys.exit(1)
+    else:
+        with open(JSON_PATH, 'r', encoding='utf-8') as handle:
+            try:
+                data = json.load(handle)
+            except json.JSONDecodeError as e:
+                print(format_json_error(JSON_PATH, e), file=py_sys.stderr)
+                py_sys.exit(1)
+        time_series_parent_dir = time_series_parent_dir_for(JSON_PATH, SOURCE_IS_STDIN)
+        missing_sidecar = missing_time_series_sidecar(data, time_series_parent_dir)
+        if missing_sidecar is not None:
+            print(format_time_series_sidecar_error(*missing_sidecar), file=py_sys.stderr)
+            py_sys.exit(1)
+        try:
+            system = System.from_dict(data, time_series_parent_dir)
+        except Exception as e:
+            print(format_system_error(e), file=py_sys.stderr)
+            py_sys.exit(1)
 except FileNotFoundError:
     print(f"\n  Error: File not found: {{JSON_PATH}}", file=py_sys.stderr)
     py_sys.exit(1)
@@ -1417,7 +1431,10 @@ shell(
     global_ns=context,
 )
 "#,
-        display_source_str, file_path_str, source_is_stdin
+        display_source_str,
+        file_path_str,
+        source_is_stdin,
+        if load_zip { "True" } else { "False" }
     );
 
     logger::debug("Generated Python initialization code");
@@ -1732,6 +1749,7 @@ mod tests {
     fn test_read_command_creation() {
         let cmd = ReadCommand {
             file: None,
+            zip: false,
             no_banner: false,
             exec: None,
             interactive: false,
@@ -1746,6 +1764,7 @@ mod tests {
     fn test_read_command_with_file() {
         let cmd = ReadCommand {
             file: Some(PathBuf::from("test.json")),
+            zip: false,
             no_banner: false,
             exec: None,
             interactive: false,
@@ -1757,6 +1776,7 @@ mod tests {
     fn test_read_command_with_no_banner_flag() {
         let cmd = ReadCommand {
             file: None,
+            zip: false,
             no_banner: true,
             exec: None,
             interactive: false,
@@ -1768,6 +1788,7 @@ mod tests {
     fn test_read_command_with_exec_flag() {
         let cmd = ReadCommand {
             file: Some(PathBuf::from("system.json")),
+            zip: false,
             no_banner: false,
             exec: Some(PathBuf::from("script.py")),
             interactive: false,
@@ -1783,6 +1804,7 @@ mod tests {
     fn test_read_command_with_interactive_flag() {
         let cmd = ReadCommand {
             file: None,
+            zip: false,
             no_banner: false,
             exec: Some(PathBuf::from("script.py")),
             interactive: true,

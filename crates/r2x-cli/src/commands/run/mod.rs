@@ -81,6 +81,9 @@ pub struct RunCommand {
     pub dry_run: bool,
     #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<String>,
+    /// Save a system pipeline output as an infrasys ZIP archive
+    #[arg(long)]
+    pub zip: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -135,6 +138,7 @@ pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
                 cmd.print,
                 cmd.dry_run,
                 cmd.output,
+                cmd.zip,
                 &opts,
             )
         }
