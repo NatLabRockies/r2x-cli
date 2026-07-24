@@ -965,6 +965,8 @@ impl PipelineHarness {
         let sienna_data = data_root.join("sienna-store");
         fs::create_dir_all(&reeds_data)?;
         fs::create_dir_all(&sienna_data)?;
+        let sienna_system = sienna_data.join("system.json");
+        fs::write(&sienna_system, r#"{"system":"sienna","status":"input"}"#)?;
 
         let output_root = home_path.join("output");
         fs::create_dir_all(&output_root)?;
@@ -981,7 +983,7 @@ impl PipelineHarness {
             build_reeds_pipeline(&reeds_data, &reeds_output),
         )?;
         let s2p_pipeline = pipelines_dir.join("s2p.yaml");
-        fs::write(&s2p_pipeline, build_s2p_pipeline(&sienna_data, &s2p_output))?;
+        fs::write(&s2p_pipeline, build_s2p_pipeline(&sienna_system, &s2p_output))?;
 
         Ok(Self {
             _home: home,
