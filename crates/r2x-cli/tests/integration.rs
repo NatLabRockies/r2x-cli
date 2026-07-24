@@ -983,7 +983,10 @@ impl PipelineHarness {
             build_reeds_pipeline(&reeds_data, &reeds_output),
         )?;
         let s2p_pipeline = pipelines_dir.join("s2p.yaml");
-        fs::write(&s2p_pipeline, build_s2p_pipeline(&sienna_system, &s2p_output))?;
+        fs::write(
+            &s2p_pipeline,
+            build_s2p_pipeline(&sienna_system, &s2p_output),
+        )?;
 
         Ok(Self {
             _home: home,
