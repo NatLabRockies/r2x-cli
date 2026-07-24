@@ -5,7 +5,7 @@
 
 use crate::types::{Parameter, Plugin, PluginType};
 
-/// Coarse-grained plugin role inferred from the manifest name.
+/// Coarse-grained plugin role declared by its entry-point group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRole {
     Parser,
@@ -39,7 +39,10 @@ pub struct RuntimeBindings {
 /// Build runtime bindings from a manifest plugin.
 pub fn build_runtime_bindings(plugin: &Plugin) -> RuntimeBindings {
     let (entry_module, entry_name) = parse_entry_point(plugin);
-    let role = infer_plugin_role(&plugin.name);
+    let role = match plugin.entry_point_group.as_deref() {
+        None | Some("r2x_plugin") => infer_plugin_role(&plugin.name),
+        Some(group) => plugin_role_from_group(group),
+    };
     let call_method = default_method_for_role(role, plugin.plugin_type);
     let config = match (&plugin.config_class, &plugin.config_module) {
         (Some(class_name), Some(module)) => Some(RuntimeConfig {
@@ -84,7 +87,19 @@ fn parse_entry_point(plugin: &Plugin) -> (String, String) {
     (entry_module, entry_name)
 }
 
-/// Infer plugin role from name patterns.
+fn plugin_role_from_group(group: &str) -> PluginRole {
+    let kind = group.strip_prefix("r2x.").unwrap_or(group);
+    match kind {
+        "parser" | "parsers" => PluginRole::Parser,
+        "exporter" | "exporters" => PluginRole::Exporter,
+        "modifier" | "modifiers" => PluginRole::Modifier,
+        "upgrader" | "upgraders" => PluginRole::Upgrader,
+        "transform" | "transforms" | "translation" | "translations" => PluginRole::Translation,
+        _ => PluginRole::Utility,
+    }
+}
+
+/// Infer a legacy plugin role from name patterns when group metadata is absent.
 pub fn infer_plugin_role(name: &str) -> PluginRole {
     let name_lower = name.to_lowercase();
     if name_lower.contains("parser") {
@@ -114,5 +129,55 @@ fn default_method_for_role(role: PluginRole, plugin_type: PluginType) -> Option<
             Some("run".to_string())
         }
         PluginRole::Utility => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::{build_runtime_bindings, PluginRole};
+    use crate::types::Plugin;
+    use std::sync::Arc;
+
+    #[test]
+    fn entry_point_group_declares_role_without_name_guessing() {
+        let plugin = Plugin {
+            name: Arc::from("opaque-operation"),
+            entry_point_group: Some(Arc::from("r2x.parsers")),
+            ..Plugin::default()
+        };
+
+        assert_eq!(build_runtime_bindings(&plugin).role, PluginRole::Parser);
+    }
+
+    #[test]
+    fn legacy_entry_point_group_preserves_name_inference() {
+        let plugin = Plugin {
+            name: Arc::from("legacy-parser"),
+            entry_point_group: Some(Arc::from("r2x_plugin")),
+            ..Plugin::default()
+        };
+
+        assert_eq!(build_runtime_bindings(&plugin).role, PluginRole::Parser);
+    }
+
+    #[test]
+    fn unknown_r2x_group_does_not_infer_model_semantics_from_name() {
+        let plugin = Plugin {
+            name: Arc::from("sienna-exporter-case-policy"),
+            entry_point_group: Some(Arc::from("r2x.sienna.case")),
+            ..Plugin::default()
+        };
+
+        assert_eq!(build_runtime_bindings(&plugin).role, PluginRole::Utility);
+    }
+
+    #[test]
+    fn missing_group_preserves_legacy_name_inference() {
+        let plugin = Plugin {
+            name: Arc::from("legacy-parser"),
+            ..Plugin::default()
+        };
+
+        assert_eq!(build_runtime_bindings(&plugin).role, PluginRole::Parser);
     }
 }

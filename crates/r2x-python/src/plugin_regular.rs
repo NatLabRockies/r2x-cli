@@ -1,15 +1,20 @@
 //! Regular plugin invocation (non-upgrader)
 
 use crate::errors::BridgeError;
-use crate::plugin_invoker::{PluginInvocationResult, PluginInvocationTimings};
+use crate::plugin_invoker::{
+    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInvocationResult,
+    PluginInvocationTimings,
+};
 use crate::python_bridge::Bridge;
 use once_cell::sync::Lazy;
 use pyo3::exceptions::PyValueError;
-use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
+use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyModule};
 use pyo3::{Bound, PyResult};
 use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -91,11 +96,116 @@ impl<'py> PythonJson<'py> {
         })
     }
 
+    fn load_path(&self, path: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let bytes = path.call_method0("read_bytes")?;
+        self.loads.call1((bytes,))
+    }
+
+    fn write_path(&self, path: &Bound<'py, PyAny>, value: &Bound<'py, PyAny>) -> PyResult<()> {
+        ensure_artifact_parent(path)?;
+        let rendered = self.dumps.call1((value,))?;
+        if rendered.is_instance_of::<PyBytes>() {
+            path.call_method1("write_bytes", (rendered,))?;
+        } else {
+            path.call_method1("write_text", (rendered, "utf-8"))?;
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn backend_name(&self) -> &'static str {
         match self.backend {
             JsonBackend::OrJson => "orjson",
             JsonBackend::StdJson => "json",
+        }
+    }
+}
+
+fn python_path<'py>(py: pyo3::Python<'py>, path: &Path) -> Result<Bound<'py, PyAny>, BridgeError> {
+    let pathlib = PyModule::import(py, "pathlib")
+        .map_err(|error| BridgeError::Import("pathlib".to_string(), error.to_string()))?;
+    let path_class = pathlib.getattr("Path")?;
+    let rendered = path.to_string_lossy();
+    path_class
+        .call1((rendered.as_ref(),))
+        .map_err(BridgeError::from)
+}
+
+fn ensure_artifact_parent(path: &Bound<'_, PyAny>) -> PyResult<()> {
+    let parent = path.getattr("parent")?;
+    let kwargs = PyDict::new(path.py());
+    kwargs.set_item("parents", true)?;
+    kwargs.set_item("exist_ok", true)?;
+    parent.call_method("mkdir", (), Some(&kwargs))?;
+    Ok(())
+}
+
+fn load_system_artifact<'py>(
+    py: pyo3::Python<'py>,
+    input: &ArtifactBundle,
+) -> Result<Bound<'py, PyAny>, BridgeError> {
+    let path = python_path(py, &input.entrypoint_path())?;
+    let system_module = PyModule::import(py, "r2x_core.system")?;
+    let system_class = system_module.getattr("System")?;
+    let from_json = system_class.getattr("from_json")?;
+    from_json.call1((path,)).map_err(|error| {
+        BridgeError::Python(format_python_error(
+            py,
+            error,
+            &format!(
+                "Failed to load System artifact {}",
+                input.entrypoint_path().display()
+            ),
+        ))
+    })
+}
+
+fn load_exporter_system_artifact<'py>(
+    py: pyo3::Python<'py>,
+    input: &ArtifactBundle,
+    json: &PythonJson<'py>,
+) -> Result<Bound<'py, PyAny>, BridgeError> {
+    let entrypoint = python_path(py, &input.entrypoint_path())?;
+    let data = json.load_path(&entrypoint).map_err(|error| {
+        BridgeError::Python(format_python_error(
+            py,
+            error,
+            &format!(
+                "Failed to load exporter artifact {}",
+                input.entrypoint_path().display()
+            ),
+        ))
+    })?;
+    let root = python_path(py, input.root())?;
+    let system_module = PyModule::import(py, "infrasys")?;
+    let system_class = system_module.getattr("System")?;
+    let from_dict = system_class.getattr("from_dict")?;
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("time_series_read_only", true)?;
+    from_dict
+        .call((data, root), Some(&kwargs))
+        .map_err(|error| {
+            BridgeError::Python(format_python_error(
+                py,
+                error,
+                &format!(
+                    "Failed to load exporter System artifact {}",
+                    input.entrypoint_path().display()
+                ),
+            ))
+        })
+}
+
+enum ClassInput<'a> {
+    Inline(Option<&'a str>),
+    Artifact(Option<&'a ArtifactBundle>),
+}
+
+impl ClassInput<'_> {
+    fn is_present(&self) -> bool {
+        match self {
+            Self::Inline(input) => input.is_some(),
+            Self::Artifact(input) => input.is_some(),
         }
     }
 }
@@ -233,7 +343,7 @@ impl Bridge {
                     module_path,
                     callable_path,
                     &config_dict,
-                    stdin_json,
+                    ClassInput::Inline(stdin_json),
                     runtime_bindings,
                     &json,
                 )?
@@ -362,6 +472,155 @@ impl Bridge {
         })
     }
 
+    pub(crate) fn invoke_plugin_regular_with_artifacts(
+        &self,
+        target: &str,
+        config_json: &str,
+        input: Option<&ArtifactBundle>,
+        output: &ArtifactBundle,
+        runtime_bindings: Option<&RuntimeBindings>,
+    ) -> Result<PluginArtifactInvocationResult, BridgeError> {
+        pyo3::Python::attach(|py| {
+            let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
+
+            let parts: Vec<&str> = target.split(':').collect();
+            if parts.len() != 2 {
+                return Err(BridgeError::InvalidEntryPoint(target.to_string()));
+            }
+            let module_path = parts[0];
+            let callable_path = parts[1];
+
+            let module = PyModule::import(py, module_path)
+                .map_err(|error| BridgeError::Import(module_path.to_string(), error.to_string()))?;
+            let _ = Bridge::enable_loguru_modules_after_import(
+                py,
+                &[module_path.split('.').next().unwrap_or(module_path)],
+            );
+
+            let json = PythonJson::import(py)?;
+            let config_dict = json
+                .loads(config_json)?
+                .cast::<pyo3::types::PyDict>()
+                .map_err(|error| {
+                    BridgeError::Python(format!("Config must be a JSON object: {}", error))
+                })?
+                .clone();
+
+            let call_start = Instant::now();
+            let result_py = if callable_path.contains('.') {
+                Self::invoke_class_callable(
+                    self,
+                    &module,
+                    module_path,
+                    callable_path,
+                    &config_dict,
+                    ClassInput::Artifact(input),
+                    runtime_bindings,
+                    &json,
+                )?
+            } else {
+                let stdin_obj = if input.is_some()
+                    && runtime_bindings.is_some_and(|bindings| {
+                        bindings
+                            .parameters
+                            .iter()
+                            .any(|parameter| parameter.name.as_ref() == "stdin")
+                    }) {
+                    let bundle = input.ok_or_else(|| {
+                        BridgeError::Python(
+                            "stdin expected but no input artifact was provided".to_string(),
+                        )
+                    })?;
+                    let path = python_path(py, &bundle.entrypoint_path())?;
+                    Some(json.load_path(&path).map_err(|error| {
+                        BridgeError::Python(format_python_error(
+                            py,
+                            error,
+                            &format!(
+                                "Failed to load stdin artifact {}",
+                                bundle.entrypoint_path().display()
+                            ),
+                        ))
+                    })?)
+                } else {
+                    None
+                };
+                let kwargs =
+                    Self::build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
+                Self::invoke_function_callable_with_artifact(
+                    py,
+                    &module,
+                    module_path,
+                    callable_path,
+                    input,
+                    &kwargs,
+                    &json,
+                    runtime_bindings,
+                )?
+            };
+            let call_elapsed = call_start.elapsed();
+
+            let output_path = python_path(py, &output.entrypoint_path())?;
+            let is_exporter =
+                runtime_bindings.is_some_and(|bindings| bindings.role == PluginRole::Exporter);
+            if is_exporter {
+                return Ok(PluginArtifactInvocationResult {
+                    output_kind: ArtifactOutputKind::Empty,
+                    timings: Some(PluginInvocationTimings {
+                        python_invocation: call_elapsed,
+                        serialization: Duration::ZERO,
+                    }),
+                });
+            }
+
+            let result_unwrapped = {
+                let type_name: String = result_py
+                    .get_type()
+                    .getattr("__name__")
+                    .and_then(|name| name.extract())
+                    .unwrap_or_default();
+                if type_name == "Ok" {
+                    result_py
+                        .getattr("ok_value")
+                        .or_else(|_| result_py.getattr("value"))?
+                } else if type_name == "Err" {
+                    return Err(BridgeError::Python(format_err_result(py, &result_py)));
+                } else {
+                    result_py
+                }
+            };
+
+            let result_to_serialize =
+                if result_unwrapped.hasattr("system")? && result_unwrapped.hasattr("config")? {
+                    result_unwrapped.getattr("system")?
+                } else {
+                    result_unwrapped
+                };
+
+            let write_start = Instant::now();
+            let output_kind = write_artifact_result(&json, &result_to_serialize, &output_path)
+                .map_err(|error| {
+                    BridgeError::Python(format_python_error(
+                        py,
+                        error,
+                        &format!(
+                            "Failed to write artifact {}",
+                            output.entrypoint_path().display()
+                        ),
+                    ))
+                })?;
+            validate_artifact_output(output, output_kind)?;
+
+            Ok(PluginArtifactInvocationResult {
+                output_kind,
+                timings: Some(PluginInvocationTimings {
+                    python_invocation: call_elapsed,
+                    serialization: write_start.elapsed(),
+                }),
+            })
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn invoke_class_callable<'py>(
         _bridge: &Bridge,
@@ -369,7 +628,7 @@ impl Bridge {
         module_path: &str,
         callable_path: &str,
         config_dict: &pyo3::Bound<'py, PyDict>,
-        stdin_json: Option<&str>,
+        input: ClassInput<'_>,
         runtime_bindings: Option<&RuntimeBindings>,
         json: &PythonJson<'py>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
@@ -443,29 +702,33 @@ impl Bridge {
         };
 
         let mut parsed_stdin_obj: Option<Bound<'py, PyAny>> = None;
-        let system_instance = if should_parse_stdin_for_exporter_context(stdin_json, bindings.role)
-        {
-            logger::step("Deserializing system from stdin for PluginContext");
-            ensure_parsed_stdin(stdin_json, json, &mut parsed_stdin_obj)?;
-            let stdin = parsed_stdin_obj
-                .as_ref()
-                .ok_or_else(|| PyValueError::new_err("stdin expected but not provided"))?;
+        let system_instance = match &input {
+            ClassInput::Inline(stdin_json)
+                if should_parse_stdin_for_exporter_context(*stdin_json, bindings.role) =>
+            {
+                logger::step("Deserializing system from stdin for PluginContext");
+                ensure_parsed_stdin(*stdin_json, json, &mut parsed_stdin_obj)?;
+                let stdin = parsed_stdin_obj
+                    .as_ref()
+                    .ok_or_else(|| PyValueError::new_err("stdin expected but not provided"))?;
 
-            let system_module = PyModule::import(py, "infrasys")?;
-            let system_class = system_module.getattr("System")?;
-            let from_dict = system_class.getattr("from_dict")?;
+                let system_module = PyModule::import(py, "infrasys")?;
+                let system_class = system_module.getattr("System")?;
+                let from_dict = system_class.getattr("from_dict")?;
 
-            let tempfile = PyModule::import(py, "tempfile")?;
-            let mkdtemp = tempfile.getattr("mkdtemp")?;
-            let temp_dir = mkdtemp.call0()?.extract::<String>()?;
+                let tempfile = PyModule::import(py, "tempfile")?;
+                let mkdtemp = tempfile.getattr("mkdtemp")?;
+                let temp_dir = mkdtemp.call0()?.extract::<String>()?;
 
-            let kwargs_dict = PyDict::new(py);
-            kwargs_dict.set_item("time_series_read_only", true)?;
-            let system_obj = from_dict.call((stdin, temp_dir), Some(&kwargs_dict))?;
-
-            Some(system_obj)
-        } else {
-            None
+                let kwargs_dict = PyDict::new(py);
+                kwargs_dict.set_item("time_series_read_only", true)?;
+                Some(from_dict.call((stdin, temp_dir), Some(&kwargs_dict))?)
+            }
+            ClassInput::Artifact(Some(bundle)) if bindings.role == PluginRole::Exporter => {
+                logger::step("Deserializing System artifact for exporter PluginContext");
+                Some(load_exporter_system_artifact(py, bundle, json)?)
+            }
+            _ => None,
         };
 
         let ctx = Bridge::instantiate_plugin_context(
@@ -526,7 +789,7 @@ impl Bridge {
             ))
         })?;
 
-        let signature_support = if stdin_json.is_some() {
+        let signature_support = if input.is_present() {
             let signature_cache_key = format!("{module_path}:{class_name}.{actual_method_name}");
             match method_stdin_support_cached(&signature_cache_key, &method) {
                 Ok(result) => result,
@@ -545,10 +808,33 @@ impl Bridge {
         };
 
         if signature_support.accepts_stdin {
-            ensure_parsed_stdin(stdin_json, json, &mut parsed_stdin_obj)?;
-            let stdin = parsed_stdin_obj
-                .as_ref()
-                .ok_or_else(|| PyValueError::new_err("stdin expected but not provided"))?;
+            let stdin = match &input {
+                ClassInput::Inline(stdin_json) => {
+                    ensure_parsed_stdin(*stdin_json, json, &mut parsed_stdin_obj)?;
+                    parsed_stdin_obj
+                        .as_ref()
+                        .ok_or_else(|| PyValueError::new_err("stdin expected but not provided"))?
+                        .clone()
+                }
+                ClassInput::Artifact(Some(bundle)) => {
+                    let path = python_path(py, &bundle.entrypoint_path())?;
+                    json.load_path(&path).map_err(|error| {
+                        BridgeError::Python(format_python_error(
+                            py,
+                            error,
+                            &format!(
+                                "Failed to load stdin artifact {}",
+                                bundle.entrypoint_path().display()
+                            ),
+                        ))
+                    })?
+                }
+                ClassInput::Artifact(None) => {
+                    return Err(BridgeError::Python(
+                        "stdin expected but no input artifact was provided".to_string(),
+                    ));
+                }
+            };
             method.call1((stdin,)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
@@ -557,13 +843,23 @@ impl Bridge {
                 ))
             })
         } else if signature_support.accepts_system {
-            logger::step("Method has system - deserializing stdin to System object");
-            let json_bytes = stdin_payload_bytes(stdin_json, parsed_stdin_obj.as_ref(), json)?;
-
-            let system_module = PyModule::import(py, "r2x_core.system")?;
-            let system_class = system_module.getattr("System")?;
-            let from_json = system_class.getattr("from_json")?;
-            let system_obj = from_json.call1((json_bytes.as_slice(),))?;
+            logger::step("Method has system - deserializing input to System object");
+            let system_obj = match &input {
+                ClassInput::Inline(stdin_json) => {
+                    let json_bytes =
+                        stdin_payload_bytes(*stdin_json, parsed_stdin_obj.as_ref(), json)?;
+                    let system_module = PyModule::import(py, "r2x_core.system")?;
+                    let system_class = system_module.getattr("System")?;
+                    let from_json = system_class.getattr("from_json")?;
+                    from_json.call1((json_bytes.as_slice(),))?
+                }
+                ClassInput::Artifact(Some(bundle)) => load_system_artifact(py, bundle)?,
+                ClassInput::Artifact(None) => {
+                    return Err(BridgeError::Python(
+                        "system expected but no input artifact was provided".to_string(),
+                    ));
+                }
+            };
             method.call1((system_obj,)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
@@ -572,7 +868,7 @@ impl Bridge {
                 ))
             })
         } else {
-            if stdin_json.is_some() {
+            if input.is_present() {
                 logger::debug_lazy(|| {
                     format!(
                         "Method '{}.{}' does not declare 'system'/'stdin'; skipping stdin payload",
@@ -687,6 +983,143 @@ impl Bridge {
             ))
         })
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_function_callable_with_artifact<'py>(
+        py: pyo3::Python<'py>,
+        module: &pyo3::Bound<'py, PyModule>,
+        module_path: &str,
+        callable_path: &str,
+        input: Option<&ArtifactBundle>,
+        kwargs: &pyo3::Bound<'py, PyDict>,
+        json: &PythonJson<'py>,
+        runtime_bindings: Option<&RuntimeBindings>,
+    ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
+        let func = module.getattr(callable_path).map_err(|error| {
+            BridgeError::Python(format_python_error(
+                module.py(),
+                error,
+                &format!("Failed to get function '{}'", callable_path),
+            ))
+        })?;
+
+        let mut signature_support = if input.is_some() {
+            let signature_cache_key = format!("{module_path}:{callable_path}");
+            method_stdin_support_cached(&signature_cache_key, &func).unwrap_or_default()
+        } else {
+            StdinSignatureSupport::default()
+        };
+        if let Some(bindings) = runtime_bindings {
+            for parameter in &bindings.parameters {
+                if parameter.name.as_ref() == "stdin" {
+                    signature_support.accepts_stdin = true;
+                } else if parameter.name.as_ref() == "system" {
+                    signature_support.accepts_system = true;
+                }
+            }
+        }
+
+        if signature_support.accepts_stdin && !kwargs.contains("stdin")? {
+            let bundle = input.ok_or_else(|| {
+                BridgeError::Python("stdin expected but no input artifact was provided".to_string())
+            })?;
+            let path = python_path(py, &bundle.entrypoint_path())?;
+            let stdin = json.load_path(&path).map_err(|error| {
+                BridgeError::Python(format_python_error(
+                    py,
+                    error,
+                    &format!(
+                        "Failed to load stdin artifact {}",
+                        bundle.entrypoint_path().display()
+                    ),
+                ))
+            })?;
+            kwargs.set_item("stdin", stdin)?;
+        }
+
+        if signature_support.accepts_system {
+            let bundle = input.ok_or_else(|| {
+                BridgeError::Python(
+                    "system expected but no input artifact was provided".to_string(),
+                )
+            })?;
+            kwargs.set_item("system", load_system_artifact(py, bundle)?)?;
+        }
+
+        func.call((), Some(kwargs)).map_err(|error| {
+            BridgeError::Python(format_python_error(
+                func.py(),
+                error,
+                &format!("Function '{}' failed", callable_path),
+            ))
+        })
+    }
+}
+
+fn write_artifact_result<'py>(
+    json: &PythonJson<'py>,
+    value: &Bound<'py, PyAny>,
+    output_path: &Bound<'py, PyAny>,
+) -> PyResult<ArtifactOutputKind> {
+    if value.is_none() {
+        return Ok(ArtifactOutputKind::Empty);
+    }
+
+    if value.hasattr("to_json")? {
+        ensure_artifact_parent(output_path)?;
+        value.call_method1("to_json", (output_path,))?;
+        return Ok(ArtifactOutputKind::System);
+    }
+
+    if let Ok(text) = value.extract::<String>() {
+        let trimmed = text.trim_start();
+        if (trimmed.starts_with('{') || trimmed.starts_with('[')) && json.loads(&text).is_ok() {
+            ensure_artifact_parent(output_path)?;
+            output_path.call_method1("write_text", (text, "utf-8"))?;
+            return Ok(ArtifactOutputKind::Json);
+        }
+    }
+
+    json.write_path(output_path, value)?;
+    Ok(ArtifactOutputKind::Json)
+}
+
+fn validate_artifact_output(
+    output: &ArtifactBundle,
+    output_kind: ArtifactOutputKind,
+) -> Result<(), BridgeError> {
+    if output_kind == ArtifactOutputKind::Empty {
+        return Ok(());
+    }
+
+    let root_metadata = fs::symlink_metadata(output.root()).map_err(|error| {
+        BridgeError::InvalidArtifact(format!(
+            "plugin reported {output_kind:?} output without a bundle root at {}: {error}",
+            output.root().display()
+        ))
+    })?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(BridgeError::InvalidArtifact(format!(
+            "plugin output bundle root is not a directory: {}",
+            output.root().display()
+        )));
+    }
+
+    let entrypoint = output.entrypoint_path();
+    let entrypoint_metadata = fs::symlink_metadata(&entrypoint).map_err(|error| {
+        BridgeError::InvalidArtifact(format!(
+            "plugin reported {output_kind:?} output without an entrypoint at {}: {error}",
+            entrypoint.display()
+        ))
+    })?;
+    if entrypoint_metadata.file_type().is_symlink() || !entrypoint_metadata.is_file() {
+        return Err(BridgeError::InvalidArtifact(format!(
+            "plugin output entrypoint is not a regular file: {}",
+            entrypoint.display()
+        )));
+    }
+
+    Ok(())
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -978,11 +1411,204 @@ mod tests {
         remove_cached_method_signature, should_parse_stdin_for_exporter_context,
         should_parse_stdin_for_function_kwargs, stdin_payload_bytes, PythonJson,
     };
+    use crate::plugin_invoker::{ArtifactBundle, ArtifactOutputKind};
     use crate::python_bridge::Bridge;
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyModule};
     use r2x_manifest::runtime::RuntimeBindings;
     use r2x_manifest::types::Parameter;
     use std::ffi::CString;
+    use tempfile::tempdir;
+
+    fn install_module<'py>(
+        py: pyo3::Python<'py>,
+        name: &str,
+        source: &str,
+    ) -> Result<pyo3::Bound<'py, PyModule>, String> {
+        let source = CString::new(source).map_err(|error| error.to_string())?;
+        let filename = CString::new(format!("{name}.py")).map_err(|error| error.to_string())?;
+        let module_name = CString::new(name).map_err(|error| error.to_string())?;
+        let module = PyModule::from_code(
+            py,
+            source.as_c_str(),
+            filename.as_c_str(),
+            module_name.as_c_str(),
+        )
+        .map_err(|error| error.to_string())?;
+        let sys = PyModule::import(py, "sys").map_err(|error| error.to_string())?;
+        let modules_obj = sys.getattr("modules").map_err(|error| error.to_string())?;
+        let modules = modules_obj
+            .cast::<PyDict>()
+            .map_err(|error| error.to_string())?;
+        modules
+            .set_item(name, &module)
+            .map_err(|error| error.to_string())?;
+        Ok(module)
+    }
+
+    fn install_artifact_test_modules(py: pyo3::Python<'_>) -> Result<(), String> {
+        let core = install_module(
+            py,
+            "r2x_core",
+            r"
+class PluginContext:
+    def __init__(self, config, *, store=None, system=None):
+        self.config = config
+        self.store = store
+        self.system = system
+",
+        )?;
+        let system = install_module(
+            py,
+            "r2x_core.system",
+            r#"
+import json
+from pathlib import Path
+
+class System:
+    def __init__(self, data):
+        self.data = data
+
+    @classmethod
+    def from_json(cls, path):
+        path = Path(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        sidecar = path.parent / data["sidecar"]
+        if not sidecar.exists():
+            raise RuntimeError(f"missing sidecar: {sidecar}")
+        return cls(data)
+
+    def to_json(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        (path.parent / self.data["sidecar"]).write_text("sidecar", encoding="utf-8")
+        path.write_text(json.dumps(self.data), encoding="utf-8")
+"#,
+        )?;
+        core.setattr("system", system)
+            .map_err(|error| error.to_string())?;
+
+        install_module(
+            py,
+            "infrasys",
+            r#"
+from pathlib import Path
+
+class System:
+    @classmethod
+    def from_dict(cls, data, parent, *, time_series_read_only):
+        if not time_series_read_only:
+            raise RuntimeError("exporter must use a read-only System")
+        sidecar = Path(parent) / data["sidecar"]
+        if not sidecar.exists():
+            raise RuntimeError(f"missing exporter sidecar: {sidecar}")
+        instance = cls()
+        instance.data = data
+        return instance
+"#,
+        )?;
+
+        install_module(
+            py,
+            "artifact_test_plugins",
+            r#"
+class Config:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+def echo_stdin(stdin):
+    return {"value": stdin["value"]}
+
+def echo_system(system):
+    return system
+
+def emit_none():
+    return None
+
+def emit_json_text():
+    return '{"value":"raw"}'
+
+class BrokenSystem:
+    def to_json(self, path):
+        return None
+
+def emit_broken_system():
+    return BrokenSystem()
+
+class HiddenStdin:
+    def __call__(self, **kwargs):
+        return {"value": kwargs["stdin"]["value"]}
+
+hidden_stdin = HiddenStdin()
+
+class Modifier:
+    @classmethod
+    def from_context(cls, context):
+        return cls()
+
+    def run(self, system):
+        return system
+
+class Exporter:
+    @classmethod
+    def from_context(cls, context):
+        return cls(context)
+
+    def __init__(self, context):
+        self.context = context
+
+    def export(self):
+        if self.context.system is None:
+            raise RuntimeError("missing exporter System")
+        return self.context
+"#,
+        )?;
+        Ok(())
+    }
+
+    fn system_bundle(root: &std::path::Path, sidecar: &str) -> Result<ArtifactBundle, String> {
+        let bundle = ArtifactBundle::new(root, "system.json").map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(bundle.root()).map_err(|error| error.to_string())?;
+        std::fs::write(
+            bundle.entrypoint_path(),
+            format!(r#"{{"sidecar":"{sidecar}"}}"#),
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::write(bundle.root().join(sidecar), "sidecar")
+            .map_err(|error| error.to_string())?;
+        Ok(bundle)
+    }
+
+    fn class_bindings(role: r2x_manifest::runtime::PluginRole) -> RuntimeBindings {
+        RuntimeBindings {
+            entry_module: "artifact_test_plugins".to_string(),
+            entry_name: "Modifier".to_string(),
+            plugin_type: r2x_manifest::types::PluginType::Class,
+            role,
+            call_method: Some("run".to_string()),
+            config: Some(r2x_manifest::runtime::RuntimeConfig {
+                module: "artifact_test_plugins".to_string(),
+                name: "Config".to_string(),
+            }),
+            parameters: Vec::new(),
+            requires_store: false,
+        }
+    }
+
+    fn function_bindings(
+        role: r2x_manifest::runtime::PluginRole,
+        parameters: Vec<Parameter>,
+    ) -> RuntimeBindings {
+        RuntimeBindings {
+            entry_module: "artifact_test_plugins".to_string(),
+            entry_name: "function".to_string(),
+            plugin_type: r2x_manifest::types::PluginType::Function,
+            role,
+            call_method: None,
+            config: None,
+            parameters,
+            requires_store: false,
+        }
+    }
 
     #[test]
     fn python_json_reuses_loaded_callables_for_loads_and_dumps() -> Result<(), String> {
@@ -1579,6 +2205,205 @@ obj = NotSerializable()
             let rendered = String::from_utf8(bytes).map_err(|error| error.to_string())?;
             assert!(rendered.contains("\"fallback\""));
             assert!(rendered.contains("\"ok\""));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn artifact_mode_keeps_payloads_in_python_and_preserves_sidecars() -> Result<(), String> {
+        pyo3::Python::initialize();
+        let temp = tempdir().map_err(|error| error.to_string())?;
+
+        pyo3::Python::attach(|py| -> Result<(), String> {
+            install_artifact_test_modules(py)?;
+            let bridge = Bridge::for_tests();
+
+            let generic_input =
+                ArtifactBundle::new(temp.path().join("generic-input"), "input.json")
+                    .map_err(|error| error.to_string())?;
+            std::fs::create_dir_all(generic_input.root()).map_err(|error| error.to_string())?;
+            std::fs::write(generic_input.entrypoint_path(), r#"{"value":"generic"}"#)
+                .map_err(|error| error.to_string())?;
+            let generic_output =
+                ArtifactBundle::new(temp.path().join("generic-output"), "result.json")
+                    .map_err(|error| error.to_string())?;
+
+            let generic_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:echo_stdin",
+                    "{}",
+                    Some(&generic_input),
+                    &generic_output,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(generic_result.output_kind, ArtifactOutputKind::Json);
+            let generic_json = std::fs::read_to_string(generic_output.entrypoint_path())
+                .map_err(|error| error.to_string())?;
+            assert!(generic_json.contains("generic"));
+
+            let raw_json_output =
+                ArtifactBundle::new(temp.path().join("raw-json-output"), "result.json")
+                    .map_err(|error| error.to_string())?;
+            let raw_json_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:emit_json_text",
+                    "{}",
+                    None,
+                    &raw_json_output,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(raw_json_result.output_kind, ArtifactOutputKind::Json);
+            assert_eq!(
+                std::fs::read_to_string(raw_json_output.entrypoint_path())
+                    .map_err(|error| error.to_string())?,
+                r#"{"value":"raw"}"#
+            );
+
+            let hidden_output =
+                ArtifactBundle::new(temp.path().join("hidden-output"), "result.json")
+                    .map_err(|error| error.to_string())?;
+            let stdin_bindings = function_bindings(
+                r2x_manifest::runtime::PluginRole::Utility,
+                vec![Parameter {
+                    name: "stdin".into(),
+                    required: true,
+                    default: None,
+                    types: Default::default(),
+                    module: None,
+                    description: None,
+                }],
+            );
+            let hidden_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:hidden_stdin",
+                    "{}",
+                    Some(&generic_input),
+                    &hidden_output,
+                    Some(&stdin_bindings),
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(hidden_result.output_kind, ArtifactOutputKind::Json);
+            assert!(std::fs::read_to_string(hidden_output.entrypoint_path())
+                .map_err(|error| error.to_string())?
+                .contains("generic"));
+
+            let none_output = ArtifactBundle::new(temp.path().join("none-output"), "result.json")
+                .map_err(|error| error.to_string())?;
+            let none_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:emit_none",
+                    "{}",
+                    None,
+                    &none_output,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(none_result.output_kind, ArtifactOutputKind::Empty);
+            assert!(!none_output.entrypoint_path().exists());
+
+            let broken_output =
+                ArtifactBundle::new(temp.path().join("broken-output"), "system.json")
+                    .map_err(|error| error.to_string())?;
+            let broken_result = bridge.invoke_plugin_with_artifact_bindings(
+                "artifact_test_plugins:emit_broken_system",
+                "{}",
+                None,
+                &broken_output,
+                None,
+            );
+            assert!(matches!(
+                broken_result,
+                Err(crate::errors::BridgeError::InvalidArtifact(_))
+            ));
+
+            let system_input = system_bundle(&temp.path().join("system-input"), "series.h5")?;
+            let system_output =
+                ArtifactBundle::new(temp.path().join("system-output"), "system.json")
+                    .map_err(|error| error.to_string())?;
+            let system_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:echo_system",
+                    "{}",
+                    Some(&system_input),
+                    &system_output,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(system_result.output_kind, ArtifactOutputKind::System);
+            assert!(system_output.entrypoint_path().exists());
+            assert!(system_output.root().join("series.h5").exists());
+
+            let class_output = ArtifactBundle::new(temp.path().join("class-output"), "system.json")
+                .map_err(|error| error.to_string())?;
+            let class_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:Modifier.run",
+                    "{}",
+                    Some(&system_input),
+                    &class_output,
+                    Some(&class_bindings(r2x_manifest::runtime::PluginRole::Modifier)),
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(class_result.output_kind, ArtifactOutputKind::System);
+            assert!(class_output.root().join("series.h5").exists());
+
+            let exporter_output =
+                ArtifactBundle::new(temp.path().join("exporter-output"), "result.json")
+                    .map_err(|error| error.to_string())?;
+            let mut exporter_bindings = class_bindings(r2x_manifest::runtime::PluginRole::Exporter);
+            exporter_bindings.entry_name = "Exporter".to_string();
+            exporter_bindings.call_method = Some("export".to_string());
+            let exporter_result = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:Exporter.export",
+                    "{}",
+                    Some(&system_input),
+                    &exporter_output,
+                    Some(&exporter_bindings),
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(exporter_result.output_kind, ArtifactOutputKind::Empty);
+            assert!(!exporter_output.entrypoint_path().exists());
+
+            let inline_exporter = bridge
+                .invoke_plugin_with_bindings(
+                    "artifact_test_plugins:emit_none",
+                    "{}",
+                    None,
+                    Some(&function_bindings(
+                        r2x_manifest::runtime::PluginRole::Exporter,
+                        Vec::new(),
+                    )),
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(inline_exporter.output, "{}");
+
+            let missing_root = temp.path().join("missing-input");
+            std::fs::create_dir_all(&missing_root).map_err(|error| error.to_string())?;
+            std::fs::write(
+                missing_root.join("system.json"),
+                r#"{"sidecar":"missing.h5"}"#,
+            )
+            .map_err(|error| error.to_string())?;
+            let missing_input = ArtifactBundle::new(&missing_root, "system.json")
+                .map_err(|error| error.to_string())?;
+            let missing_output =
+                ArtifactBundle::new(temp.path().join("missing-output"), "system.json")
+                    .map_err(|error| error.to_string())?;
+            let missing_error = bridge
+                .invoke_plugin_with_artifact_bindings(
+                    "artifact_test_plugins:echo_system",
+                    "{}",
+                    Some(&missing_input),
+                    &missing_output,
+                    None,
+                )
+                .err()
+                .ok_or_else(|| "missing sidecar should fail".to_string())?;
+            assert!(missing_error.to_string().contains("missing sidecar"));
+
             Ok(())
         })
     }

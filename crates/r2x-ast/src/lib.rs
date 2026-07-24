@@ -928,6 +928,7 @@ impl AstDiscovery {
 
         Plugin {
             name: Arc::from(entry.name.as_str()),
+            entry_point_group: Some(Arc::from(entry.section.as_str())),
             plugin_type,
             module,
             class_name,

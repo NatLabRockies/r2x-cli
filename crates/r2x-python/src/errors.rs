@@ -32,6 +32,12 @@ pub enum BridgeError {
     #[error("Invalid entry point format: {0}")]
     InvalidEntryPoint(String),
 
+    #[error("Invalid artifact bundle: {0}")]
+    InvalidArtifact(String),
+
+    #[error("Artifact-mode invocation is unsupported: {0}")]
+    UnsupportedArtifactMode(String),
+
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 }

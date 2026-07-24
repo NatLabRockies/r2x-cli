@@ -2,6 +2,7 @@ use crate::errors::PipelineError;
 use r2x_config::Config;
 use r2x_logger as logger;
 use r2x_manifest::runtime::RuntimeBindings;
+use r2x_python::plugin_invoker::ArtifactBundle;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,6 +58,21 @@ pub(super) fn prepare_pipeline_overrides(
     }
 }
 
+pub(super) fn prepare_pipeline_artifact_overrides(
+    pipeline_input: Option<&ArtifactBundle>,
+    bindings: &RuntimeBindings,
+    plugin_name: &str,
+) -> Option<String> {
+    let input = pipeline_input?;
+    let target_field = determine_json_path_field(bindings, plugin_name)?;
+    let mut overrides = serde_json::Map::new();
+    overrides.insert(
+        target_field.to_string(),
+        serde_json::Value::String(input.entrypoint_path().to_string_lossy().into_owned()),
+    );
+    Some(serde_json::Value::Object(overrides).to_string())
+}
+
 fn determine_json_path_field(
     bindings: &RuntimeBindings,
     plugin_name: &str,
@@ -70,6 +86,10 @@ fn determine_json_path_field(
         {
             return Some(*field);
         }
+    }
+
+    if bindings.role == r2x_manifest::runtime::PluginRole::Upgrader {
+        return Some("path");
     }
 
     if plugin_name.contains("parser") {

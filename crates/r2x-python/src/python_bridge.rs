@@ -46,6 +46,11 @@ pub fn process_exit(code: i32) -> ! {
 }
 
 impl Bridge {
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self { _marker: () }
+    }
+
     /// Get or initialize the bridge singleton
     pub fn get() -> Result<&'static Bridge, BridgeError> {
         match BRIDGE_INSTANCE.get_or_init(Bridge::initialize) {

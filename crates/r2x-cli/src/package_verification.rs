@@ -1,9 +1,10 @@
 //! Package verification and automatic reinstallation
 
 use crate::manifest_lookup::resolve_plugin_ref;
+use crate::plugins::package_spec::{is_git_url, is_local_path};
 use r2x_config::Config;
 use r2x_logger as logger;
-use r2x_manifest::types::Manifest;
+use r2x_manifest::types::{Manifest, Package, PackageSource};
 use r2x_python::utils::resolve_site_package_path;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -175,26 +176,80 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
         packages.join(", ")
     ));
 
+    let python_exe = config.get_venv_python_path();
+    let package_refs: Vec<&str> = packages.iter().map(String::as_str).collect();
+    let install_args = build_pip_install_args(&python_exe, &package_refs, false);
+
+    run_pip_install(config, &install_args, packages.len())
+}
+
+fn ensure_manifest_package(package: &Package, config: &Config) -> Result<(), VerificationError> {
+    let (package_spec, editable) = manifest_install_spec(package)?;
+    let python_exe = config.get_venv_python_path();
+    let install_args = build_pip_install_args(&python_exe, &[package_spec], editable);
+
+    logger::info(&format!("Installing missing package: {}", package_spec));
+    run_pip_install(config, &install_args, 1)
+}
+
+fn manifest_install_spec(package: &Package) -> Result<(&str, bool), VerificationError> {
+    let source_uri = package
+        .source_uri
+        .as_deref()
+        .filter(|source_uri| !source_uri.trim().is_empty());
+    let source_is_explicit = source_uri.is_some_and(|source_uri| {
+        is_git_url(source_uri) || is_local_path(source_uri) || source_uri.starts_with("file:")
+    });
+    let source_is_required = package.editable_install
+        || source_is_explicit
+        || matches!(
+            package.source_kind,
+            PackageSource::Github | PackageSource::Git | PackageSource::Local
+        );
+
+    if source_is_required {
+        let source_uri = source_uri.ok_or_else(|| {
+            VerificationError::ReinstallFailed(format!(
+                "Package '{}' requires its original source URI for reinstallation",
+                package.name
+            ))
+        })?;
+        return Ok((source_uri, package.editable_install));
+    }
+
+    Ok((package.name.as_ref(), false))
+}
+
+fn build_pip_install_args(python_exe: &str, packages: &[&str], editable: bool) -> Vec<String> {
+    let mut install_args = vec![
+        "pip".to_string(),
+        "install".to_string(),
+        "--python".to_string(),
+        python_exe.to_string(),
+        "--prerelease=allow".to_string(),
+        "--no-progress".to_string(),
+    ];
+
+    if editable {
+        install_args.push("-e".to_string());
+    }
+
+    install_args.extend(packages.iter().map(|package| (*package).to_string()));
+    install_args
+}
+
+fn run_pip_install(
+    config: &Config,
+    install_args: &[String],
+    package_count: usize,
+) -> Result<(), VerificationError> {
     let uv_path = config
         .uv_path
         .as_ref()
         .ok_or_else(|| VerificationError::ReinstallFailed("uv not configured".to_string()))?;
 
-    let python_exe = config.get_venv_python_path();
-
-    // Build uv pip install command
     let mut cmd = Command::new(uv_path);
-    cmd.arg("pip")
-        .arg("install")
-        .arg("--python")
-        .arg(&python_exe)
-        .arg("--prerelease=allow")
-        .arg("--no-progress");
-
-    // Add all packages
-    for package in &packages {
-        cmd.arg(package);
-    }
+    cmd.args(install_args);
 
     logger::debug(&format!("Running: {:?}", cmd));
 
@@ -215,7 +270,7 @@ pub fn ensure_packages(packages: Vec<String>, config: &Config) -> Result<(), Ver
 
     logger::success(&format!(
         "Successfully installed {} packages",
-        packages.len()
+        package_count
     ));
     Ok(())
 }
@@ -266,7 +321,9 @@ pub fn verify_and_ensure_plugin(
             let config = Config::load().map_err(|e| {
                 VerificationError::ReinstallFailed(format!("Failed to load config: {}", e))
             })?;
-            ensure_packages(packages, &config)?;
+            let resolved = resolve_plugin_ref(manifest, plugin_key)
+                .map_err(|e| VerificationError::ReinstallFailed(e.to_string()))?;
+            ensure_manifest_package(resolved.package, &config)?;
             logger::success("Packages verified and installed");
             Ok(())
         }
@@ -314,6 +371,22 @@ pub fn verify_all_packages(manifest: &Manifest) -> Result<HashSet<String>, Verif
 #[cfg(test)]
 mod tests {
     use crate::package_verification::*;
+    use r2x_manifest::types::{Package, PackageSource};
+    use std::sync::Arc;
+
+    fn package_with_source(
+        source_kind: PackageSource,
+        source_uri: Option<&str>,
+        editable_install: bool,
+    ) -> Package {
+        Package {
+            name: Arc::from("r2x-reeds"),
+            source_kind,
+            source_uri: source_uri.map(Arc::from),
+            editable_install,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_verification_result_valid() {
@@ -378,5 +451,64 @@ mod tests {
 
         // After reinstall, we expect Valid
         assert!(matches!(valid_result, VerificationResult::Valid));
+    }
+
+    #[test]
+    fn manifest_reinstall_uses_package_name_for_pypi() {
+        let package = package_with_source(PackageSource::Pypi, None, false);
+
+        let Ok((package_spec, editable)) = manifest_install_spec(&package) else {
+            unreachable!("PyPI install spec should resolve");
+        };
+        let args = build_pip_install_args("/tmp/python", &[package_spec], editable);
+
+        assert_eq!(args.last(), Some(&"r2x-reeds".to_string()));
+        assert!(!args.iter().any(|arg| arg == "-e"));
+    }
+
+    #[test]
+    fn manifest_reinstall_uses_editable_local_source() {
+        let package = package_with_source(PackageSource::Local, Some("/tmp/r2x-reeds"), true);
+        let Ok((package_spec, editable)) = manifest_install_spec(&package) else {
+            unreachable!("local install spec should resolve");
+        };
+
+        let args = build_pip_install_args("/tmp/python", &[package_spec], editable);
+
+        assert!(args.iter().any(|arg| arg == "-e"));
+        assert_eq!(args.last(), Some(&"/tmp/r2x-reeds".to_string()));
+    }
+
+    #[test]
+    fn manifest_reinstall_uses_git_uri_despite_legacy_pypi_kind() {
+        let package = package_with_source(
+            PackageSource::Pypi,
+            Some("git+https://github.com/NREL/r2x-reeds.git@main"),
+            false,
+        );
+
+        let Ok((package_spec, editable)) = manifest_install_spec(&package) else {
+            unreachable!("git install spec should resolve");
+        };
+
+        assert_eq!(
+            package_spec,
+            "git+https://github.com/NREL/r2x-reeds.git@main"
+        );
+        assert!(!editable);
+    }
+
+    #[test]
+    fn manifest_reinstall_rejects_missing_required_source_uri() {
+        let package = package_with_source(PackageSource::Local, None, true);
+
+        let error = match manifest_install_spec(&package) {
+            Err(error) => error,
+            Ok(_) => unreachable!("editable local package without source URI should fail"),
+        };
+
+        assert!(error
+            .to_string()
+            .contains("requires its original source URI"));
     }
 }

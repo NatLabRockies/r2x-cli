@@ -56,3 +56,16 @@ def with_system_function(system) -> dict[str, str]:
             data = {}
     source = data.get("system", "unknown")
     return {"system": source, "status": "function-with-system"}
+
+
+def system_with_sidecar():
+    """Return a path-serialized System with a relative sidecar bundle."""
+    from r2x_core.system import System
+
+    return System(
+        {
+            "system": "reeds",
+            "status": "with-sidecar",
+            "time_series": {"directory": "system_time_series"},
+        }
+    )

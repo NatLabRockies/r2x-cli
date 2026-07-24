@@ -1,3 +1,4 @@
+use crate::artifact_handoff::{claim_handoff, parse_handoff_envelope, ClaimedArtifactHandoff};
 use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
@@ -49,13 +50,15 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
 
     ensure_prerequisites(&mut config, &python_exe)?;
 
-    // Determine if input is from stdin (for banner display)
-    let is_stdin = cmd.file.is_none();
-
-    // Load JSON input
-    let json_file_path = if let Some(file_path) = cmd.file {
+    let (json_file_path, source_is_stdin, display_source, _claimed_handoff): (
+        PathBuf,
+        bool,
+        String,
+        Option<ClaimedArtifactHandoff>,
+    ) = if let Some(file_path) = cmd.file {
         logger::debug(&format!("Reading JSON from file: {}", file_path.display()));
-        file_path
+        let display_source = file_path.display().to_string();
+        (file_path, false, display_source, None)
     } else {
         if atty::is(Stream::Stdin) {
             logger::info("No JSON input detected; please provide --file or pipe JSON via stdin.");
@@ -71,26 +74,35 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
             .map_err(|e| format!("Failed to read from stdin: {}", e))?;
 
         let cache_dir = config.ensure_cache_path()?;
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let temp_json = PathBuf::from(cache_dir).join(format!("stdin_input_{}.json", unique));
-        fs::write(&temp_json, &json_data)
-            .map_err(|e| format!("Failed to write temporary JSON file: {}", e))?;
+        let cache_root = PathBuf::from(&cache_dir);
+        if let Some(envelope) = parse_handoff_envelope(&json_data)? {
+            let handoff = claim_handoff(&cache_root, &envelope)?;
+            let entrypoint = handoff.entrypoint_path();
+            logger::debug(&format!(
+                "Claimed piped artifact handoff at {}",
+                entrypoint.display()
+            ));
+            (
+                entrypoint,
+                false,
+                "[piped artifact handoff]".to_string(),
+                Some(handoff),
+            )
+        } else {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let temp_json = cache_root.join(format!("stdin_input_{}.json", unique));
+            fs::write(&temp_json, &json_data)
+                .map_err(|e| format!("Failed to write temporary JSON file: {}", e))?;
 
-        logger::debug(&format!(
-            "Saved stdin to temporary file: {}",
-            temp_json.display()
-        ));
-        temp_json
-    };
-
-    // Determine the display source for the banner
-    let display_source = if is_stdin {
-        "[piped from stdin]".to_string()
-    } else {
-        json_file_path.display().to_string()
+            logger::debug(&format!(
+                "Saved stdin to temporary file: {}",
+                temp_json.display()
+            ));
+            (temp_json, true, "[piped from stdin]".to_string(), None)
+        }
     };
 
     // Generate Python initialization code
@@ -100,7 +112,7 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
         .replace('\\', "\\\\");
 
     let display_source_str = display_source.replace('\\', "\\\\").replace('\'', "\\'");
-    let source_is_stdin = if is_stdin { "True" } else { "False" };
+    let source_is_stdin = if source_is_stdin { "True" } else { "False" };
 
     let python_code = format!(
         r#"
@@ -1420,17 +1432,16 @@ shell(
     let ipython_dir = ensure_ipython_dir();
     let stdin_is_tty = atty::is(Stream::Stdin);
     let stdout_is_tty = atty::is(Stream::Stdout);
-    let interactive_prompt = stdin_is_tty && stdout_is_tty;
 
-    // Only redirect stdio to /dev/tty when running interactively. In non-interactive
-    // contexts (tests, piped output) we must use inherited stdio so that Python's
-    // stderr (e.g. sidecar validation errors) reaches the caller's captured fd 2.
-    let (stdin_stdio, stdout_stdio, stderr_stdio) = if interactive_prompt {
-        let (_tty_attached, stdin_tty, stdout_tty, stderr_tty) = acquire_tty_stdio();
-        (stdin_tty, stdout_tty, stderr_tty)
+    // A pipeline gives stdin to the JSON payload, but `r2x read` must still
+    // attach its interactive session to the caller's terminal. Keep inherited
+    // streams when stdout is captured so tests and sidecar errors remain visible.
+    let (tty_attached, stdin_stdio, stdout_stdio, stderr_stdio) = if stdout_is_tty {
+        acquire_tty_stdio()
     } else {
-        (Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
+        (false, Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
     };
+    let interactive_prompt = stdout_is_tty && tty_attached;
 
     // Spawn IPython bootstrap script with interactive embed
     let mut command = build_python_launch_command(&python_exe, &bootstrap_script);
@@ -1461,7 +1472,10 @@ shell(
         command
             .env("PY_COLORS", "1")
             .env("CLICOLOR_FORCE", "1")
-            .env("R2X_FORCE_SIMPLE_PROMPT", "0");
+            .env(
+                "R2X_FORCE_SIMPLE_PROMPT",
+                if stdin_is_tty { "0" } else { "1" },
+            );
     } else {
         command.env("R2X_FORCE_SIMPLE_PROMPT", "1");
     }
