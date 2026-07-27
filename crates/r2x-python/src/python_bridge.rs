@@ -59,18 +59,6 @@ impl Bridge {
         }
     }
 
-    /// Check if Python is available without initializing
-    pub fn is_python_available() -> bool {
-        let config = match Config::load() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        // Check if venv exists and has valid pyvenv.cfg
-        let venv_path = PathBuf::from(config.get_venv_path());
-        venv_path.join("pyvenv.cfg").exists()
-    }
-
     /// Initialize Python interpreter and configure environment
     ///
     /// This performs:
@@ -266,7 +254,7 @@ def _r2x_cache_path_override():
     }
 
     /// Enable loguru logging for a list of Python modules
-    pub(crate) fn enable_loguru_modules(py: Python, modules: &[&str]) -> Result<(), BridgeError> {
+    fn enable_loguru_modules(py: Python, modules: &[&str]) -> Result<(), BridgeError> {
         let loguru = PyModule::import(py, "loguru")?;
         let logger_obj = loguru.getattr("logger")?;
 

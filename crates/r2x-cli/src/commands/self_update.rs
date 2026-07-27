@@ -8,7 +8,7 @@ use crate::install_source::InstallSource;
 #[derive(Debug, Args)]
 pub struct SelfNamespace {
     #[command(subcommand)]
-    pub command: SelfCommand,
+    command: SelfCommand,
 }
 
 #[derive(Debug, Subcommand)]
@@ -21,16 +21,16 @@ pub enum SelfCommand {
 #[derive(Debug, Args)]
 pub struct SelfUpdateArgs {
     /// Update to the specified version. If not provided, r2x will update to the latest version.
-    pub target_version: Option<String>,
+    target_version: Option<String>,
 
     /// A GitHub token for authentication.
     /// A token is not required but can be used to reduce the chance of encountering rate limits.
     #[arg(long, env = "GITHUB_TOKEN")]
-    pub token: Option<String>,
+    token: Option<String>,
 
     /// Run without performing the update.
     #[arg(long)]
-    pub dry_run: bool,
+    dry_run: bool,
 }
 
 pub fn handle_self_command(args: SelfNamespace) -> Result<i32> {

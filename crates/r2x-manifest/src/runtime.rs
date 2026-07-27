@@ -100,7 +100,7 @@ fn plugin_role_from_group(group: &str) -> PluginRole {
 }
 
 /// Infer a legacy plugin role from name patterns when group metadata is absent.
-pub fn infer_plugin_role(name: &str) -> PluginRole {
+fn infer_plugin_role(name: &str) -> PluginRole {
     let name_lower = name.to_lowercase();
     if name_lower.contains("parser") {
         PluginRole::Parser

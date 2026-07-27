@@ -174,29 +174,6 @@ impl crate::python_bridge::Bridge {
         Self::save_system_artifact_as_zip_native(input, output)
     }
 
-    /// Invoke a plugin using directory-backed input and output artifacts.
-    ///
-    /// Payload bytes remain in Python. In particular, Systems are loaded and
-    /// written through their path-aware Python APIs so sidecars stay adjacent
-    /// to the JSON entrypoint.
-    pub fn invoke_plugin_with_artifacts(
-        &self,
-        target: &str,
-        config_json: &str,
-        input: Option<&ArtifactBundle>,
-        output: &ArtifactBundle,
-        plugin_metadata: Option<&Plugin>,
-    ) -> Result<PluginArtifactInvocationResult, BridgeError> {
-        let runtime_bindings = plugin_metadata.map(build_runtime_bindings);
-        self.invoke_plugin_with_artifact_bindings(
-            target,
-            config_json,
-            input,
-            output,
-            runtime_bindings.as_ref(),
-        )
-    }
-
     /// Artifact-mode counterpart of [`Self::invoke_plugin_with_bindings`].
     pub fn invoke_plugin_with_artifact_bindings(
         &self,

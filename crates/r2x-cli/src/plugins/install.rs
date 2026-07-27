@@ -5,7 +5,7 @@ use std::process::Command;
 /// Query package info via a single pip show call.
 /// Returns (version, dependencies) tuple.
 /// Returns (None, empty_vec) on any error (best-effort, non-fatal).
-pub fn get_package_info(
+pub(crate) fn get_package_info(
     uv_path: &str,
     python_path: &str,
     package: &str,

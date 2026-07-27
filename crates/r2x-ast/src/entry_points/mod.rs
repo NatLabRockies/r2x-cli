@@ -6,5 +6,5 @@
 //!
 //! Entry points are the primary mechanism for discovering r2x plugins in installed packages.
 
-pub mod parser;
-pub mod pyproject;
+pub(crate) mod parser;
+pub(crate) mod pyproject;

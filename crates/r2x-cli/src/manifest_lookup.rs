@@ -38,12 +38,12 @@ impl fmt::Display for PluginRefError {
 
 impl std::error::Error for PluginRefError {}
 
-pub struct ResolvedPlugin<'a> {
-    pub package: &'a Package,
-    pub plugin: &'a Plugin,
+pub(crate) struct ResolvedPlugin<'a> {
+    pub(crate) package: &'a Package,
+    pub(crate) plugin: &'a Plugin,
 }
 
-pub fn resolve_plugin_ref<'a>(
+pub(crate) fn resolve_plugin_ref<'a>(
     manifest: &'a Manifest,
     plugin_ref: &str,
 ) -> Result<ResolvedPlugin<'a>, PluginRefError> {

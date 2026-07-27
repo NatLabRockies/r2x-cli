@@ -766,7 +766,7 @@ fn detect_missing_data_file_from_metadata(
     detect_missing_data_file_from_mapping(&class_obj, folder_path)
 }
 
-pub(crate) fn resolve_config_class<'py>(
+fn resolve_config_class<'py>(
     py: pyo3::Python<'py>,
     config_instance: Option<&pyo3::Bound<'py, PyAny>>,
     metadata: Option<&RuntimeConfig>,

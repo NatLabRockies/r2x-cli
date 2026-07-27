@@ -83,7 +83,7 @@ pub fn parse_handoff_envelope(
     Ok(Some(envelope))
 }
 
-pub fn publish_handoff(
+pub(crate) fn publish_handoff(
     cache_root: &Path,
     bundle: &ArtifactBundle,
 ) -> Result<ArtifactHandoffEnvelope, ArtifactHandoffError> {
@@ -123,7 +123,7 @@ pub fn publish_handoff(
     ))
 }
 
-pub fn revoke_handoff(
+pub(crate) fn revoke_handoff(
     cache_root: &Path,
     envelope: &ArtifactHandoffEnvelope,
 ) -> Result<(), ArtifactHandoffError> {

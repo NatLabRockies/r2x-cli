@@ -8,14 +8,16 @@ use crate::errors::BridgeError;
 use r2x_config::venv_paths::{resolve_python_exe, resolve_site_packages, VenvPathError};
 use std::path::{Path, PathBuf};
 
-pub const PYTHON_LIB_DIR: &str = r2x_config::venv_paths::PYTHON_LIB_DIR;
-pub const PYTHON_BIN_DIR: &str = r2x_config::venv_paths::PYTHON_BIN_DIR;
+#[cfg(test)]
+const PYTHON_LIB_DIR: &str = r2x_config::venv_paths::PYTHON_LIB_DIR;
+#[cfg(test)]
+const PYTHON_BIN_DIR: &str = r2x_config::venv_paths::PYTHON_BIN_DIR;
 
 pub fn resolve_site_package_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
     resolve_site_packages(venv_path).map_err(venv_path_error_to_bridge_error)
 }
 
-pub fn resolve_python_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
+pub(crate) fn resolve_python_path(venv_path: &Path) -> Result<PathBuf, BridgeError> {
     resolve_python_exe(venv_path).map_err(venv_path_error_to_bridge_error)
 }
 

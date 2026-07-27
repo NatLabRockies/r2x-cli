@@ -10,9 +10,9 @@
 //! no Python interpreter startup.
 
 pub mod discovery_types;
-pub mod entry_points;
-pub mod naming;
-pub mod package_cache;
+pub(crate) mod entry_points;
+pub(crate) mod naming;
+pub(crate) mod package_cache;
 pub mod schema_extractor;
 
 use crate::discovery_types::{ConfigField, ConfigSpec, EntryPointInfo};

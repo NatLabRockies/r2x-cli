@@ -1,5 +1,5 @@
 // Core plugin infrastructure modules
-pub mod discovery;
+pub(crate) mod discovery;
 pub mod error;
-pub mod install;
-pub mod package_spec;
+pub(crate) mod install;
+pub(crate) mod package_spec;

@@ -70,12 +70,12 @@ impl PackageLocator {
     }
 
     /// Return the site-packages root used by this locator.
-    pub fn site_packages(&self) -> &Path {
+    fn site_packages(&self) -> &Path {
         &self.site_packages
     }
 
     /// Return an iterator over the cached directory entries (filename -> path).
-    pub fn dir_entries(&self) -> impl Iterator<Item = (&String, &PathBuf)> {
+    fn dir_entries(&self) -> impl Iterator<Item = (&String, &PathBuf)> {
         self.dir_entries.iter()
     }
 
@@ -97,7 +97,7 @@ impl PackageLocator {
     /// Find the `entry_points.txt` file for a given package.
     ///
     /// Returns the path if it exists inside the package's dist-info directory.
-    pub fn find_entry_points_txt(&self, package_name: &str) -> Option<PathBuf> {
+    fn find_entry_points_txt(&self, package_name: &str) -> Option<PathBuf> {
         let dist_info = self.find_dist_info_path(package_name)?;
         let entry_points = dist_info.join("entry_points.txt");
         if entry_points.exists() {
@@ -180,7 +180,8 @@ impl PackageLocator {
     /// Read the installed dependencies of a package from its `.dist-info/METADATA` file.
     ///
     /// Parses `Requires-Dist:` lines and returns bare package names (no version specifiers).
-    pub fn read_dependencies(&self, package_name: &str) -> Vec<String> {
+    #[cfg(test)]
+    fn read_dependencies(&self, package_name: &str) -> Vec<String> {
         let Some(dist_info) = self.find_dist_info_path(package_name) else {
             return Vec::new();
         };
@@ -533,7 +534,8 @@ impl<'a> PackageDiscoverer<'a> {
 }
 
 /// Parse entry_points.txt and extract r2x_plugin entry point
-pub fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> {
+#[cfg(test)]
+fn parse_entry_points(entry_points_path: &Path) -> Result<(String, String)> {
     let content = fs::read_to_string(entry_points_path)?;
     let mut in_r2x_section = false;
     let mut module = String::new();

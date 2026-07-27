@@ -1210,7 +1210,7 @@ pub(crate) fn format_python_error(py: pyo3::Python<'_>, err: pyo3::PyErr, contex
 }
 
 /// Render a Python traceback to a string.
-pub(crate) fn render_traceback(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<String> {
+fn render_traceback(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<String> {
     let traceback = err.traceback(py)?;
     let traceback_module = PyModule::import(py, "traceback").ok()?;
     let formatter = traceback_module.getattr("format_exception").ok()?;
@@ -1225,7 +1225,7 @@ pub(crate) fn render_traceback(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Optio
 ///
 /// This is used for exceptions extracted from Result Err variants, where
 /// we have a Python object that is an exception but not a PyErr.
-pub(crate) fn format_exception_value(py: pyo3::Python<'_>, exc_value: &Bound<'_, PyAny>) -> String {
+fn format_exception_value(py: pyo3::Python<'_>, exc_value: &Bound<'_, PyAny>) -> String {
     // Try to extract traceback using Option chaining
     let traceback_text = (|| -> Option<String> {
         let tb = exc_value.getattr("__traceback__").ok()?;

@@ -6,12 +6,12 @@ use r2x_python::utils::resolve_site_package_path;
 use std::path::PathBuf;
 
 pub struct PluginContext {
-    pub config: Config,
-    pub manifest: Manifest,
-    pub uv_path: String,
-    pub venv_path: String,
-    pub python_path: String,
-    pub locator: PackageLocator,
+    pub(crate) config: Config,
+    pub(crate) manifest: Manifest,
+    pub(crate) uv_path: String,
+    pub(crate) venv_path: String,
+    pub(crate) python_path: String,
+    pub(crate) locator: PackageLocator,
 }
 
 impl PluginContext {
@@ -56,7 +56,7 @@ impl PluginContext {
         })
     }
 
-    pub fn refresh_locator(&mut self) -> Result<(), PluginError> {
+    pub(crate) fn refresh_locator(&mut self) -> Result<(), PluginError> {
         self.locator
             .refresh()
             .map_err(|e| PluginError::Locator(format!("Failed to refresh package locator: {e}")))

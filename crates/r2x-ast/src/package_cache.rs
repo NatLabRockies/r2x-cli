@@ -19,54 +19,33 @@ use walkdir::{DirEntry, WalkDir};
 
 /// Extracted class definition from a Python file
 #[derive(Debug, Clone)]
-pub struct ClassDef {
+pub(crate) struct ClassDef {
     /// Class name (e.g., "ReEDSParser")
-    pub name: String,
-    /// Base class names (e.g., ["Plugin[Config]", "BaseClass"])
-    pub bases: Vec<String>,
+    pub(crate) name: String,
     /// Generic parameter if Plugin[Config] form (e.g., "Config")
-    pub generic_param: Option<String>,
-    /// Method names defined in this class
-    pub methods: Vec<String>,
-    /// The raw class body text for further analysis
-    pub body_text: String,
+    pub(crate) generic_param: Option<String>,
 }
 
 /// Extracted function with @expose_plugin decorator
 #[derive(Debug, Clone)]
-pub struct DecoratedFunc {
+pub(crate) struct DecoratedFunc {
     /// Function name
-    pub function_name: String,
-    /// Raw parameter text for parsing
-    pub parameters_text: String,
-}
-
-/// Extracted field definition from a class
-#[derive(Debug, Clone)]
-pub struct FieldDef {
-    /// Field name
-    pub name: String,
-    /// Type annotation text
-    pub type_annotation: String,
-    /// Full field text including default value
-    pub full_text: String,
+    pub(crate) function_name: String,
 }
 
 /// Pre-parsed data for a single Python file
 #[derive(Debug)]
-pub struct ParsedPyFile {
-    /// File path
-    pub path: PathBuf,
+pub(crate) struct ParsedPyFile {
     /// Raw file content
-    pub content: String,
+    pub(crate) content: String,
     /// Extracted class definitions
-    pub classes: Vec<ClassDef>,
+    pub(crate) classes: Vec<ClassDef>,
     /// Functions decorated with @expose_plugin
-    pub decorated_functions: Vec<DecoratedFunc>,
+    decorated_functions: Vec<DecoratedFunc>,
 }
 
 /// Cache for a package - walk once, parse once, query many times
-pub struct PackageAstCache {
+pub(crate) struct PackageAstCache {
     /// Parsed files indexed by path
     files: HashMap<PathBuf, ParsedPyFile>,
     /// Index: class name -> file path
@@ -100,7 +79,7 @@ impl PackageAstCache {
     }
 
     /// Build cache by walking package once and parsing each .py file once
-    pub fn build(package_root: &Path) -> Self {
+    pub(crate) fn build(package_root: &Path) -> Self {
         let start = Instant::now();
         let mut files = HashMap::new();
         let mut class_index = HashMap::new();
@@ -154,7 +133,6 @@ impl PackageAstCache {
         ));
 
         ParsedPyFile {
-            path: path.to_path_buf(),
             content,
             classes,
             decorated_functions,
@@ -198,16 +176,11 @@ impl PackageAstCache {
                 }
             };
 
-            let (bases, generic_param) = Self::parse_bases(&bases_text);
-            let body_text = node.text().to_string();
-            let methods = Self::extract_method_names(&body_text);
+            let (_, generic_param) = Self::parse_bases(&bases_text);
 
             classes.push(ClassDef {
                 name,
-                bases,
                 generic_param,
-                methods,
-                body_text,
             });
         }
 
@@ -232,15 +205,9 @@ impl PackageAstCache {
                 continue;
             }
 
-            let body_text = node.text().to_string();
-            let methods = Self::extract_method_names(&body_text);
-
             classes.push(ClassDef {
                 name,
-                bases: Vec::new(),
                 generic_param: None,
-                methods,
-                body_text,
             });
         }
 
@@ -304,27 +271,6 @@ impl PackageAstCache {
         }
     }
 
-    /// Extract method names from class body text
-    fn extract_method_names(body_text: &str) -> Vec<String> {
-        let mut methods = Vec::new();
-
-        // Simple text-based extraction for method names
-        // Look for "def method_name(" patterns
-        for line in body_text.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("def ") {
-                if let Some(rest) = trimmed.strip_prefix("def ") {
-                    if let Some(paren_idx) = rest.find('(') {
-                        let method_name = rest[..paren_idx].trim();
-                        methods.push(method_name.to_string());
-                    }
-                }
-            }
-        }
-
-        methods
-    }
-
     /// Extract class name from class definition text
     /// Handles both "class Name:" and "class Name(Base):" forms
     fn extract_class_name_from_text(text: &str) -> String {
@@ -378,31 +324,13 @@ impl PackageAstCache {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| Self::extract_function_name_from_text(&node.text()));
 
-                // Try to get parameters from metavariable, fallback to text extraction
-                let parameters_text = {
-                    let from_env: String = env
-                        .get_multiple_matches("$$$PARAMS")
-                        .iter()
-                        .map(|p| p.text().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    if from_env.is_empty() {
-                        Self::extract_params_from_text(&node.text())
-                    } else {
-                        from_env
-                    }
-                };
-
                 if !function_name.is_empty() {
                     // Avoid duplicates
                     if !results
                         .iter()
                         .any(|r: &DecoratedFunc| r.function_name == function_name)
                     {
-                        results.push(DecoratedFunc {
-                            function_name,
-                            parameters_text,
-                        });
+                        results.push(DecoratedFunc { function_name });
                     }
                 }
             }
@@ -425,45 +353,13 @@ impl PackageAstCache {
         String::new()
     }
 
-    /// Extract parameters from function definition text
-    /// Handles "def name(param1, param2):" form
-    fn extract_params_from_text(text: &str) -> String {
-        // Find "def " and then the parentheses
-        if let Some(def_pos) = text.find("def ") {
-            let after_def = &text[def_pos..];
-            if let Some(open_paren) = after_def.find('(') {
-                // Find matching close paren (handle nested)
-                let params_start = &after_def[open_paren + 1..];
-                let mut depth = 1;
-                let mut end = 0;
-                for (i, ch) in params_start.char_indices() {
-                    match ch {
-                        '(' | '[' | '{' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                end = i;
-                                break;
-                            }
-                        }
-                        ']' | '}' => depth -= 1,
-                        _ => {}
-                    }
-                }
-                if end > 0 {
-                    return params_start[..end].trim().to_string();
-                }
-            }
-        }
-        String::new()
-    }
-
     // =========================================================================
     // Query Methods - no re-walking or re-parsing
     // =========================================================================
 
     /// Find a class by name
-    pub fn find_class(&self, name: &str) -> Option<&ClassDef> {
+    #[cfg(test)]
+    fn find_class(&self, name: &str) -> Option<&ClassDef> {
         if let Some(path) = self.class_index.get(name) {
             if let Some(file) = self.files.get(path) {
                 return file.classes.iter().find(|c| c.name == name);
@@ -473,7 +369,7 @@ impl PackageAstCache {
     }
 
     /// Find a class and its file path by name
-    pub fn find_class_with_path(&self, name: &str) -> Option<(&PathBuf, &ClassDef)> {
+    pub(crate) fn find_class_with_path(&self, name: &str) -> Option<(&PathBuf, &ClassDef)> {
         if let Some(path) = self.class_index.get(name) {
             if let Some(file) = self.files.get(path) {
                 if let Some(class) = file.classes.iter().find(|c| c.name == name) {
@@ -484,27 +380,8 @@ impl PackageAstCache {
         None
     }
 
-    /// Find a Plugin class by symbol name
-    /// Returns (file_path, config_class_name) if found
-    pub fn find_plugin_class(&self, symbol: &str) -> Option<(&PathBuf, String)> {
-        if let Some((path, class)) = self.find_class_with_path(symbol) {
-            // Check if this class inherits from Plugin[...]
-            if let Some(ref config_name) = class.generic_param {
-                return Some((path, config_name.clone()));
-            }
-
-            // Also check bases directly for Plugin[Config] pattern
-            for base in &class.bases {
-                if let Some(param) = Self::extract_generic_param(base, "Plugin") {
-                    return Some((path, param));
-                }
-            }
-        }
-        None
-    }
-
     /// Find a config class by name and return its file content
-    pub fn find_config_class_content(&self, name: &str) -> Option<(&PathBuf, &str)> {
+    pub(crate) fn find_config_class_content(&self, name: &str) -> Option<(&PathBuf, &str)> {
         // First try the class index
         if let Some(path) = self.class_index.get(name) {
             if let Some(file) = self.files.get(path) {
@@ -525,7 +402,7 @@ impl PackageAstCache {
     }
 
     /// Get all @expose_plugin decorated functions from all files
-    pub fn get_all_decorated_functions(&self) -> Vec<(&PathBuf, &DecoratedFunc)> {
+    pub(crate) fn get_all_decorated_functions(&self) -> Vec<(&PathBuf, &DecoratedFunc)> {
         self.files
             .iter()
             .flat_map(|(path, file)| {
@@ -536,18 +413,13 @@ impl PackageAstCache {
             .collect()
     }
 
-    /// Get file content by path
-    pub fn get_file_content(&self, path: &Path) -> Option<&str> {
-        self.files.get(path).map(|f| f.content.as_str())
-    }
-
     /// Get all parsed files
-    pub fn files(&self) -> &HashMap<PathBuf, ParsedPyFile> {
+    pub(crate) fn files(&self) -> &HashMap<PathBuf, ParsedPyFile> {
         &self.files
     }
 
     /// Get the number of parsed files
-    pub fn file_count(&self) -> usize {
+    pub(crate) fn file_count(&self) -> usize {
         self.files.len()
     }
 }
@@ -557,36 +429,6 @@ mod tests {
     use crate::package_cache::*;
     use std::fs;
     use tempfile::TempDir;
-
-    #[test]
-    fn test_parse_bases() {
-        let (bases, generic) = PackageAstCache::parse_bases("Plugin[MyConfig], BaseClass");
-        assert_eq!(bases, vec!["Plugin[MyConfig]", "BaseClass"]);
-        assert_eq!(generic, Some("MyConfig".to_string()));
-
-        let (bases2, generic2) = PackageAstCache::parse_bases("BaseClass");
-        assert_eq!(bases2, vec!["BaseClass"]);
-        assert!(generic2.is_none());
-    }
-
-    #[test]
-    fn test_extract_method_names() {
-        let body = r"
-class MyClass:
-    def __init__(self):
-        pass
-
-    def process(self, data):
-        return data
-
-    def on_build(self, system):
-        pass
-";
-        let methods = PackageAstCache::extract_method_names(body);
-        assert!(methods.contains(&"__init__".to_string()));
-        assert!(methods.contains(&"process".to_string()));
-        assert!(methods.contains(&"on_build".to_string()));
-    }
 
     #[test]
     fn test_build_cache() -> anyhow::Result<()> {
@@ -621,15 +463,7 @@ def my_transform(system):
         // Check class extraction
         let class = cache.find_class("MyParser");
         assert!(class.is_some());
-        assert!(
-            class.is_some_and(|c| c.generic_param == Some("MyConfig".to_string())
-                && c.methods.contains(&"on_build".to_string()))
-        );
-
-        // Check Plugin class lookup
-        let plugin = cache.find_plugin_class("MyParser");
-        assert!(plugin.is_some());
-        assert!(plugin.is_some_and(|(_, config_name)| config_name == "MyConfig"));
+        assert!(class.is_some_and(|c| c.generic_param == Some("MyConfig".to_string())));
 
         // Check decorated function extraction
         let decorated = cache.get_all_decorated_functions();
