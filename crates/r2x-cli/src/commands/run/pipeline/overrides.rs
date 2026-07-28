@@ -3,7 +3,7 @@ use r2x_config::Config;
 use r2x_logger as logger;
 use r2x_manifest::runtime::RuntimeBindings;
 use r2x_python::plugin_invoker::ArtifactBundle;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::run::pipeline::constants::JSON_PATH_FIELDS;
@@ -117,7 +117,21 @@ fn persist_pipeline_system_json(payload: &str) -> Result<String, RunError> {
         .ensure_cache_path()
         .map_err(|e| RunError::Config(e.to_string()))?;
     let dir = PathBuf::from(cache_root).join("pipeline-systems");
-    std::fs::create_dir_all(&dir)
+    persist_pipeline_system_json_at(
+        payload,
+        &dir,
+        &std::env::current_dir().map_err(|e| {
+            RunError::Config(format!("Failed to determine current directory: {}", e))
+        })?,
+    )
+}
+
+fn persist_pipeline_system_json_at(
+    payload: &str,
+    destination_dir: &Path,
+    sidecar_parent_dir: &Path,
+) -> Result<String, RunError> {
+    std::fs::create_dir_all(destination_dir)
         .map_err(PipelineError::Io)
         .map_err(RunError::Pipeline)?;
 
@@ -131,15 +145,147 @@ fn persist_pipeline_system_json(payload: &str) -> Result<String, RunError> {
         std::process::id(),
         rand_suffix()
     );
-    let path = dir.join(filename);
-    std::fs::write(&path, payload)
+    let path = destination_dir.join(filename);
+
+    // Inline pipeline payloads only contain JSON. If a System references a
+    // relative or absolute time-series sidecar, copy a self-contained bundle
+    // next to the persisted JSON and make the reference relative to it.
+    // Otherwise the next plugin can deserialize the JSON but cannot resolve
+    // its attached time series.
+    let mut persisted = serde_json::from_str::<serde_json::Value>(payload).ok();
+    if let Some(ref mut value) = persisted {
+        if let Some(time_series) = time_series_metadata_mut(value) {
+            if let Some(directory) = time_series.get("directory").and_then(|v| v.as_str()) {
+                let source = PathBuf::from(directory);
+                let source = if source.is_absolute() {
+                    source
+                } else {
+                    sidecar_parent_dir.join(source)
+                };
+                if source.is_dir() {
+                    let sidecar_name = format!(
+                        "{}_time_series",
+                        path.file_stem().unwrap().to_string_lossy()
+                    );
+                    let destination = destination_dir.join(&sidecar_name);
+                    copy_sidecar_directory(&source, &destination)?;
+                    time_series.insert(
+                        "directory".to_string(),
+                        serde_json::Value::String(sidecar_name),
+                    );
+                }
+            }
+        }
+    }
+
+    let output = persisted
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .unwrap_or_else(|| payload.to_string());
+    std::fs::write(&path, output)
         .map_err(PipelineError::Io)
         .map_err(RunError::Pipeline)?;
     Ok(path.to_string_lossy().to_string())
+}
+
+fn time_series_metadata_mut(
+    value: &mut serde_json::Value,
+) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
+    let object = value.as_object_mut()?;
+    if object.contains_key("time_series") {
+        return object
+            .get_mut("time_series")
+            .and_then(serde_json::Value::as_object_mut);
+    }
+
+    if object.contains_key("system") {
+        return object.get_mut("system").and_then(time_series_metadata_mut);
+    }
+    object.get_mut("data").and_then(time_series_metadata_mut)
+}
+
+fn copy_sidecar_directory(source: &Path, destination: &Path) -> Result<(), RunError> {
+    std::fs::create_dir_all(destination)
+        .map_err(PipelineError::Io)
+        .map_err(RunError::Pipeline)?;
+    for entry in std::fs::read_dir(source)
+        .map_err(PipelineError::Io)
+        .map_err(RunError::Pipeline)?
+    {
+        let entry = entry
+            .map_err(PipelineError::Io)
+            .map_err(RunError::Pipeline)?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&source_path)
+            .map_err(PipelineError::Io)
+            .map_err(RunError::Pipeline)?;
+        if metadata.file_type().is_symlink() {
+            return Err(RunError::Config(format!(
+                "Time-series sidecar contains unsupported symlink: {}",
+                source_path.display()
+            )));
+        }
+        if metadata.is_dir() {
+            copy_sidecar_directory(&source_path, &destination_path)?;
+        } else if metadata.is_file() {
+            std::fs::copy(&source_path, &destination_path)
+                .map_err(PipelineError::Io)
+                .map_err(RunError::Pipeline)?;
+        } else {
+            return Err(RunError::Config(format!(
+                "Time-series sidecar contains unsupported filesystem entry: {}",
+                source_path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn rand_suffix() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persist_pipeline_system_json_at;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn persists_inline_system_with_relative_time_series_sidecar() {
+        let source = tempdir().unwrap();
+        let sidecar = source.path().join("system_time_series");
+        fs::create_dir(&sidecar).unwrap();
+        fs::write(sidecar.join("time_series_metadata.db"), b"metadata").unwrap();
+
+        let destination = tempdir().unwrap();
+        let payload = serde_json::json!({
+            "components": [],
+            "time_series": { "directory": "system_time_series" }
+        })
+        .to_string();
+
+        let persisted =
+            persist_pipeline_system_json_at(&payload, destination.path(), source.path()).unwrap();
+        let persisted_path = std::path::PathBuf::from(persisted);
+        let persisted_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&persisted_path).unwrap()).unwrap();
+        let directory = persisted_json["time_series"]["directory"].as_str().unwrap();
+
+        assert!(!std::path::Path::new(directory).is_absolute());
+        assert_eq!(
+            fs::read(
+                persisted_path
+                    .parent()
+                    .unwrap()
+                    .join(directory)
+                    .join("time_series_metadata.db")
+            )
+            .unwrap(),
+            b"metadata"
+        );
+    }
 }

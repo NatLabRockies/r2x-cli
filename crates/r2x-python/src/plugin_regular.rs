@@ -9,7 +9,7 @@ use crate::python_bridge::Bridge;
 use once_cell::sync::Lazy;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyModule};
-use pyo3::{Bound, PyResult};
+use pyo3::{Bound, Py, PyResult};
 use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
 use std::collections::HashMap;
@@ -336,7 +336,7 @@ impl Bridge {
 
             logger::debug("Starting plugin invocation");
             let call_start = Instant::now();
-            let result_py = if callable_path.contains('.') {
+            let (result_py, source_system) = if callable_path.contains('.') {
                 Self::invoke_class_callable(
                     self,
                     &module,
@@ -364,7 +364,7 @@ impl Bridge {
                     };
                 let kwargs =
                     Self::build_kwargs(py, &config_dict, stdin_obj.as_ref(), runtime_bindings)?;
-                Self::invoke_function_callable(
+                Self::invoke_function_callable_with_source(
                     py,
                     &module,
                     module_path,
@@ -428,6 +428,8 @@ impl Bridge {
                 } else {
                     result_unwrapped
                 };
+
+            preserve_time_series_by_name(py, source_system.as_ref(), &result_to_serialize);
 
             let (json_str, ser_elapsed) = if result_to_serialize.hasattr("to_json")? {
                 let ser_start = Instant::now();
@@ -573,7 +575,7 @@ impl Bridge {
                 .clone();
 
             let call_start = Instant::now();
-            let result_py = if callable_path.contains('.') {
+            let (result_py, source_system) = if callable_path.contains('.') {
                 Self::invoke_class_callable(
                     self,
                     &module,
@@ -663,6 +665,8 @@ impl Bridge {
                     result_unwrapped
                 };
 
+            preserve_time_series_by_name(py, source_system.as_ref(), &result_to_serialize);
+
             let write_start = Instant::now();
             let output_kind = write_artifact_result(&json, &result_to_serialize, &output_path)
                 .map_err(|error| {
@@ -697,7 +701,7 @@ impl Bridge {
         input: ClassInput<'_>,
         runtime_bindings: Option<&RuntimeBindings>,
         json: &PythonJson<'py>,
-    ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
+    ) -> Result<(pyo3::Bound<'py, PyAny>, Option<Py<PyAny>>), BridgeError> {
         let parts: Vec<&str> = callable_path.split('.').collect();
         if parts.len() != 2 {
             return Err(BridgeError::InvalidEntryPoint(callable_path.to_string()));
@@ -901,13 +905,14 @@ impl Bridge {
                     ));
                 }
             };
-            method.call1((stdin,)).map_err(|e| {
+            let result = method.call1((stdin,)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
                     e,
                     &format!("Method '{}.{}' failed", class_name, method_name),
                 ))
-            })
+            })?;
+            Ok((result, None))
         } else if signature_support.accepts_system {
             logger::step("Method has system - deserializing input to System object");
             let system_obj = match &input {
@@ -926,13 +931,15 @@ impl Bridge {
                     ));
                 }
             };
-            method.call1((system_obj,)).map_err(|e| {
+            let source_system = system_obj.unbind();
+            let result = method.call1((source_system.bind(py),)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
                     e,
                     &format!("Method '{}.{}' failed", class_name, method_name),
                 ))
-            })
+            })?;
+            Ok((result, Some(source_system)))
         } else {
             if input.is_present() {
                 logger::debug_lazy(|| {
@@ -942,16 +949,18 @@ impl Bridge {
                     )
                 });
             }
-            method.call0().map_err(|e| {
+            let result = method.call0().map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
                     e,
                     &format!("Method '{}.{}' failed", class_name, method_name),
                 ))
-            })
+            })?;
+            Ok((result, None))
         }
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn invoke_function_callable<'py>(
         py: pyo3::Python<'py>,
@@ -963,6 +972,30 @@ impl Bridge {
         kwargs: &pyo3::Bound<'py, PyDict>,
         json: &PythonJson<'py>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
+        Self::invoke_function_callable_with_source(
+            py,
+            module,
+            module_path,
+            callable_path,
+            stdin_json,
+            stdin_obj,
+            kwargs,
+            json,
+        )
+        .map(|(result, _)| result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_function_callable_with_source<'py>(
+        py: pyo3::Python<'py>,
+        module: &pyo3::Bound<'py, PyModule>,
+        module_path: &str,
+        callable_path: &str,
+        stdin_json: Option<&str>,
+        stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
+        kwargs: &pyo3::Bound<'py, PyDict>,
+        json: &PythonJson<'py>,
+    ) -> Result<(pyo3::Bound<'py, PyAny>, Option<Py<PyAny>>), BridgeError> {
         logger::debug_lazy(|| format!("Function pattern: {}", callable_path));
         let func = module.getattr(callable_path).map_err(|e| {
             BridgeError::Python(format_python_error(
@@ -999,15 +1032,17 @@ impl Bridge {
             }
         }
 
+        let mut source_system = None;
         if signature_support.accepts_system {
-            logger::step("Function has stdin - deserializing to System object");
+            logger::step("Function has system - deserializing input to System object");
             let json_bytes = stdin_payload_bytes(stdin_json, stdin_obj, json)?;
 
             let system_module = PyModule::import(py, "r2x_core.system")?;
             let system_class = system_module.getattr("System")?;
             let from_json = system_class.getattr("from_json")?;
             let system_obj = from_json.call1((json_bytes.as_slice(),))?;
-            kwargs.set_item("system", system_obj)?;
+            kwargs.set_item("system", &system_obj)?;
+            source_system = Some(system_obj.unbind());
         } else if stdin_obj.is_some() {
             if signature_support.accepts_stdin {
                 logger::debug_lazy(|| {
@@ -1041,13 +1076,14 @@ impl Bridge {
                 .collect();
             format!("Final function kwargs keys: {:?}", kwarg_keys)
         });
-        func.call((), Some(kwargs)).map_err(|e| {
+        let result = func.call((), Some(kwargs)).map_err(|e| {
             BridgeError::Python(format_python_error(
                 func.py(),
                 e,
                 &format!("Function '{}' failed", callable_path),
             ))
-        })
+        })?;
+        Ok((result, source_system))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1060,7 +1096,7 @@ impl Bridge {
         kwargs: &pyo3::Bound<'py, PyDict>,
         json: &PythonJson<'py>,
         runtime_bindings: Option<&RuntimeBindings>,
-    ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
+    ) -> Result<(pyo3::Bound<'py, PyAny>, Option<Py<PyAny>>), BridgeError> {
         let func = module.getattr(callable_path).map_err(|error| {
             BridgeError::Python(format_python_error(
                 module.py(),
@@ -1103,23 +1139,130 @@ impl Bridge {
             kwargs.set_item("stdin", stdin)?;
         }
 
-        if signature_support.accepts_system {
+        let source_system = if signature_support.accepts_system {
             let bundle = input.ok_or_else(|| {
                 BridgeError::Python(
                     "system expected but no input artifact was provided".to_string(),
                 )
             })?;
-            kwargs.set_item("system", load_system_artifact(py, bundle)?)?;
-        }
+            let system = load_system_artifact(py, bundle)?;
+            kwargs.set_item("system", &system)?;
+            Some(system.unbind())
+        } else {
+            None
+        };
 
-        func.call((), Some(kwargs)).map_err(|error| {
+        let result = func.call((), Some(kwargs)).map_err(|error| {
             BridgeError::Python(format_python_error(
                 func.py(),
                 error,
                 &format!("Function '{}' failed", callable_path),
             ))
-        })
+        })?;
+        Ok((result, source_system))
     }
+}
+
+/// Preserve time-series associations when a plugin builds a new System.
+///
+/// Component UUIDs are not stable across translations, so the runtime uses
+/// owner names as the portable association key. Plugins remain free to perform
+/// domain-specific remapping; this fallback handles components and supplemental
+/// attributes whose names survive the translation without boilerplate in every
+/// plugin.
+fn preserve_time_series_by_name(
+    py: pyo3::Python<'_>,
+    source_system: Option<&Py<PyAny>>,
+    target_system: &Bound<'_, PyAny>,
+) {
+    let Some(source_system) = source_system else {
+        return;
+    };
+    let source_system = source_system.bind(py);
+    let copied =
+        copy_time_series_for_named_owners(py, source_system, target_system, "iter_all_components")
+            + copy_time_series_for_named_owners(
+                py,
+                source_system,
+                target_system,
+                "get_supplemental_attributes",
+            );
+
+    if copied > 0 {
+        logger::debug(&format!(
+            "Preserved {} time-series associations by owner name",
+            copied
+        ));
+    }
+}
+
+fn copy_time_series_for_named_owners(
+    py: pyo3::Python<'_>,
+    source_system: &Bound<'_, PyAny>,
+    target_system: &Bound<'_, PyAny>,
+    owner_method: &str,
+) -> usize {
+    let Ok(source_owners) = source_system.call_method0(owner_method) else {
+        return 0;
+    };
+    let Ok(target_owners) = target_system.call_method0(owner_method) else {
+        return 0;
+    };
+    let Ok(target_owners) = target_owners.try_iter() else {
+        return 0;
+    };
+
+    let mut target_by_name = HashMap::new();
+    for owner in target_owners {
+        let Ok(owner) = owner else {
+            continue;
+        };
+        let Ok(name) = owner
+            .getattr("name")
+            .and_then(|value| value.extract::<String>())
+        else {
+            continue;
+        };
+        target_by_name.insert(name, owner.unbind());
+    }
+
+    let Ok(source_owners) = source_owners.try_iter() else {
+        return 0;
+    };
+    let mut copied = 0;
+    for source_owner in source_owners {
+        let Ok(source_owner) = source_owner else {
+            continue;
+        };
+        let Ok(name) = source_owner
+            .getattr("name")
+            .and_then(|value| value.extract::<String>())
+        else {
+            continue;
+        };
+        let Some(target_owner) = target_by_name.get(&name) else {
+            continue;
+        };
+        let Ok(time_series) = source_system.call_method1("list_time_series", (&source_owner,))
+        else {
+            continue;
+        };
+        let Ok(time_series) = time_series.try_iter() else {
+            continue;
+        };
+        for series in time_series {
+            let Ok(series) = series else {
+                continue;
+            };
+            if target_system
+                .call_method1("add_time_series", (&series, target_owner.bind(py)))
+                .is_ok()
+            {
+                copied += 1;
+            }
+        }
+    }
+    copied
 }
 
 fn write_artifact_result<'py>(
@@ -1474,8 +1617,9 @@ fn discover_and_instantiate_config<'py>(
 mod tests {
     use super::{
         has_cached_method_signature, method_accepts_stdin_cached, method_stdin_support,
-        remove_cached_method_signature, should_parse_stdin_for_exporter_context,
-        should_parse_stdin_for_function_kwargs, stdin_payload_bytes, PythonJson,
+        preserve_time_series_by_name, remove_cached_method_signature,
+        should_parse_stdin_for_exporter_context, should_parse_stdin_for_function_kwargs,
+        stdin_payload_bytes, PythonJson,
     };
     use crate::plugin_invoker::{ArtifactBundle, ArtifactOutputKind};
     use crate::python_bridge::Bridge;
@@ -1484,6 +1628,76 @@ mod tests {
     use r2x_manifest::types::Parameter;
     use std::ffi::CString;
     use tempfile::tempdir;
+
+    #[test]
+    fn preserves_time_series_for_matching_component_names() -> Result<(), String> {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> Result<(), String> {
+            let module = install_module(
+                py,
+                "time_series_transfer_test",
+                r#"
+class Component:
+    def __init__(self, name):
+        self.name = name
+        self.time_series = []
+
+class System:
+    def __init__(self, components, supplemental_attributes):
+        self.components = components
+        self.supplemental_attributes = supplemental_attributes
+
+    def iter_all_components(self):
+        return iter(self.components)
+
+    def get_supplemental_attributes(self):
+        return iter(self.supplemental_attributes)
+
+    def list_time_series(self, owner):
+        return owner.time_series
+
+    def add_time_series(self, series, owner):
+        owner.time_series.append(series)
+"#,
+            )?;
+            let component = module.getattr("Component").map_err(|e| e.to_string())?;
+            let system = module.getattr("System").map_err(|e| e.to_string())?;
+            let source_component = component.call1(("bus-1",)).map_err(|e| e.to_string())?;
+            source_component
+                .setattr("time_series", vec!["load-profile"])
+                .map_err(|e| e.to_string())?;
+            let target_component = component.call1(("bus-1",)).map_err(|e| e.to_string())?;
+            let source_attribute = component.call1(("geo-1",)).map_err(|e| e.to_string())?;
+            source_attribute
+                .setattr("time_series", vec!["weather-profile"])
+                .map_err(|e| e.to_string())?;
+            let target_attribute = component.call1(("geo-1",)).map_err(|e| e.to_string())?;
+            let source = system
+                .call1((vec![source_component], vec![source_attribute]))
+                .map_err(|e| e.to_string())?;
+            let target = system
+                .call1((
+                    vec![target_component.clone()],
+                    vec![target_attribute.clone()],
+                ))
+                .map_err(|e| e.to_string())?;
+            let source_owned = source.unbind();
+
+            preserve_time_series_by_name(py, Some(&source_owned), &target);
+
+            let copied = target_component
+                .getattr("time_series")
+                .and_then(|value| value.extract::<Vec<String>>())
+                .map_err(|e| e.to_string())?;
+            assert_eq!(copied, vec!["load-profile"]);
+            let copied_attribute = target_attribute
+                .getattr("time_series")
+                .and_then(|value| value.extract::<Vec<String>>())
+                .map_err(|e| e.to_string())?;
+            assert_eq!(copied_attribute, vec!["weather-profile"]);
+            Ok(())
+        })
+    }
 
     fn install_module<'py>(
         py: pyo3::Python<'py>,
