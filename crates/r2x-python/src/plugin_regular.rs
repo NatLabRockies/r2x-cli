@@ -1166,9 +1166,10 @@ impl Bridge {
 /// Preserve time-series associations when a plugin builds a new System.
 ///
 /// Component UUIDs are not stable across translations, so the runtime uses
-/// component names as the portable association key. Plugins remain free to
-/// perform domain-specific remapping; this fallback handles components whose
-/// names survive the translation without requiring boilerplate in every plugin.
+/// owner names as the portable association key. Plugins remain free to perform
+/// domain-specific remapping; this fallback handles components and supplemental
+/// attributes whose names survive the translation without boilerplate in every
+/// plugin.
 fn preserve_time_series_by_name(
     py: pyo3::Python<'_>,
     source_system: Option<&Py<PyAny>>,
@@ -1178,49 +1179,71 @@ fn preserve_time_series_by_name(
         return;
     };
     let source_system = source_system.bind(py);
+    let copied =
+        copy_time_series_for_named_owners(py, source_system, target_system, "iter_all_components")
+            + copy_time_series_for_named_owners(
+                py,
+                source_system,
+                target_system,
+                "get_supplemental_attributes",
+            );
 
-    let Ok(source_components) = source_system.call_method0("iter_all_components") else {
-        return;
+    if copied > 0 {
+        logger::debug(&format!(
+            "Preserved {} time-series associations by owner name",
+            copied
+        ));
+    }
+}
+
+fn copy_time_series_for_named_owners(
+    py: pyo3::Python<'_>,
+    source_system: &Bound<'_, PyAny>,
+    target_system: &Bound<'_, PyAny>,
+    owner_method: &str,
+) -> usize {
+    let Ok(source_owners) = source_system.call_method0(owner_method) else {
+        return 0;
     };
-    let Ok(target_components) = target_system.call_method0("iter_all_components") else {
-        return;
+    let Ok(target_owners) = target_system.call_method0(owner_method) else {
+        return 0;
     };
-    let Ok(target_components) = target_components.try_iter() else {
-        return;
+    let Ok(target_owners) = target_owners.try_iter() else {
+        return 0;
     };
 
     let mut target_by_name = HashMap::new();
-    for component in target_components {
-        let Ok(component) = component else {
+    for owner in target_owners {
+        let Ok(owner) = owner else {
             continue;
         };
-        let Ok(name) = component
+        let Ok(name) = owner
             .getattr("name")
             .and_then(|value| value.extract::<String>())
         else {
             continue;
         };
-        target_by_name.insert(name, component.unbind());
+        target_by_name.insert(name, owner.unbind());
     }
 
-    let Ok(source_components) = source_components.try_iter() else {
-        return;
+    let Ok(source_owners) = source_owners.try_iter() else {
+        return 0;
     };
     let mut copied = 0;
-    for source_component in source_components {
-        let Ok(source_component) = source_component else {
+    for source_owner in source_owners {
+        let Ok(source_owner) = source_owner else {
             continue;
         };
-        let Ok(name) = source_component
+        let Ok(name) = source_owner
             .getattr("name")
             .and_then(|value| value.extract::<String>())
         else {
             continue;
         };
-        let Some(target_component) = target_by_name.get(&name) else {
+        let Some(target_owner) = target_by_name.get(&name) else {
             continue;
         };
-        let Ok(time_series) = source_system.call_method1("list_time_series", (&source_component,))
+        let Ok(time_series) = source_system.call_method1("list_time_series", (&source_owner,))
         else {
             continue;
         };
@@ -1232,20 +1255,14 @@ fn preserve_time_series_by_name(
                 continue;
             };
             if target_system
-                .call_method1("add_time_series", (&series, target_component.bind(py)))
+                .call_method1("add_time_series", (&series, target_owner.bind(py)))
                 .is_ok()
             {
                 copied += 1;
             }
         }
     }
-
-    if copied > 0 {
-        logger::debug(&format!(
-            "Preserved {} time-series associations by component name",
-            copied
-        ));
-    }
+    copied
 }
 
 fn write_artifact_result<'py>(
@@ -1626,17 +1643,21 @@ class Component:
         self.time_series = []
 
 class System:
-    def __init__(self, components):
+    def __init__(self, components, supplemental_attributes):
         self.components = components
+        self.supplemental_attributes = supplemental_attributes
 
     def iter_all_components(self):
         return iter(self.components)
 
-    def list_time_series(self, component):
-        return component.time_series
+    def get_supplemental_attributes(self):
+        return iter(self.supplemental_attributes)
 
-    def add_time_series(self, series, component):
-        component.time_series.append(series)
+    def list_time_series(self, owner):
+        return owner.time_series
+
+    def add_time_series(self, series, owner):
+        owner.time_series.append(series)
 "#,
             )?;
             let component = module.getattr("Component").map_err(|e| e.to_string())?;
@@ -1646,11 +1667,19 @@ class System:
                 .setattr("time_series", vec!["load-profile"])
                 .map_err(|e| e.to_string())?;
             let target_component = component.call1(("bus-1",)).map_err(|e| e.to_string())?;
+            let source_attribute = component.call1(("geo-1",)).map_err(|e| e.to_string())?;
+            source_attribute
+                .setattr("time_series", vec!["weather-profile"])
+                .map_err(|e| e.to_string())?;
+            let target_attribute = component.call1(("geo-1",)).map_err(|e| e.to_string())?;
             let source = system
-                .call1((vec![source_component],))
+                .call1((vec![source_component], vec![source_attribute]))
                 .map_err(|e| e.to_string())?;
             let target = system
-                .call1((vec![target_component.clone()],))
+                .call1((
+                    vec![target_component.clone()],
+                    vec![target_attribute.clone()],
+                ))
                 .map_err(|e| e.to_string())?;
             let source_owned = source.unbind();
 
@@ -1661,6 +1690,11 @@ class System:
                 .and_then(|value| value.extract::<Vec<String>>())
                 .map_err(|e| e.to_string())?;
             assert_eq!(copied, vec!["load-profile"]);
+            let copied_attribute = target_attribute
+                .getattr("time_series")
+                .and_then(|value| value.extract::<Vec<String>>())
+                .map_err(|e| e.to_string())?;
+            assert_eq!(copied_attribute, vec!["weather-profile"]);
             Ok(())
         })
     }
