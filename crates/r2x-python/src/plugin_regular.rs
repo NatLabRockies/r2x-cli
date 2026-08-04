@@ -2,8 +2,8 @@
 
 use crate::errors::BridgeError;
 use crate::plugin_invoker::{
-    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInvocationResult,
-    PluginInvocationTimings,
+    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInput,
+    PluginInvocationOutput, PluginInvocationResult, PluginInvocationTimings,
 };
 use crate::python_bridge::Bridge;
 use once_cell::sync::Lazy;
@@ -160,52 +160,63 @@ fn load_system_artifact<'py>(
     })
 }
 
-fn load_exporter_system_artifact<'py>(
+fn input_json<'py>(
     py: pyo3::Python<'py>,
-    input: &ArtifactBundle,
+    input: PluginInput<'_>,
     json: &PythonJson<'py>,
 ) -> Result<Bound<'py, PyAny>, BridgeError> {
-    let entrypoint = python_path(py, &input.entrypoint_path())?;
-    let data = json.load_path(&entrypoint).map_err(|error| {
-        BridgeError::Python(format_python_error(
-            py,
-            error,
-            &format!(
-                "Failed to load exporter artifact {}",
-                input.entrypoint_path().display()
-            ),
-        ))
-    })?;
-    let root = python_path(py, input.root())?;
-    let system_module = PyModule::import(py, "infrasys")?;
-    let system_class = system_module.getattr("System")?;
-    let from_dict = system_class.getattr("from_dict")?;
-    let kwargs = PyDict::new(py);
-    kwargs.set_item("time_series_read_only", true)?;
-    from_dict
-        .call((data, root), Some(&kwargs))
-        .map_err(|error| {
+    match input {
+        PluginInput::Json(payload) => json.loads(payload).map_err(|error| {
             BridgeError::Python(format_python_error(
                 py,
                 error,
-                &format!(
-                    "Failed to load exporter System artifact {}",
-                    input.entrypoint_path().display()
-                ),
+                "Failed to parse JSON input from stdin",
             ))
-        })
+        }),
+        PluginInput::File(path) => {
+            let python_input_path = python_path(py, path)?;
+            json.load_path(&python_input_path).map_err(|error| {
+                BridgeError::Python(format_python_error(
+                    py,
+                    error,
+                    &format!("Failed to read JSON input {}", path.display()),
+                ))
+            })
+        }
+    }
 }
 
-enum ClassInput<'a> {
-    Inline(Option<&'a str>),
-    Artifact(Option<&'a ArtifactBundle>),
+struct RegularInvocationOptions<'a> {
+    input: Option<PluginInput<'a>>,
+    output_path: Option<&'a Path>,
+    reject_unused_input: bool,
+    redirect_plugin_stdout: bool,
 }
 
-impl ClassInput<'_> {
-    fn is_present(&self) -> bool {
-        match self {
-            Self::Inline(input) => input.is_some(),
-            Self::Artifact(input) => input.is_some(),
+fn input_system<'py>(
+    py: pyo3::Python<'py>,
+    input: PluginInput<'_>,
+) -> Result<Bound<'py, PyAny>, BridgeError> {
+    let system_module = PyModule::import(py, "r2x_core.system")?;
+    let system_class = system_module.getattr("System")?;
+    let from_json = system_class.getattr("from_json")?;
+    match input {
+        PluginInput::Json(payload) => from_json.call1((payload.as_bytes(),)).map_err(|error| {
+            BridgeError::Python(format_python_error(
+                py,
+                error,
+                "Failed to deserialize System input from stdin",
+            ))
+        }),
+        PluginInput::File(path) => {
+            let python_input_path = python_path(py, path)?;
+            from_json.call1((python_input_path,)).map_err(|error| {
+                BridgeError::Python(format_python_error(
+                    py,
+                    error,
+                    &format!("Failed to load System input {}", path.display()),
+                ))
+            })
         }
     }
 }
@@ -218,18 +229,32 @@ pub(crate) struct StdoutGuard<'py> {
 
 impl<'py> StdoutGuard<'py> {
     pub(crate) fn new(py: pyo3::Python<'py>, suppress: bool) -> Result<Self, BridgeError> {
-        let original = if suppress {
-            let sys = PyModule::import(py, "sys")?;
-            let io = PyModule::import(py, "io")?;
-            let original_stdout = sys.getattr("stdout")?;
-            let string_io = io.getattr("StringIO")?.call0()?;
-            sys.setattr("stdout", &string_io)?;
-            logger::debug("Python stdout suppressed");
-            Some(original_stdout.unbind())
-        } else {
-            None
-        };
-        Ok(Self { py, original })
+        if !suppress {
+            return Ok(Self { py, original: None });
+        }
+
+        let sys = PyModule::import(py, "sys")?;
+        let io = PyModule::import(py, "io")?;
+        let original_stdout = sys.getattr("stdout")?;
+        let string_io = io.getattr("StringIO")?.call0()?;
+        sys.setattr("stdout", &string_io)?;
+        logger::debug("Python stdout suppressed");
+        Ok(Self {
+            py,
+            original: Some(original_stdout.unbind()),
+        })
+    }
+
+    pub(crate) fn redirect_to_stderr(py: pyo3::Python<'py>) -> Result<Self, BridgeError> {
+        let sys = PyModule::import(py, "sys")?;
+        let original_stdout = sys.getattr("stdout")?;
+        let stderr = sys.getattr("stderr")?;
+        sys.setattr("stdout", &stderr)?;
+        logger::debug("Python stdout redirected to stderr");
+        Ok(Self {
+            py,
+            original: Some(original_stdout.unbind()),
+        })
     }
 }
 
@@ -260,12 +285,12 @@ static METHOD_STDIN_SIGNATURE_CACHE: Lazy<Mutex<HashMap<String, StdinSignatureSu
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn should_parse_stdin_for_function_kwargs(
-    stdin_json: Option<&str>,
+    input: Option<PluginInput<'_>>,
     runtime_bindings: Option<&RuntimeBindings>,
 ) -> bool {
-    let Some(_stdin) = stdin_json else {
+    if input.is_none() {
         return false;
-    };
+    }
 
     match runtime_bindings {
         Some(bindings) => bindings
@@ -277,19 +302,24 @@ fn should_parse_stdin_for_function_kwargs(
     }
 }
 
-fn should_parse_stdin_for_exporter_context(stdin_json: Option<&str>, role: PluginRole) -> bool {
-    stdin_json.is_some() && role == PluginRole::Exporter
+fn should_parse_stdin_for_exporter_context(
+    input: Option<PluginInput<'_>>,
+    role: PluginRole,
+) -> bool {
+    input.is_some() && role == PluginRole::Exporter
 }
 
 fn ensure_parsed_stdin<'py>(
-    stdin_json: Option<&str>,
+    py: pyo3::Python<'py>,
+    input: Option<PluginInput<'_>>,
     json: &PythonJson<'py>,
     parsed_stdin: &mut Option<Bound<'py, PyAny>>,
-) -> PyResult<()> {
+) -> Result<(), BridgeError> {
     if parsed_stdin.is_none() {
-        if let Some(stdin) = stdin_json {
-            parsed_stdin.replace(json.loads(stdin)?);
-        }
+        let input = input.ok_or_else(|| {
+            BridgeError::Stream("plugin input was expected but not provided".to_string())
+        })?;
+        parsed_stdin.replace(input_json(py, input, json)?);
     }
     Ok(())
 }
@@ -302,8 +332,55 @@ impl Bridge {
         stdin_json: Option<&str>,
         runtime_bindings: Option<&RuntimeBindings>,
     ) -> Result<PluginInvocationResult, BridgeError> {
+        self.invoke_plugin_regular_with_options(
+            target,
+            config_json,
+            runtime_bindings,
+            RegularInvocationOptions {
+                input: stdin_json.map(PluginInput::Json),
+                output_path: None,
+                reject_unused_input: false,
+                redirect_plugin_stdout: false,
+            },
+        )
+    }
+
+    pub(crate) fn invoke_plugin_regular_direct(
+        &self,
+        target: &str,
+        config_json: &str,
+        input: Option<PluginInput<'_>>,
+        output_path: Option<&Path>,
+        runtime_bindings: Option<&RuntimeBindings>,
+    ) -> Result<PluginInvocationResult, BridgeError> {
+        self.invoke_plugin_regular_with_options(
+            target,
+            config_json,
+            runtime_bindings,
+            RegularInvocationOptions {
+                input,
+                output_path,
+                reject_unused_input: true,
+                redirect_plugin_stdout: true,
+            },
+        )
+    }
+
+    fn invoke_plugin_regular_with_options(
+        &self,
+        target: &str,
+        config_json: &str,
+        runtime_bindings: Option<&RuntimeBindings>,
+        options: RegularInvocationOptions<'_>,
+    ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
-            let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
+            let _guard = if logger::get_no_stdout() {
+                StdoutGuard::new(py, true)?
+            } else if options.redirect_plugin_stdout {
+                StdoutGuard::redirect_to_stderr(py)?
+            } else {
+                StdoutGuard::new(py, false)?
+            };
 
             logger::debug_lazy(|| format!("Parsing target: {}", target));
             let parts: Vec<&str> = target.split(':').collect();
@@ -334,6 +411,21 @@ impl Bridge {
                 .map_err(|e| BridgeError::Python(format!("Config must be a JSON object: {}", e)))?
                 .clone();
 
+            let is_exporter =
+                runtime_bindings.is_some_and(|bindings| bindings.role == PluginRole::Exporter);
+            if is_exporter && options.output_path.is_some() {
+                return Err(BridgeError::Stream(
+                    "exporter plugins write their configured output and cannot use --output"
+                        .to_string(),
+                ));
+            }
+            if is_exporter && options.reject_unused_input && options.input.is_none() {
+                return Err(BridgeError::Stream(
+                    "exporter plugins require a System input from stdin or --input FILE"
+                        .to_string(),
+                ));
+            }
+
             logger::debug("Starting plugin invocation");
             let call_start = Instant::now();
             let result_py = if callable_path.contains('.') {
@@ -343,22 +435,23 @@ impl Bridge {
                     module_path,
                     callable_path,
                     &config_dict,
-                    ClassInput::Inline(stdin_json),
+                    options.input,
                     runtime_bindings,
                     &json,
+                    options.reject_unused_input,
                 )?
             } else {
                 logger::debug("Building kwargs for function invocation");
                 let stdin_obj =
-                    if should_parse_stdin_for_function_kwargs(stdin_json, runtime_bindings) {
-                        let Some(stdin) = stdin_json else {
-                            return Err(BridgeError::Python(
-                                "stdin unexpectedly missing while parsing function kwargs"
+                    if should_parse_stdin_for_function_kwargs(options.input, runtime_bindings) {
+                        let input = options.input.ok_or_else(|| {
+                            BridgeError::Stream(
+                                "plugin input was expected while preparing function arguments"
                                     .to_string(),
-                            ));
-                        };
+                            )
+                        })?;
                         logger::debug("Parsing stdin JSON for stdin kwarg injection");
-                        Some(json.loads(stdin)?)
+                        Some(input_json(py, input, &json)?)
                     } else {
                         None
                     };
@@ -369,10 +462,11 @@ impl Bridge {
                     &module,
                     module_path,
                     callable_path,
-                    stdin_json,
+                    options.input,
                     stdin_obj.as_ref(),
                     &kwargs,
                     &json,
+                    options.reject_unused_input,
                 )?
             };
             let call_elapsed = call_start.elapsed();
@@ -385,14 +479,12 @@ impl Bridge {
             });
             logger::debug("Plugin execution completed");
 
-            // For exporters, skip serialization - they write their own output
-            // and return PluginContext which we don't need to pass downstream
-            let is_exporter = runtime_bindings.is_some_and(|b| b.role == PluginRole::Exporter);
-
+            // Exporters are terminal sinks: they write their configured output
+            // and deliberately do not emit a JSON record to stdout.
             if is_exporter {
                 logger::debug("Exporter plugin completed, skipping result serialization");
                 return Ok(PluginInvocationResult {
-                    output: "{}".to_string(),
+                    output: PluginInvocationOutput::Empty,
                     timings: Some(PluginInvocationTimings {
                         python_invocation: call_elapsed,
                         serialization: Duration::ZERO,
@@ -429,41 +521,48 @@ impl Bridge {
                     result_unwrapped
                 };
 
-            let (json_str, ser_elapsed) = if result_to_serialize.hasattr("to_json")? {
-                let ser_start = Instant::now();
-                let to_json_result = result_to_serialize.call_method0("to_json")?;
-                let json_str = if let Ok(json_bytes) = to_json_result.extract::<Vec<u8>>() {
-                    String::from_utf8(json_bytes).map_err(|e| {
-                        BridgeError::Python(format!("Invalid UTF-8 in JSON output: {}", e))
-                    })?
+            let ser_start = Instant::now();
+            let output = if result_to_serialize.hasattr("to_json")? {
+                if let Some(output_path) = options.output_path {
+                    let python_output_path = python_path(py, output_path)?;
+                    ensure_artifact_parent(&python_output_path)?;
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("overwrite", true)?;
+                    result_to_serialize
+                        .call_method("to_json", (python_output_path,), Some(&kwargs))
+                        .map_err(|error| {
+                            BridgeError::Python(format_python_error(
+                                py,
+                                error,
+                                &format!("Failed to write System output {}", output_path.display()),
+                            ))
+                        })?;
+                    PluginInvocationOutput::Persisted
                 } else {
-                    json.dumps(&result_to_serialize)?
-                };
-                let ser_elapsed = ser_start.elapsed();
-                logger::debug_lazy(|| {
-                    format!(
-                        "Serialization for '{}' took {}",
-                        callable_path,
-                        format_duration(ser_elapsed)
-                    )
-                });
-                (json_str, ser_elapsed)
+                    let to_json_result = result_to_serialize.call_method0("to_json")?;
+                    let json_str = if let Ok(json_bytes) = to_json_result.extract::<Vec<u8>>() {
+                        String::from_utf8(json_bytes).map_err(|error| {
+                            BridgeError::Python(format!("Invalid UTF-8 in JSON output: {error}"))
+                        })?
+                    } else {
+                        json.dumps(&result_to_serialize)?
+                    };
+                    PluginInvocationOutput::Json(json_str)
+                }
             } else {
-                let ser_start = Instant::now();
-                let json_str = json.dumps(&result_to_serialize)?;
-                let ser_elapsed = ser_start.elapsed();
-                logger::debug_lazy(|| {
-                    format!(
-                        "Serialization for '{}' took {}",
-                        callable_path,
-                        format_duration(ser_elapsed)
-                    )
-                });
-                (json_str, ser_elapsed)
+                PluginInvocationOutput::Json(json.dumps(&result_to_serialize)?)
             };
+            let ser_elapsed = ser_start.elapsed();
+            logger::debug_lazy(|| {
+                format!(
+                    "Serialization for '{}' took {}",
+                    callable_path,
+                    format_duration(ser_elapsed)
+                )
+            });
 
             Ok(PluginInvocationResult {
-                output: json_str,
+                output,
                 timings: Some(PluginInvocationTimings {
                     python_invocation: call_elapsed,
                     serialization: ser_elapsed,
@@ -572,6 +671,8 @@ impl Bridge {
                 })?
                 .clone();
 
+            let input_path = input.map(ArtifactBundle::entrypoint_path);
+            let plugin_input = input_path.as_deref().map(PluginInput::File);
             let call_start = Instant::now();
             let result_py = if callable_path.contains('.') {
                 Self::invoke_class_callable(
@@ -580,9 +681,10 @@ impl Bridge {
                     module_path,
                     callable_path,
                     &config_dict,
-                    ClassInput::Artifact(input),
+                    plugin_input,
                     runtime_bindings,
                     &json,
+                    false,
                 )?
             } else {
                 let stdin_obj = if input.is_some()
@@ -694,9 +796,10 @@ impl Bridge {
         module_path: &str,
         callable_path: &str,
         config_dict: &pyo3::Bound<'py, PyDict>,
-        input: ClassInput<'_>,
+        input: Option<PluginInput<'_>>,
         runtime_bindings: Option<&RuntimeBindings>,
         json: &PythonJson<'py>,
+        reject_unused_input: bool,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let parts: Vec<&str> = callable_path.split('.').collect();
         if parts.len() != 2 {
@@ -768,33 +871,14 @@ impl Bridge {
         };
 
         let mut parsed_stdin_obj: Option<Bound<'py, PyAny>> = None;
-        let system_instance = match &input {
-            ClassInput::Inline(stdin_json)
-                if should_parse_stdin_for_exporter_context(*stdin_json, bindings.role) =>
-            {
-                logger::step("Deserializing system from stdin for PluginContext");
-                ensure_parsed_stdin(*stdin_json, json, &mut parsed_stdin_obj)?;
-                let stdin = parsed_stdin_obj
-                    .as_ref()
-                    .ok_or_else(|| PyValueError::new_err("stdin expected but not provided"))?;
-
-                let system_module = PyModule::import(py, "infrasys")?;
-                let system_class = system_module.getattr("System")?;
-                let from_dict = system_class.getattr("from_dict")?;
-
-                let tempfile = PyModule::import(py, "tempfile")?;
-                let mkdtemp = tempfile.getattr("mkdtemp")?;
-                let temp_dir = mkdtemp.call0()?.extract::<String>()?;
-
-                let kwargs_dict = PyDict::new(py);
-                kwargs_dict.set_item("time_series_read_only", true)?;
-                Some(from_dict.call((stdin, temp_dir), Some(&kwargs_dict))?)
-            }
-            ClassInput::Artifact(Some(bundle)) if bindings.role == PluginRole::Exporter => {
-                logger::step("Deserializing System artifact for exporter PluginContext");
-                Some(load_exporter_system_artifact(py, bundle, json)?)
-            }
-            _ => None,
+        let system_instance = if should_parse_stdin_for_exporter_context(input, bindings.role) {
+            logger::step("Deserializing system input for exporter PluginContext");
+            let input = input.ok_or_else(|| {
+                BridgeError::Stream("exporter requires a System input".to_string())
+            })?;
+            Some(input_system(py, input)?)
+        } else {
+            None
         };
 
         let ctx = Bridge::instantiate_plugin_context(
@@ -855,7 +939,7 @@ impl Bridge {
             ))
         })?;
 
-        let signature_support = if input.is_present() {
+        let signature_support = if input.is_some() || reject_unused_input {
             let signature_cache_key = format!("{module_path}:{class_name}.{actual_method_name}");
             match method_stdin_support_cached(&signature_cache_key, &method) {
                 Ok(result) => result,
@@ -873,34 +957,19 @@ impl Bridge {
             StdinSignatureSupport::default()
         };
 
+        if signature_support.accepts_system && input.is_none() && reject_unused_input {
+            return Err(BridgeError::Stream(format!(
+                "plugin method '{}.{}' requires a System input",
+                class_name, actual_method_name
+            )));
+        }
+
         if signature_support.accepts_stdin {
-            let stdin = match &input {
-                ClassInput::Inline(stdin_json) => {
-                    ensure_parsed_stdin(*stdin_json, json, &mut parsed_stdin_obj)?;
-                    parsed_stdin_obj
-                        .as_ref()
-                        .ok_or_else(|| PyValueError::new_err("stdin expected but not provided"))?
-                        .clone()
-                }
-                ClassInput::Artifact(Some(bundle)) => {
-                    let path = python_path(py, &bundle.entrypoint_path())?;
-                    json.load_path(&path).map_err(|error| {
-                        BridgeError::Python(format_python_error(
-                            py,
-                            error,
-                            &format!(
-                                "Failed to load stdin artifact {}",
-                                bundle.entrypoint_path().display()
-                            ),
-                        ))
-                    })?
-                }
-                ClassInput::Artifact(None) => {
-                    return Err(BridgeError::Python(
-                        "stdin expected but no input artifact was provided".to_string(),
-                    ));
-                }
-            };
+            ensure_parsed_stdin(py, input, json, &mut parsed_stdin_obj)?;
+            let stdin = parsed_stdin_obj
+                .as_ref()
+                .ok_or_else(|| BridgeError::Stream("plugin input was not parsed".to_string()))?
+                .clone();
             method.call1((stdin,)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
@@ -910,22 +979,9 @@ impl Bridge {
             })
         } else if signature_support.accepts_system {
             logger::step("Method has system - deserializing input to System object");
-            let system_obj = match &input {
-                ClassInput::Inline(stdin_json) => {
-                    let json_bytes =
-                        stdin_payload_bytes(*stdin_json, parsed_stdin_obj.as_ref(), json)?;
-                    let system_module = PyModule::import(py, "r2x_core.system")?;
-                    let system_class = system_module.getattr("System")?;
-                    let from_json = system_class.getattr("from_json")?;
-                    from_json.call1((json_bytes.as_slice(),))?
-                }
-                ClassInput::Artifact(Some(bundle)) => load_system_artifact(py, bundle)?,
-                ClassInput::Artifact(None) => {
-                    return Err(BridgeError::Python(
-                        "system expected but no input artifact was provided".to_string(),
-                    ));
-                }
-            };
+            let input = input
+                .ok_or_else(|| BridgeError::Stream("plugin requires a System input".to_string()))?;
+            let system_obj = input_system(py, input)?;
             method.call1((system_obj,)).map_err(|e| {
                 BridgeError::Python(format_python_error(
                     method.py(),
@@ -934,7 +990,13 @@ impl Bridge {
                 ))
             })
         } else {
-            if input.is_present() {
+            if input.is_some() {
+                if reject_unused_input {
+                    return Err(BridgeError::Stream(format!(
+                        "plugin method '{}.{}' does not accept a System or JSON input",
+                        class_name, actual_method_name
+                    )));
+                }
                 logger::debug_lazy(|| {
                     format!(
                         "Method '{}.{}' does not declare 'system'/'stdin'; skipping stdin payload",
@@ -958,10 +1020,11 @@ impl Bridge {
         module: &pyo3::Bound<'py, PyModule>,
         module_path: &str,
         callable_path: &str,
-        stdin_json: Option<&str>,
+        input: Option<PluginInput<'_>>,
         stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
         kwargs: &pyo3::Bound<'py, PyDict>,
         json: &PythonJson<'py>,
+        reject_unused_input: bool,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         logger::debug_lazy(|| format!("Function pattern: {}", callable_path));
         let func = module.getattr(callable_path).map_err(|e| {
@@ -973,7 +1036,7 @@ impl Bridge {
         })?;
 
         logger::step("Function kwargs prepared (before system injection)");
-        let signature_support = if stdin_json.is_some() || stdin_obj.is_some() {
+        let signature_support = if input.is_some() || stdin_obj.is_some() || reject_unused_input {
             let signature_cache_key = format!("{module_path}:{callable_path}");
             match method_stdin_support_cached(&signature_cache_key, &func) {
                 Ok(result) => result,
@@ -994,40 +1057,38 @@ impl Bridge {
         if signature_support.accepts_stdin && !kwargs.contains("stdin")? {
             if let Some(stdin) = stdin_obj {
                 kwargs.set_item("stdin", stdin)?;
-            } else if let Some(stdin) = stdin_json {
-                kwargs.set_item("stdin", json.loads(stdin)?)?;
+            } else if let Some(input) = input {
+                kwargs.set_item("stdin", input_json(py, input, json)?)?;
             }
         }
 
         if signature_support.accepts_system {
-            logger::step("Function has stdin - deserializing to System object");
-            let json_bytes = stdin_payload_bytes(stdin_json, stdin_obj, json)?;
-
-            let system_module = PyModule::import(py, "r2x_core.system")?;
-            let system_class = system_module.getattr("System")?;
-            let from_json = system_class.getattr("from_json")?;
-            let system_obj = from_json.call1((json_bytes.as_slice(),))?;
-            kwargs.set_item("system", system_obj)?;
-        } else if stdin_obj.is_some() {
-            if signature_support.accepts_stdin {
-                logger::debug_lazy(|| {
-                    format!(
-                        "Function '{}' accepts 'stdin'; skipping System deserialization",
-                        callable_path
-                    )
-                });
-            } else {
-                logger::debug_lazy(|| {
-                    format!(
-                        "Function '{}' does not declare 'system'/'stdin'; skipping stdin payload",
-                        callable_path
-                    )
-                });
+            if let Some(input) = input {
+                logger::step("Function has system - deserializing input to System object");
+                kwargs.set_item("system", input_system(py, input)?)?;
+            } else if reject_unused_input {
+                return Err(BridgeError::Stream(format!(
+                    "plugin '{}' requires a System input",
+                    callable_path
+                )));
             }
-        } else if stdin_json.is_some() && !signature_support.accepts_any() {
+        } else if input.is_some() && !signature_support.accepts_any() {
+            if reject_unused_input {
+                return Err(BridgeError::Stream(format!(
+                    "plugin '{}' does not accept a System or JSON input",
+                    callable_path
+                )));
+            }
             logger::debug_lazy(|| {
                 format!(
                     "Function '{}' does not declare 'system'/'stdin'; skipping stdin payload",
+                    callable_path
+                )
+            });
+        } else if stdin_obj.is_some() && signature_support.accepts_stdin {
+            logger::debug_lazy(|| {
+                format!(
+                    "Function '{}' accepts 'stdin'; skipping System deserialization",
                     callable_path
                 )
             });
@@ -1305,6 +1366,7 @@ fn method_stdin_support(method: &pyo3::Bound<'_, PyAny>) -> PyResult<StdinSignat
     Ok(support)
 }
 
+#[cfg(test)]
 fn stdin_payload_bytes<'py>(
     stdin_json: Option<&str>,
     stdin_obj: Option<&pyo3::Bound<'py, PyAny>>,
@@ -1477,7 +1539,9 @@ mod tests {
         remove_cached_method_signature, should_parse_stdin_for_exporter_context,
         should_parse_stdin_for_function_kwargs, stdin_payload_bytes, PythonJson,
     };
-    use crate::plugin_invoker::{ArtifactBundle, ArtifactOutputKind};
+    use crate::plugin_invoker::{
+        ArtifactBundle, ArtifactOutputKind, PluginInput, PluginInvocationOutput,
+    };
     use crate::python_bridge::Bridge;
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyModule};
     use r2x_manifest::runtime::RuntimeBindings;
@@ -2047,10 +2111,11 @@ def run():
                 &module,
                 "malformed_stdin_ignored_test",
                 "run",
-                Some("{not-json"),
+                Some(PluginInput::Json("{not-json")),
                 None,
                 &kwargs,
                 &json,
+                false,
             )
             .map_err(|error| error.to_string())?;
 
@@ -2097,10 +2162,11 @@ def run(stdin):
                 &module,
                 "stdin_only_function_test",
                 "run",
-                Some(r#"{"ok":true}"#),
+                Some(PluginInput::Json(r#"{"ok":true}"#)),
                 Some(&stdin_obj),
                 &kwargs,
                 &json,
+                false,
             )
             .map_err(|error| error.to_string())?;
 
@@ -2141,10 +2207,11 @@ def run(stdin):
                 &module,
                 "stdin_injection_fallback_test",
                 "run",
-                Some(r#"{"ok":true}"#),
+                Some(PluginInput::Json(r#"{"ok":true}"#)),
                 None,
                 &kwargs,
                 &json,
+                false,
             )
             .map_err(|error| error.to_string())?;
 
@@ -2178,7 +2245,7 @@ def run(stdin):
             requires_store: false,
         };
         assert!(should_parse_stdin_for_function_kwargs(
-            Some(r#"{"ok":true}"#),
+            Some(PluginInput::Json(r#"{"ok":true}"#)),
             Some(&with_stdin)
         ));
 
@@ -2194,11 +2261,11 @@ def run(stdin):
             ..with_stdin
         };
         assert!(!should_parse_stdin_for_function_kwargs(
-            Some(r#"{"ok":true}"#),
+            Some(PluginInput::Json(r#"{"ok":true}"#)),
             Some(&without_stdin)
         ));
         assert!(should_parse_stdin_for_function_kwargs(
-            Some(r#"{"ok":true}"#),
+            Some(PluginInput::Json(r#"{"ok":true}"#)),
             None
         ));
         assert!(!should_parse_stdin_for_function_kwargs(
@@ -2210,7 +2277,7 @@ def run(stdin):
     #[test]
     fn should_parse_stdin_for_exporter_context_requires_exporter_and_stdin() {
         assert!(should_parse_stdin_for_exporter_context(
-            Some(r#"{"ok":true}"#),
+            Some(PluginInput::Json(r#"{"ok":true}"#)),
             r2x_manifest::runtime::PluginRole::Exporter
         ));
         assert!(!should_parse_stdin_for_exporter_context(
@@ -2218,7 +2285,7 @@ def run(stdin):
             r2x_manifest::runtime::PluginRole::Exporter
         ));
         assert!(!should_parse_stdin_for_exporter_context(
-            Some(r#"{"ok":true}"#),
+            Some(PluginInput::Json(r#"{"ok":true}"#)),
             r2x_manifest::runtime::PluginRole::Parser
         ));
     }
@@ -2444,7 +2511,10 @@ obj = NotSerializable()
                     )),
                 )
                 .map_err(|error| error.to_string())?;
-            assert_eq!(inline_exporter.output, "{}");
+            assert!(matches!(
+                inline_exporter.output,
+                PluginInvocationOutput::Empty
+            ));
 
             let missing_root = temp.path().join("missing-input");
             std::fs::create_dir_all(&missing_root).map_err(|error| error.to_string())?;

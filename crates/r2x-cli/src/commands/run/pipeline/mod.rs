@@ -10,8 +10,8 @@ use r2x_logger as logger;
 use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_python::plugin_invoker::{
-    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInvocationResult,
-    PluginInvocationTimings,
+    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInvocationOutput,
+    PluginInvocationResult, PluginInvocationTimings,
 };
 use r2x_python::python_bridge::Bridge;
 use std::path::Path;
@@ -370,26 +370,30 @@ fn execute_pipeline(
         let no_stdout = opts.no_stdout || logger::get_no_stdout();
         match (invocation_result, upgraded_artifact) {
             (PipelineInvocation::Inline(result), Some(artifact)) => {
-                if !result.output.is_empty() && result.output != "null" {
-                    std::fs::write(artifact.entrypoint_path(), result.output.as_bytes())
-                        .map_err(PipelineError::Io)?;
+                if let PluginInvocationOutput::Json(output) = result.output {
+                    if !output.is_empty() && output != "null" {
+                        std::fs::write(artifact.entrypoint_path(), output.as_bytes())
+                            .map_err(PipelineError::Io)?;
+                    }
                 }
                 logger::debug("Upgrader preserved the current artifact bundle");
                 current_payload = Some(PipelinePayload::Artifact(artifact));
             }
-            (PipelineInvocation::Inline(result), None)
-                if !result.output.is_empty() && result.output != "null" =>
-            {
-                if no_stdout {
-                    logger::debug("Plugin produced output (suppressed by --no-stdout)");
-                } else {
-                    logger::debug(&format!(
-                        "Plugin produced output ({} bytes)",
-                        result.output.len()
-                    ));
+            (PipelineInvocation::Inline(result), None) => match result.output {
+                PluginInvocationOutput::Json(output) if !output.is_empty() && output != "null" => {
+                    if no_stdout {
+                        logger::debug("Plugin produced output (suppressed by --no-stdout)");
+                    } else {
+                        logger::debug(&format!("Plugin produced output ({} bytes)", output.len()));
+                    }
+                    current_payload = Some(PipelinePayload::Inline(output));
                 }
-                current_payload = Some(PipelinePayload::Inline(result.output));
-            }
+                PluginInvocationOutput::Json(_)
+                | PluginInvocationOutput::Persisted
+                | PluginInvocationOutput::Empty => {
+                    logger::debug("Plugin produced no output or output not used");
+                }
+            },
             (PipelineInvocation::Artifact(result), _)
                 if result.output_kind != ArtifactOutputKind::Empty =>
             {
@@ -400,7 +404,7 @@ fn execute_pipeline(
                 ));
                 current_payload = Some(PipelinePayload::Artifact(output_artifact));
             }
-            (PipelineInvocation::Inline(_), None) | (PipelineInvocation::Artifact(_), _) => {
+            (PipelineInvocation::Artifact(_), _) => {
                 logger::debug("Plugin produced no output or output not used");
             }
         }

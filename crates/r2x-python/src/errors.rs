@@ -35,6 +35,9 @@ pub enum BridgeError {
     #[error("Invalid artifact bundle: {0}")]
     InvalidArtifact(String),
 
+    #[error("Plugin stream error: {0}")]
+    Stream(String),
+
     #[error("Artifact-mode invocation is unsupported: {0}")]
     UnsupportedArtifactMode(String),
 

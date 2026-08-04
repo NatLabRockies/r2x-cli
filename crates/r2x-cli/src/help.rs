@@ -39,11 +39,12 @@ pub(crate) fn show_run_help() -> Result<(), String> {
     println!("    r2x run <pipeline.yaml> [pipeline-name]");
     println!();
     println!("  Run a plugin directly:");
-    println!("    r2x run plugin <plugin-name> [OPTIONS]");
-    println!("      (use --output <FILE> for portable UTF-8 JSON files; use -q for quiet logs, -q -q to suppress plugin stdout)");
+    println!("    r2x run <plugin-name> [OPTIONS]");
+    println!("      (use -i/--input for a durable System, -o/--output to persist one)");
+    println!("      (use `r2x run plugin <plugin-name>` for the legacy explicit form)");
     println!();
     println!("  Get plugin help:");
-    println!("    r2x run plugin <plugin-name> --show-help");
+    println!("    r2x run <plugin-name> --show-help");
     println!();
     println!("  List pipelines in YAML:");
     println!("    r2x run <pipeline.yaml> --list");
@@ -106,8 +107,8 @@ pub(crate) fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     };
 
     println!("\nUsage:");
-    println!("  r2x run plugin {}{}", plugin_name, usage_options);
-    println!("    (add --output <FILE> for UTF-8 JSON files, or -q to silence logs, -q -q to hide stdout)");
+    println!("  r2x run {}{}", plugin_name, usage_options);
+    println!("    (add -i <FILE> to load a System or -o <FILE> to persist one)");
 
     // Show parameters
     if !plugin.parameters.is_empty() {
@@ -170,8 +171,8 @@ pub(crate) fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     println!("  --set key=value is accepted as an explicit key/value form.");
 
     println!("\nExamples:");
-    println!("  r2x run plugin {} --show-help", plugin_name);
-    println!("  r2x run plugin {}{}", plugin_name, example_options);
+    println!("  r2x run {} --show-help", plugin_name);
+    println!("  r2x run {}{}", plugin_name, example_options);
 
     Ok(())
 }

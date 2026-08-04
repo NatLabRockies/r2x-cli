@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+from r2x_core.utils.files import get_r2x_cache_path
 
 
 class System:
@@ -26,26 +29,36 @@ class System:
                 raise OSError("unable to open database file")
         return cls(data)
 
-    def to_json(self, path: str | Path | None = None) -> bytes | None:
-        payload = json.dumps(self.data, ensure_ascii=False)
+    def to_json(
+        self, path: str | Path | None = None, overwrite: bool = False
+    ) -> bytes | None:
+        data = json.loads(json.dumps(self.data, ensure_ascii=False))
+        time_series = data.get("time_series")
         if path is None:
-            return payload.encode("utf-8")
+            if isinstance(time_series, dict) and time_series.get("directory"):
+                sidecar_dir = get_r2x_cache_path() / f"{uuid4()}_time_series"
+                sidecar_dir.mkdir(parents=True, exist_ok=True)
+                (sidecar_dir / self.DB_FILENAME).write_text("sidecar", encoding="utf-8")
+                time_series["directory"] = str(sidecar_dir)
+            return json.dumps(data, ensure_ascii=False).encode("utf-8")
+
         output = Path(path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(payload, encoding="utf-8")
-        time_series = self.data.get("time_series")
+        if output.exists() and not overwrite:
+            raise FileExistsError(f"{output} already exists")
+        output.parent.mkdir(exist_ok=True)
         if isinstance(time_series, dict) and time_series.get("directory"):
             sidecar_dir = Path(time_series["directory"])
             if not sidecar_dir.is_absolute():
                 sidecar_dir = output.parent / sidecar_dir
             sidecar_dir.mkdir(parents=True, exist_ok=True)
             (sidecar_dir / self.DB_FILENAME).write_text("sidecar", encoding="utf-8")
+        output.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return None
 
     @classmethod
     def from_json(cls, source: bytes | str | Path) -> "System":
         if isinstance(source, bytes):
-            return cls(json.loads(source.decode("utf-8")))
+            return cls.from_dict(json.loads(source.decode("utf-8")), Path.cwd())
         if isinstance(source, Path):
             data = json.loads(source.read_text(encoding="utf-8"))
             return cls.from_dict(data, source.parent)

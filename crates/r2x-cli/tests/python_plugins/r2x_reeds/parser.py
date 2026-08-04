@@ -59,7 +59,7 @@ def with_system_function(system) -> dict[str, str]:
 
 
 def system_with_sidecar():
-    """Return a path-serialized System with a relative sidecar bundle."""
+    """Return a System with a time-series sidecar."""
     from r2x_core.system import System
 
     return System(
@@ -69,3 +69,22 @@ def system_with_sidecar():
             "time_series": {"directory": "system_time_series"},
         }
     )
+
+
+def mark_streamed_system(system):
+    """Verify and annotate a System received through a direct stream."""
+    system.data["status"] = "streamed"
+    return system
+
+
+def noisy_json():
+    """Emit a plugin diagnostic while returning machine-readable output."""
+    print("plugin diagnostic")
+    return {"status": "ok"}
+
+
+def test_exporter(system):
+    """Consume a System as a terminal exporter sink."""
+    if system.data.get("system") != "reeds":
+        raise ValueError("expected a ReEDS System")
+    return None
