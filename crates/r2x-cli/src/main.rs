@@ -10,6 +10,7 @@ use r2x::common::GlobalOpts;
 use r2x_config as config_manager;
 use r2x_logger as logger;
 use r2x_python::python_bridge::process_exit;
+use std::ffi::OsString;
 
 #[derive(Parser)]
 #[command(name = "r2x")]
@@ -121,6 +122,64 @@ enum Commands {
     Self_(self_update::SelfNamespace),
 }
 
+/// Move root global flags ahead of `run` before Clap parses its trailing target.
+///
+/// `RunCommand` captures the target and all following values verbatim so it
+/// can distinguish a pipeline path from a plugin reference. Without this
+/// normalization, root-global flags written after `run` would be mistaken for
+/// plugin or pipeline arguments and would miss logger initialization.
+fn normalize_run_global_args(args: Vec<OsString>) -> Vec<OsString> {
+    let Some(command_index) = args.iter().enumerate().skip(1).find_map(|(index, arg)| {
+        let arg = arg.to_string_lossy();
+        (!is_global_run_option(&arg) && arg != "--").then_some(index)
+    }) else {
+        return args;
+    };
+
+    if args[command_index].to_string_lossy() != "run" {
+        return args;
+    }
+
+    let mut normalized = Vec::with_capacity(args.len());
+    normalized.extend(args[..command_index].iter().cloned());
+
+    let mut run_args = Vec::new();
+    let mut moved_globals = Vec::new();
+    let mut parse_options = true;
+    for arg in args[command_index + 1..].iter().cloned() {
+        let arg_text = arg.to_string_lossy();
+        if parse_options && arg_text == "--" {
+            parse_options = false;
+            run_args.push(arg);
+        } else if parse_options && is_global_run_option(&arg_text) {
+            moved_globals.push(arg);
+        } else {
+            run_args.push(arg);
+        }
+    }
+
+    normalized.extend(moved_globals);
+    normalized.push(OsString::from("run"));
+    normalized.extend(run_args);
+    normalized
+}
+
+fn is_global_run_option(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--quiet" | "--verbose" | "--log-python" | "--python-log" | "--no-stdout"
+    ) || is_global_short_flag(arg)
+}
+
+fn is_global_short_flag(arg: &str) -> bool {
+    arg.starts_with('-')
+        && !arg.starts_with("--")
+        && arg.len() > 1
+        && arg[1..]
+            .chars()
+            .all(|character| matches!(character, 'q' | 'v'))
+}
+
 fn with_plugin_context<F>(action: F) -> Result<(), r2x::plugins::error::PluginError>
 where
     F: FnOnce(&mut plugins::context::PluginContext) -> Result<(), r2x::plugins::error::PluginError>,
@@ -144,7 +203,7 @@ fn main() {
         colored::control::set_override(false);
     }
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(normalize_run_global_args(std::env::args_os().collect()));
 
     let mut startup_config = match config_manager::Config::load() {
         Ok(cfg) => Some(cfg),
@@ -285,5 +344,57 @@ fn main() {
                 std::process::exit(1);
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_run_global_args;
+    use std::ffi::OsString;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn moves_global_options_before_run_for_clap() {
+        assert_eq!(
+            normalize_run_global_args(args(&[
+                "r2x",
+                "run",
+                "r2x-reeds.reeds-parser",
+                "-qv",
+                "--python-log",
+                "--no-stdout",
+            ])),
+            args(&[
+                "r2x",
+                "-qv",
+                "--python-log",
+                "--no-stdout",
+                "run",
+                "r2x-reeds.reeds-parser",
+            ])
+        );
+    }
+
+    #[test]
+    fn keeps_options_after_double_dash_with_the_plugin() {
+        assert_eq!(
+            normalize_run_global_args(args(&[
+                "r2x",
+                "run",
+                "r2x-reeds.reeds-parser",
+                "--",
+                "--quiet",
+            ])),
+            args(&["r2x", "run", "r2x-reeds.reeds-parser", "--", "--quiet",])
+        );
+    }
+
+    #[test]
+    fn leaves_non_run_commands_unchanged() {
+        let input = args(&["r2x", "install", "--no-stdout", "r2x-reeds"]);
+        assert_eq!(normalize_run_global_args(input.clone()), input);
     }
 }

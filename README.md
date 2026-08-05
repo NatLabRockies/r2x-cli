@@ -148,35 +148,47 @@ r2x run pipeline.yaml my-pipeline --output output.zip --zip
 
 ### Running Plugins Directly
 
-Skip the pipeline and run a single plugin with inline arguments.
-
-Use `--output <FILE>` when you want a portable JSON artifact, especially on Windows. Shell redirection in PowerShell can produce UTF-16 files, while `r2x run plugin ... --output <FILE>` writes the JSON bytes directly.
+Skip the pipeline and run a single plugin with inline arguments. The short form is `r2x run <plugin-ref>`; `r2x run plugin <plugin-ref>` remains supported.
 
 ```bash
 # Run a plugin directly with idiomatic flags
-r2x run plugin r2x-reeds.reeds-parser \
+r2x run r2x-reeds.reeds-parser \
   --path /path/to/reeds/run \
   --solve-year 2030 \
   --weather-year 2012
 
 # Existing key=value arguments also work
-r2x run plugin r2x-reeds.reeds-parser \
+r2x run r2x-reeds.reeds-parser \
   path=/path/to/reeds/run \
   solve_year=2030 \
   weather_year=2012
 
+# Pipe a System through compatible plugins in one shell job
+set -o pipefail
+r2x run r2x-reeds.reeds-parser \
+  --path /path/to/reeds/run \
+  --solve-year 2030 \
+  --weather-year 2012 |
+r2x run r2x-reeds.add-pcm-defaults \
+  --pcm-defaults-fpath config/pcm_defaults.json
+
+# Write a durable System JSON entrypoint and its adjacent sidecar directory
+r2x run r2x-reeds.reeds-parser \
+  --path /path/to/reeds/run \
+  --solve-year 2030 \
+  --weather-year 2012 \
+  -o artifacts/system.json
+
+# Read the durable System by path; relative sidecars resolve beside the JSON file
+r2x run r2x-reeds.add-pcm-defaults \
+  -i artifacts/system.json \
+  --pcm-defaults-fpath config/pcm_defaults.json
+
 # Show a plugin's help
 r2x run plugin r2x-reeds.reeds-parser --show-help
 
-# Write portable UTF-8 JSON directly to a file
-r2x run plugin r2x-reeds.reeds-parser \
-  --output plugin-output.json \
-  --path /path/to/reeds/run \
-  --solve-year 2030 \
-  --weather-year 2012
-
 # Run repeated invocations and print timing summary
-r2x run plugin r2x-reeds.reeds-parser --repeat 10 --benchmark solve_year=2030
+r2x run r2x-reeds.reeds-parser --repeat 10 --benchmark solve_year=2030
 
 # Compare two benchmark outputs (baseline vs current)
 python3 scripts/compare_benchmark_summary.py --baseline baseline.txt --current current.txt
@@ -199,6 +211,15 @@ export R2X_BENCHMARK_REGRESSION_PCT=15
 # List all runnable plugins
 r2x run plugin
 ```
+
+Without `-o`, System JSON on stdout embeds an absolute r2x sidecar location,
+so it is safe to pass to the next command in the same shell job. With `-o`,
+r2x creates parent directories, replaces the JSON entrypoint, and writes a
+portable sibling `<stem>_time_series/` directory; read that artifact with `-i`,
+not shell redirection. Plugin diagnostics use stderr, and exporters write their
+configured files without emitting a JSON record.
+
+For Torc parameterization, file dependencies, and the distinction between live pipes and durable `-o` / `-i` boundaries, see [Use r2x plugin streams in Torc](docs/torc-plugin-streams.md).
 
 ### Pipeline File Format
 

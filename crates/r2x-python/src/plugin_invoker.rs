@@ -115,37 +115,76 @@ pub struct PluginInvocationTimings {
     pub serialization: Duration,
 }
 
-/// Result of running a plugin through the Python bridge
+/// Direct input supplied to a plugin invocation.
+#[derive(Clone, Copy, Debug)]
+pub enum PluginInput<'a> {
+    /// JSON payload received from standard input.
+    Json(&'a str),
+    /// JSON entrypoint on disk, loaded relative to its sidecar bundle.
+    File(&'a Path),
+}
+
+/// Materialized result of running a plugin through the Python bridge.
+#[derive(Debug)]
+pub enum PluginInvocationOutput {
+    /// JSON text that should be emitted or written by the caller.
+    Json(String),
+    /// A System was written directly to the requested output path.
+    Persisted,
+    /// The plugin intentionally produced no stream output.
+    Empty,
+}
+
+/// Result of running a plugin through the Python bridge.
+#[derive(Debug)]
 pub struct PluginInvocationResult {
-    /// JSON text emitted by the plugin (may be `"null"`)
-    pub output: String,
-    /// Optional per-phase timings for diagnostics
+    /// Materialized plugin output.
+    pub output: PluginInvocationOutput,
+    /// Optional per-phase timings for diagnostics.
     pub timings: Option<PluginInvocationTimings>,
 }
 
 impl crate::python_bridge::Bridge {
-    pub fn invoke_plugin(
+    /// Invoke a plugin through the direct CLI interface.
+    ///
+    /// Direct invocations treat an unused stream input as an error, redirect
+    /// plugin writes away from stdout, and can persist System results directly
+    /// to a durable JSON entrypoint.
+    pub fn invoke_plugin_direct(
         &self,
         target: &str,
         config_json: &str,
-        stdin_json: Option<&str>,
+        input: Option<PluginInput<'_>>,
+        output_path: Option<&Path>,
         plugin_metadata: Option<&Plugin>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         let runtime_bindings = plugin_metadata.map(build_runtime_bindings);
 
-        if let Some(bindings) = runtime_bindings.as_ref() {
-            if bindings.role == PluginRole::Upgrader {
-                logger::debug("Routing to upgrader plugin handler");
-                return self.invoke_upgrader_plugin(
-                    target,
-                    config_json,
-                    Some(bindings),
-                    plugin_metadata,
-                );
+        if runtime_bindings
+            .as_ref()
+            .is_some_and(|bindings| bindings.role == PluginRole::Upgrader)
+        {
+            if input.is_some() {
+                return Err(BridgeError::Stream(
+                    "upgrader plugins do not accept System input".to_string(),
+                ));
             }
+            return self.invoke_upgrader_plugin(
+                target,
+                config_json,
+                runtime_bindings.as_ref(),
+                plugin_metadata,
+                true,
+            );
         }
 
-        self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings.as_ref())
+        self.invoke_plugin_regular_direct(
+            target,
+            config_json,
+            input,
+            output_path,
+            runtime_bindings.as_ref(),
+        )
     }
 
     pub fn invoke_plugin_with_bindings(
@@ -158,7 +197,13 @@ impl crate::python_bridge::Bridge {
         if let Some(bindings) = runtime_bindings {
             if bindings.role == PluginRole::Upgrader {
                 logger::debug("Routing to upgrader plugin handler (runtime bindings)");
-                return self.invoke_upgrader_plugin(target, config_json, Some(bindings), None);
+                return self.invoke_upgrader_plugin(
+                    target,
+                    config_json,
+                    Some(bindings),
+                    None,
+                    false,
+                );
             }
         }
 
@@ -244,10 +289,10 @@ mod tests {
     #[test]
     fn plugin_invocation_result_basics() {
         let result = PluginInvocationResult {
-            output: String::new(),
+            output: PluginInvocationOutput::Empty,
             timings: None,
         };
-        assert!(result.output.is_empty());
+        assert!(matches!(result.output, PluginInvocationOutput::Empty));
     }
 
     #[test]

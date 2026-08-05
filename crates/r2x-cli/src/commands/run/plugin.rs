@@ -8,9 +8,11 @@ use r2x_logger as logger;
 use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_manifest::types::Plugin;
-use r2x_python::plugin_invoker::PluginInvocationResult;
+use r2x_python::plugin_invoker::{PluginInput, PluginInvocationOutput, PluginInvocationResult};
 use r2x_python::python_bridge::Bridge;
 use std::collections::BTreeSet;
+use std::io::{self, IsTerminal, Read};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Result<(), RunError> {
@@ -24,6 +26,7 @@ pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Re
                     &plugin_name,
                     &cmd.args,
                     opts,
+                    cmd.input,
                     cmd.output,
                     cmd.repeat.get(),
                     cmd.benchmark,
@@ -43,7 +46,7 @@ fn list_available_plugins() -> Result<(), RunError> {
         "  Use {} to list installed plugins, then:",
         "r2x list".bold()
     );
-    println!("  r2x run plugin <plugin-name> [args...]");
+    println!("  r2x run <plugin-name> [args...]");
     println!("  r2x run plugin <plugin-name> --show-help");
     println!();
     Ok(())
@@ -53,7 +56,8 @@ fn run_plugin(
     plugin_name: &str,
     args: &[String],
     opts: &GlobalOpts,
-    output_file: Option<String>,
+    input_file: Option<PathBuf>,
+    output_file: Option<PathBuf>,
     repeat: usize,
     benchmark: bool,
 ) -> Result<(), RunError> {
@@ -87,6 +91,7 @@ fn run_plugin(
     let runtime_bindings = build_runtime_bindings(plugin);
     let target = build_call_target(&runtime_bindings)?;
 
+    let input = read_plugin_input(input_file.as_deref())?;
     let bridge = Bridge::get()?;
     logger::debug(&format!("Invoking plugin with target: {}", target));
 
@@ -94,13 +99,25 @@ fn run_plugin(
     let mut total_python_invocation = Duration::ZERO;
     let mut total_serialization = Duration::ZERO;
     let mut timing_samples: usize = 0;
-    let mut result = String::new();
+    let mut result = PluginInvocationOutput::Empty;
     let mut timings = None;
 
     for iteration in 0..repeat {
         logger::set_current_plugin(Some(plugin_name.to_string()));
         let start = Instant::now();
-        let invocation_result = bridge.invoke_plugin(&target, &config_json, None, Some(plugin));
+        let invocation_input = input.as_ref().map(PluginInputSource::as_bridge_input);
+        let invocation_output = if iteration + 1 == repeat {
+            output_file.as_deref()
+        } else {
+            None
+        };
+        let invocation_result = bridge.invoke_plugin_direct(
+            &target,
+            &config_json,
+            invocation_input,
+            invocation_output,
+            Some(plugin),
+        );
         let elapsed = start.elapsed();
         total_elapsed += elapsed;
         // Clear plugin context after each execution attempt
@@ -132,17 +149,38 @@ fn run_plugin(
 
     let no_stdout = opts.no_stdout || logger::get_no_stdout();
     if let Some(output_path) = output_file {
-        if !result.is_empty() {
-            logger::step(&format!("Writing plugin output to: {}", output_path));
-            std::fs::write(&output_path, result.as_bytes())
-                .map_err(|e| RunError::Pipeline(crate::errors::PipelineError::Io(e)))?;
-            logger::success(&format!("Plugin output saved to: {}", output_path));
+        match result {
+            PluginInvocationOutput::Persisted => {
+                logger::success(&format!(
+                    "Plugin output saved to: {}",
+                    output_path.display()
+                ));
+            }
+            PluginInvocationOutput::Json(output) => {
+                logger::step(&format!(
+                    "Writing plugin output to: {}",
+                    output_path.display()
+                ));
+                write_json_output(&output_path, &output)?;
+                logger::success(&format!(
+                    "Plugin output saved to: {}",
+                    output_path.display()
+                ));
+            }
+            PluginInvocationOutput::Empty => {
+                return Err(RunError::InvalidArgs(format!(
+                    "plugin '{}' produced no JSON output; use its plugin-specific output option instead",
+                    plugin_name
+                )));
+            }
         }
-    } else if !result.is_empty() && result != "null" {
-        if opts.suppress_stdout() || no_stdout {
-            logger::debug("Plugin output suppressed");
-        } else {
-            println!("{}", result);
+    } else if let PluginInvocationOutput::Json(output) = result {
+        if !output.is_empty() && output != "null" {
+            if opts.suppress_stdout() || no_stdout {
+                logger::debug("Plugin output suppressed");
+            } else {
+                println!("{}", output);
+            }
         }
     }
 
@@ -189,6 +227,69 @@ fn run_plugin(
     }
 
     Ok(())
+}
+
+enum PluginInputSource {
+    Stdin(String),
+    File(PathBuf),
+}
+
+impl PluginInputSource {
+    fn as_bridge_input(&self) -> PluginInput<'_> {
+        match self {
+            Self::Stdin(payload) => PluginInput::Json(payload),
+            Self::File(path) => PluginInput::File(path),
+        }
+    }
+}
+
+fn write_json_output(output_path: &Path, output: &str) -> Result<(), RunError> {
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| RunError::Pipeline(crate::errors::PipelineError::Io(error)))?;
+    }
+    std::fs::write(output_path, output.as_bytes())
+        .map_err(|error| RunError::Pipeline(crate::errors::PipelineError::Io(error)))
+}
+
+fn read_plugin_input(input_file: Option<&Path>) -> Result<Option<PluginInputSource>, RunError> {
+    if input_file.is_some_and(|path| path == Path::new("-")) {
+        return read_piped_stdin().map(|input| input.map(PluginInputSource::Stdin));
+    }
+
+    let stdin = read_piped_stdin()?;
+    if let (Some(_), Some(_)) = (input_file, stdin.as_ref()) {
+        return Err(RunError::InvalidArgs(
+            "--input FILE cannot be combined with JSON supplied on stdin".to_string(),
+        ));
+    }
+
+    if let Some(path) = input_file {
+        return Ok(Some(PluginInputSource::File(path.to_path_buf())));
+    }
+
+    Ok(stdin.map(PluginInputSource::Stdin))
+}
+
+fn read_piped_stdin() -> Result<Option<String>, RunError> {
+    let mut stdin = io::stdin();
+    if stdin.is_terminal() {
+        return Ok(None);
+    }
+
+    let mut input = String::new();
+    stdin.read_to_string(&mut input).map_err(|error| {
+        RunError::Config(format!("Failed to read plugin input from stdin: {error}"))
+    })?;
+
+    if input.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(input))
+    }
 }
 
 #[derive(Debug)]
@@ -299,7 +400,7 @@ impl PluginArgumentSpec {
     }
 
     fn example_command(&self) -> String {
-        let mut command = format!("r2x run plugin {}", self.plugin_name);
+        let mut command = format!("r2x run {}", self.plugin_name);
         if self.required_keys.is_empty() {
             if let Some(key) = self.known_keys.iter().next() {
                 command.push_str(&format!(" --{} <value>", cli_flag_name(key)));

@@ -17,4 +17,5 @@ class ReEDSUpgrader:
             self.steps = list(steps)
 
     def run(self) -> str:
+        print("upgrader diagnostic")
         return f'{{"upgraded": "reeds", "folder": "{self.folder_path}"}}'

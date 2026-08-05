@@ -178,6 +178,7 @@ fn test_plugins_help() {
             "Usage: {} run plugin",
             EXECUTABLE_NAME
         )))
+        .stdout(predicate::str::contains("--input <FILE>"))
         .stdout(predicate::str::contains("--output <FILE>"))
         .stdout(predicate::str::contains("--repeat"))
         .stdout(predicate::str::contains("--benchmark"));
@@ -220,6 +221,288 @@ fn test_direct_plugin_output_writes_utf8_json_and_read_accepts_it(
         ])
         .assert()
         .success();
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_receives_system_from_stdin() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    env.command()
+        .args(["run", "r2x_reeds.with_system_function"])
+        .write_stdin(r#"{"system":"reeds","status":"input"}"#)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"status\": \"function-with-system\"",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_reports_missing_system_input() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    env.command()
+        .args(["run", "r2x_reeds.with_system_function"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires a System input"));
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_rejects_input_for_nonconsumer() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let reeds_path = env.home_path().join("data/reeds-store");
+    env.command()
+        .args([
+            "run",
+            "r2x_reeds.parser",
+            "--path",
+            reeds_path.to_string_lossy().as_ref(),
+            "--solve-year",
+            "2032",
+            "--weather-year",
+            "2012",
+        ])
+        .write_stdin(r#"{"system":"reeds","status":"input"}"#)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "does not accept a System or JSON input",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_keeps_plugin_diagnostics_off_stdout() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    env.command()
+        .args(["run", "r2x_reeds.noisy_json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("plugin diagnostic").not())
+        .stdout(predicate::str::contains(r#"{"status": "ok"}"#))
+        .stderr(predicate::str::contains("plugin diagnostic"));
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_upgrader_keeps_plugin_diagnostics_off_stdout(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let folder_path = env.home_path().join("upgrade-source");
+    env.command()
+        .args([
+            "run",
+            "r2x_reeds.upgrader",
+            "--folder-path",
+            folder_path.to_string_lossy().as_ref(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("upgrader diagnostic").not())
+        .stdout(predicate::str::contains(r#""upgraded": "reeds""#))
+        .stderr(predicate::str::contains("upgrader diagnostic"));
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_json_output_creates_parent_directories(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let output_path = env
+        .home_path()
+        .join("nested")
+        .join("results")
+        .join("output.json");
+    env.command()
+        .args([
+            "run",
+            "r2x_reeds.noisy_json",
+            "-o",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .assert()
+        .success();
+
+    let output: serde_json::Value = serde_json::from_slice(&fs::read(output_path)?)?;
+    assert_eq!(output, serde_json::json!({"status": "ok"}));
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_pipe_preserves_time_series_sidecars() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let mut producer = env
+        .std_command()
+        .args(["run", "r2x_reeds.system_with_sidecar"])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let producer_stdout = producer.stdout.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "producer stdout was not captured",
+        )
+    })?;
+    let consumer = env
+        .std_command()
+        .args(["run", "r2x_reeds.mark_streamed_system"])
+        .stdin(Stdio::from(producer_stdout))
+        .output()?;
+
+    assert!(producer.wait()?.success());
+    assert!(
+        consumer.status.success(),
+        "consumer stderr: {}",
+        String::from_utf8_lossy(&consumer.stderr)
+    );
+
+    let output: serde_json::Value = serde_json::from_slice(&consumer.stdout)?;
+    assert_eq!(output["status"], "streamed");
+    let sidecar = output["time_series"]["directory"]
+        .as_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing sidecar path"))?;
+    let sidecar = Path::new(sidecar);
+    assert!(sidecar.is_absolute());
+    assert!(sidecar.join("time_series_metadata.db").is_file());
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_exporter_consumes_system_without_emitting_json(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let mut producer = env
+        .std_command()
+        .args(["run", "r2x_reeds.system_with_sidecar"])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let producer_stdout = producer.stdout.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "producer stdout was not captured",
+        )
+    })?;
+    let consumer = env
+        .std_command()
+        .args(["run", "r2x_reeds.test_exporter"])
+        .stdin(Stdio::from(producer_stdout))
+        .output()?;
+
+    assert!(producer.wait()?.success());
+    assert!(
+        consumer.status.success(),
+        "exporter stderr: {}",
+        String::from_utf8_lossy(&consumer.stderr)
+    );
+    assert!(consumer.stdout.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_output_materializes_system_sidecars_for_file_input(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let output_path = env
+        .home_path()
+        .join("nested")
+        .join("exports")
+        .join("system.json");
+    for _ in 0..2 {
+        env.command()
+            .args([
+                "run",
+                "r2x_reeds.system_with_sidecar",
+                "-o",
+                output_path.to_string_lossy().as_ref(),
+            ])
+            .assert()
+            .success();
+    }
+
+    assert!(output_path.is_file());
+    let persisted: serde_json::Value = serde_json::from_slice(&fs::read(&output_path)?)?;
+    assert_eq!(persisted["time_series"]["directory"], "system_time_series");
+    assert!(output_path.parent().is_some_and(|parent| parent
+        .join("system_time_series/time_series_metadata.db")
+        .is_file()));
+
+    env.command()
+        .args([
+            "run",
+            "r2x_reeds.with_system_function",
+            "-i",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"status\": \"function-with-system\"",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_direct_plugin_rejects_file_input_and_piped_input_together(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let input_path = env.home_path().join("input.json");
+    fs::write(&input_path, r#"{"system":"reeds"}"#)?;
+
+    env.command()
+        .args([
+            "run",
+            "r2x_reeds.with_system_function",
+            "--input",
+            input_path.to_string_lossy().as_ref(),
+        ])
+        .write_stdin(r#"{"system":"other"}"#)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--input FILE cannot be combined with JSON supplied on stdin",
+        ));
 
     Ok(())
 }
@@ -485,16 +768,32 @@ fn test_direct_plugin_help_prefers_copy_pasteable_kebab_flags() {
     };
 
     env.command()
-        .args(["run", "plugin", "r2x_reeds.parser", "--show-help"])
+        .args(["run", "r2x_reeds.parser", "--show-help"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "r2x run plugin r2x_reeds.parser --path <value> --solve-year <value> --weather-year <value>",
+            "r2x run r2x_reeds.parser --path <value> --solve-year <value> --weather-year <value>",
         ))
         .stdout(predicate::str::contains("--weather-year"))
         .stdout(predicate::str::contains("Alias: --weather_year"))
         .stdout(predicate::str::contains("Compatibility:"))
         .stdout(predicate::str::contains("weather_year=<value>"));
+}
+
+#[test]
+fn test_pipeline_options_after_yaml_path_are_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let pipeline = env.reeds_pipeline();
+    env.command()
+        .args(["run", &pipeline, "--list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reeds-test"));
+
+    Ok(())
 }
 
 #[test]
@@ -1209,6 +1508,24 @@ name = "r2x_reeds.system_with_sidecar"
 type = "function"
 module = "r2x_reeds.parser"
 function_name = "system_with_sidecar"
+
+[[packages.plugins]]
+name = "r2x_reeds.mark_streamed_system"
+type = "function"
+module = "r2x_reeds.parser"
+function_name = "mark_streamed_system"
+
+[[packages.plugins]]
+name = "r2x_reeds.noisy_json"
+type = "function"
+module = "r2x_reeds.parser"
+function_name = "noisy_json"
+
+[[packages.plugins]]
+name = "r2x_reeds.test_exporter"
+type = "function"
+module = "r2x_reeds.parser"
+function_name = "test_exporter"
 
 [[packages]]
 name = "r2x-sienna"
