@@ -880,6 +880,8 @@ impl Bridge {
         } else {
             None
         };
+        let uses_exporter_context_input =
+            should_parse_stdin_for_exporter_context(input, bindings.role);
 
         let ctx = Bridge::instantiate_plugin_context(
             py,
@@ -991,7 +993,7 @@ impl Bridge {
             })
         } else {
             if input.is_some() {
-                if reject_unused_input {
+                if reject_unused_input && !uses_exporter_context_input {
                     return Err(BridgeError::Stream(format!(
                         "plugin method '{}.{}' does not accept a System or JSON input",
                         class_name, actual_method_name
