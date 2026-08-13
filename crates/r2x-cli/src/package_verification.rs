@@ -7,7 +7,6 @@ use r2x_logger as logger;
 use r2x_manifest::types::{Manifest, Package, PackageSource};
 use r2x_python::utils::resolve_site_package_path;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VerificationResult {
@@ -161,7 +160,6 @@ fn ensure_manifest_package(package: &Package, config: &Config) -> Result<(), Ver
     let python_exe = config.get_venv_python_path();
     let install_args = build_pip_install_args(&python_exe, &[package_spec], editable);
 
-    logger::info(&format!("Installing missing package: {}", package_spec));
     run_pip_install(config, &install_args, 1)
 }
 
@@ -200,7 +198,6 @@ fn build_pip_install_args(python_exe: &str, packages: &[&str], editable: bool) -
         "--python".to_string(),
         python_exe.to_string(),
         "--prerelease=allow".to_string(),
-        "--no-progress".to_string(),
     ];
 
     if editable {
@@ -221,29 +218,19 @@ fn run_pip_install(
         .as_ref()
         .ok_or_else(|| VerificationError::ReinstallFailed("uv not configured".to_string()))?;
 
-    let mut cmd = Command::new(uv_path);
-    cmd.args(install_args);
-
-    logger::debug(&format!("Running: {:?}", cmd));
-
-    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
-    let status = cmd
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| VerificationError::ReinstallFailed(format!("Failed to execute uv: {}", e)))?;
-
-    if !status.success() {
-        return Err(VerificationError::ReinstallFailed(format!(
-            "uv pip install failed: exit code {}",
-            status.code().unwrap_or(-1)
-        )));
-    }
+    let package_target = install_args
+        .last()
+        .map_or("requested packages", String::as_str);
+    crate::uv::run(
+        uv_path,
+        "Installing missing package",
+        package_target,
+        install_args.to_vec(),
+    )
+    .map_err(|error| VerificationError::ReinstallFailed(error.to_string()))?;
 
     logger::success(&format!(
-        "Successfully installed {} packages",
-        package_count
+        "Successfully installed {package_count} package(s)"
     ));
     Ok(())
 }

@@ -1621,7 +1621,7 @@ fn ensure_module_installed(
         display_name
     ));
 
-    install_package_with_spinner(config, python_exe, package_spec, display_name)?;
+    install_package(config, python_exe, package_spec, display_name)?;
     Ok(())
 }
 
@@ -1636,48 +1636,29 @@ fn module_exists(python_exe: &str, module_name: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn install_package_with_spinner(
+fn install_package(
     config: &mut Config,
     python_exe: &str,
     package_spec: &str,
     display_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let uv_path = config.ensure_uv_path()?;
-    let mut install_cmd = Command::new(&uv_path);
-    install_cmd
-        .arg("pip")
-        .arg("install")
-        .arg("--python")
-        .arg(python_exe)
-        .arg("--no-progress")
-        .arg(package_spec);
+    let install_args = vec![
+        "pip".to_string(),
+        "install".to_string(),
+        "--python".to_string(),
+        python_exe.to_string(),
+        package_spec.to_string(),
+    ];
 
-    logger::debug(&format!("Running: {:?}", install_cmd));
-    // Print status without spinner since we need interactive terminal for SSH prompts
-    logger::info(&format!("Installing {} into venv...", display_name));
+    crate::uv::run(
+        &uv_path,
+        "Installing runtime dependency",
+        display_name,
+        install_args,
+    )?;
 
-    // Use inherited stdio to allow interactive prompts (e.g., SSH key passphrases)
-    let status = install_cmd
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| {
-            logger::error(&format!("Failed to install {} into venv", display_name));
-            format!("Failed to run uv pip install: {}", e)
-        })?;
-
-    if !status.success() {
-        logger::error(&format!("Failed to install {} into venv", display_name));
-        return Err(format!(
-            "uv pip install {} failed: exit code {}",
-            package_spec,
-            status.code().unwrap_or(-1)
-        )
-        .into());
-    }
-
-    logger::success(&format!("Installed {} into venv", display_name));
+    logger::success(&format!("Installed {display_name} into venv"));
     Ok(())
 }
 

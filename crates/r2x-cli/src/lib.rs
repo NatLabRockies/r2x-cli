@@ -11,6 +11,7 @@ pub mod manifest_lookup;
 pub mod package_verification;
 pub mod pipeline_config;
 pub mod plugins;
+mod uv;
 
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -2,13 +2,13 @@ use crate::commands::plugins::context::PluginContext;
 use crate::commands::plugins::utils::short_commit;
 use crate::plugins::error::PluginError;
 use crate::plugins::package_spec::{build_package_spec, is_git_url};
-use colored::Colorize;
+use crate::uv;
 use r2x_ast::AstDiscovery;
 use r2x_logger as logger;
 use r2x_manifest::types::{InstallType, Package, PackageSource};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ pub fn sync_manifest(ctx: &mut PluginContext, upgrade: bool) -> Result<(), Plugi
     }
 
     let num_packages = packages_to_sync.len();
-    logger::step(&format!("Syncing {} package(s)...", num_packages));
+    logger::status(&format!("Syncing {num_packages} package(s)..."));
 
     // Partition packages into "unchanged" (skip AST) and "stale" (need rediscovery).
     //
@@ -203,14 +203,9 @@ pub fn sync_manifest(ctx: &mut PluginContext, upgrade: bool) -> Result<(), Plugi
     }
 
     let elapsed_ms = total_start.elapsed().as_millis();
-    println!(
-        "{}",
-        format!(
-            "Synced {} package(s), {} plugin(s) in {}ms",
-            synced_packages, total_plugins, elapsed_ms
-        )
-        .dimmed()
-    );
+    logger::status(&format!(
+        "Synced {synced_packages} package(s), {total_plugins} plugin(s) in {elapsed_ms}ms"
+    ));
 
     Ok(())
 }
@@ -310,11 +305,6 @@ fn upgrade_packages(
     targets.sort();
 
     let target_count = targets.len();
-    logger::step(&format!("Upgrading {} package(s)...", target_count));
-
-    for target in &targets {
-        logger::info(&format!("Upgrading: {}", target));
-    }
 
     // Batch all targets into a single uv pip install call.
     // Single resolution pass, parallel downloads, one install transaction.
@@ -470,42 +460,24 @@ fn run_upgrade_batch(
         .map(|t| build_package_spec(t, None, None, None, None))
         .collect::<Result<Vec<_>, _>>()?;
 
-    logger::debug(&format!(
-        "Running: {} pip install --upgrade --python {} {}",
+    let mut install_args = vec![
+        "pip".to_string(),
+        "install".to_string(),
+        "--python".to_string(),
+        python_path.to_string(),
+        "--upgrade".to_string(),
+        "--prerelease=allow".to_string(),
+    ];
+    install_args.extend(normalized.iter().cloned());
+
+    uv::run(
         uv_path,
-        python_path,
-        normalized.join(" ")
-    ));
-
-    let mut cmd = Command::new(uv_path);
-    cmd.args([
-        "pip",
-        "install",
-        "--python",
-        python_path,
-        "--upgrade",
-        "--prerelease=allow",
-        "--no-progress",
-    ]);
-    for target in &normalized {
-        cmd.arg(target.as_str());
-    }
-
-    let status = cmd
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(PluginError::Io)?;
-
-    if !status.success() {
-        return Err(PluginError::CommandFailed {
-            command: format!("{uv_path} pip install --upgrade {}", normalized.join(" ")),
-            status: status.code(),
-        });
-    }
-
-    Ok(())
+        "Upgrading",
+        &format!("{} package(s)", targets.len()),
+        install_args,
+    )
+    .map(|_| ())
+    .map_err(PluginError::from)
 }
 
 fn resolve_package_path(
@@ -592,12 +564,7 @@ fn print_upgrade_changes(
 
         if let Some(line) = change_line {
             changed += 1;
-            println!(
-                " {} {} {}",
-                "~".bold().yellow(),
-                package.name.bold(),
-                line.dimmed()
-            );
+            logger::status(&format!("Updated {}: {line}", package.name));
         }
     }
 
