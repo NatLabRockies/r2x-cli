@@ -486,55 +486,6 @@ pub fn step(message: &str) {
     write_to_log(LogLevel::Info, &format!("STEP: {}", message));
 }
 
-/// Capture command output and log it
-pub fn capture_output(command_name: &str, output: &std::process::Output) {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    write_to_log(
-        LogLevel::Debug,
-        &format!(
-            "COMMAND: {} (exit code: {:?})",
-            command_name,
-            output.status.code()
-        ),
-    );
-
-    if !stdout.is_empty() {
-        write_to_log(LogLevel::Debug, &format!("  STDOUT:\n{}", stdout));
-    }
-
-    if !stderr.is_empty() {
-        write_to_log(LogLevel::Debug, &format!("  STDERR:\n{}", stderr));
-    }
-}
-
-/// Capture command output and always persist it to log file at info level.
-///
-/// This is useful for noisy subprocesses where console output is suppressed
-/// by default but full output should remain available in logs.
-pub fn capture_output_always(command_name: &str, output: &std::process::Output) {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    write_to_log(
-        LogLevel::Info,
-        &format!(
-            "COMMAND: {} (exit code: {:?})",
-            command_name,
-            output.status.code()
-        ),
-    );
-
-    if !stdout.is_empty() {
-        write_to_log(LogLevel::Info, &format!("  STDOUT:\n{}", stdout));
-    }
-
-    if !stderr.is_empty() {
-        write_to_log(LogLevel::Info, &format!("  STDERR:\n{}", stderr));
-    }
-}
-
 /// Get the log file path for display
 pub fn get_log_path() -> Option<PathBuf> {
     LOG_FILE.lock().ok().and_then(|guard| guard.clone())

@@ -131,10 +131,7 @@ fn flush_logged_lines(
     stream: &str,
     flush_partial: bool,
 ) {
-    loop {
-        let Some(newline) = pending.iter().position(|byte| *byte == b'\n') else {
-            break;
-        };
+    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
         let line: Vec<u8> = pending.drain(..=newline).collect();
         logger::record_command_output(phase, target, stream, &line);
     }
