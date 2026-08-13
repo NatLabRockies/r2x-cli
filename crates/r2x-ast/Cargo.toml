@@ -13,7 +13,7 @@ description = "AST discovery utilities for the r2x CLI"
 
 [dependencies]
 anyhow = "1.0"
-ast-grep-core = "0.22"
+ast-grep-core = "0.25"
 ast-grep-language = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
