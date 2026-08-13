@@ -1,6 +1,6 @@
 [package]
 name = "r2x-python"
-version = "0.1.6"
+version = "0.1.7"
 edition = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
