@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::process::Command;
 
 use crate::commands::config::clean_cache_folder;
 use crate::plugins::error::PluginError;
@@ -7,6 +6,7 @@ use colored::Colorize;
 use r2x_logger as logger;
 
 use crate::commands::plugins::context::PluginContext;
+use crate::uv;
 
 pub fn clean_manifest(yes: bool, ctx: &mut PluginContext) -> Result<(), PluginError> {
     if !yes {
@@ -54,26 +54,16 @@ pub fn clean_manifest(yes: bool, ctx: &mut PluginContext) -> Result<(), PluginEr
 }
 
 fn uninstall_package(uv_path: &str, python_path: &str, package_name: &str) {
-    logger::debug(&format!(
-        "Running: {uv_path} pip uninstall --python {python_path} {package_name}"
-    ));
+    let uninstall_args = vec![
+        "pip".to_string(),
+        "uninstall".to_string(),
+        "--python".to_string(),
+        python_path.to_string(),
+        package_name.to_string(),
+    ];
 
-    let output = Command::new(uv_path)
-        .args(["pip", "uninstall", "--python", python_path, package_name])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            logger::info(&format!("Uninstalled '{package_name}'"));
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            logger::debug(&format!("Failed to uninstall '{package_name}': {stderr}"));
-        }
-        Err(e) => {
-            logger::warn(&format!(
-                "Failed to run uv pip uninstall for '{package_name}': {e}"
-            ));
-        }
+    match uv::run(uv_path, "Uninstalling", package_name, uninstall_args) {
+        Ok(_) => logger::status(&format!("Uninstalled '{package_name}'")),
+        Err(error) => logger::warn(&error.to_string()),
     }
 }

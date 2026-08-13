@@ -5,12 +5,12 @@ use crate::plugins::{
     install::get_package_info,
     package_spec::{build_package_spec, extract_package_name},
 };
+use crate::uv;
 use colored::Colorize;
 use r2x_logger as logger;
 use r2x_manifest::package_discovery::PackageDiscoverer;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 /// Options for git-based package installation
 pub struct GitOptions {
@@ -41,7 +41,7 @@ pub fn install_plugin(
 
     // Check if this is a workspace installation
     if is_workspace_package(&package_spec)? {
-        logger::info("Detected workspace repository, installing all members...");
+        logger::status("Detected workspace repository, installing all members...");
         // Just install the workspace - uv will handle all members
         run_pip_install(
             &ctx.uv_path,
@@ -55,7 +55,7 @@ pub fn install_plugin(
         // Now discover all packages with entry points (like sync command).
         // The install transaction just mutated site-packages, so rebuild plugin
         // metadata from disk instead of trusting any existing manifest entries.
-        logger::info("Discovering plugins from installed packages...");
+        logger::status("Discovering plugins from installed packages...");
         return discover_all_installed_packages(ctx, true, total_start);
     }
 
@@ -88,8 +88,6 @@ pub fn install_plugin(
             check_start.elapsed()
         ));
     } else {
-        // Print status without spinner since we need interactive terminal for SSH prompts
-        logger::info(&format!("Installing: {}", package));
         let start = std::time::Instant::now();
         match run_pip_install(
             &ctx.uv_path,
@@ -101,10 +99,7 @@ pub fn install_plugin(
             Ok(()) => {
                 logger::debug(&format!("pip install took: {:?}", start.elapsed()));
             }
-            Err(e) => {
-                logger::error(&format!("Failed to install: {}", package));
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         }
 
         // uv pip install mutates site-packages and dist-info directories. Refresh the
@@ -222,45 +217,9 @@ fn run_pip_install(
 ) -> Result<(), PluginError> {
     let install_args = build_pip_install_args(python_path, package, editable, no_cache);
 
-    logger::debug(&format!("Running: {} {}", uv_path, install_args.join(" ")));
-
-    let output = Command::new(uv_path)
-        .args(&install_args)
-        .output()
-        .map_err(|e| {
-            logger::error(&format!("Failed to run pip install: {}", e));
-            PluginError::Io(e)
-        })?;
-
-    let command_for_log = format!("{} {}", uv_path, install_args.join(" "));
-    logger::capture_output_always(&command_for_log, &output);
-
-    if logger::get_verbosity() > 0 {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.trim().is_empty() {
-            print!("{stdout}");
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.trim().is_empty() {
-            eprint!("{stderr}");
-        }
-    }
-
-    if !output.status.success() {
-        if logger::get_verbosity() == 0 {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.trim().is_empty() {
-                eprintln!("{stderr}");
-            }
-        }
-        logger::error(&format!("pip install failed for package '{}'", package));
-        return Err(PluginError::CommandFailed {
-            command: format!("{} pip install {}", uv_path, package),
-            status: output.status.code(),
-        });
-    }
-
-    Ok(())
+    uv::run(uv_path, "Installing", package, install_args)
+        .map(|_| ())
+        .map_err(PluginError::from)
 }
 
 fn build_pip_install_args(
@@ -275,7 +234,6 @@ fn build_pip_install_args(
         "--python".to_string(),
         python_path.to_string(),
         "--prerelease=allow".to_string(),
-        "--no-progress".to_string(),
     ];
 
     if no_cache {
@@ -293,26 +251,20 @@ fn build_pip_install_args(
 fn print_install_summary(pkg: &str, version: &str, count: usize, elapsed: std::time::Duration) {
     let elapsed_ms = elapsed.as_millis();
     if count == 0 {
-        println!(
-            "{}",
-            format!("No plugins found in {}ms", elapsed_ms)
-                .bold()
-                .dimmed()
-        );
+        logger::status(&format!(
+            "Installed {pkg} and registered 0 plugin(s) in {elapsed_ms}ms"
+        ));
         return;
     }
-    let disp = if version.is_empty() {
-        format!("{}", pkg.bold())
+
+    let package = if version.is_empty() {
+        pkg.to_string()
     } else {
-        format!("{}=={}", pkg.bold(), version)
+        format!("{pkg}=={version}")
     };
-    println!(
-        "{}",
-        format!("Installed {} plugin(s) in {}ms", count, elapsed_ms)
-            .bold()
-            .dimmed()
-    );
-    println!(" {} {}", "+".bold().green(), disp);
+    logger::status(&format!(
+        "Installed {package} and registered {count} plugin(s) in {elapsed_ms}ms"
+    ));
 }
 
 /// Check if a package is a workspace (by detecting [tool.uv.workspace] in pyproject.toml)
@@ -356,6 +308,10 @@ fn discover_all_installed_packages(
 
     if packages.is_empty() {
         logger::warn("No packages with r2x_plugin entry points found");
+        logger::status(&format!(
+            "Discovered 0 package(s) with 0 plugin(s) in {}ms",
+            total_start.elapsed().as_millis()
+        ));
         return Ok(());
     }
 
@@ -408,12 +364,12 @@ fn discover_all_installed_packages(
         ) {
             if entry_count > 0 {
                 let version_str = package_version.as_deref().unwrap_or("");
-                let disp = if version_str.is_empty() {
-                    format!("{}", package_name.bold())
+                let package = if version_str.is_empty() {
+                    package_name.clone()
                 } else {
-                    format!("{}=={}", package_name.bold(), version_str)
+                    format!("{package_name}=={version_str}")
                 };
-                println!(" {} {}", "+".bold().green(), disp);
+                logger::status(&format!("Discovered plugin package: {package}"));
                 discovered_count += 1;
                 total_entry_points += entry_count;
             }
@@ -423,15 +379,9 @@ fn discover_all_installed_packages(
     }
 
     let elapsed_ms = total_start.elapsed().as_millis();
-    println!(
-        "{}",
-        format!(
-            "Discovered {} package(s) with {} plugin(s) in {}ms",
-            discovered_count, total_entry_points, elapsed_ms
-        )
-        .bold()
-        .dimmed()
-    );
+    logger::status(&format!(
+        "Discovered {discovered_count} package(s) with {total_entry_points} plugin(s) in {elapsed_ms}ms"
+    ));
 
     Ok(())
 }
@@ -445,5 +395,6 @@ mod tests {
         let args = build_pip_install_args("/tmp/python", "/tmp/plugin", true, true);
         assert!(args.iter().any(|arg| arg == "-e"));
         assert!(args.iter().any(|arg| arg == "--no-cache"));
+        assert!(!args.iter().any(|arg| arg == "--no-progress"));
     }
 }

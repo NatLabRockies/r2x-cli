@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 static LOG_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static VERBOSITY: Mutex<u8> = Mutex::new(0);
+static QUIET: Mutex<u8> = Mutex::new(0);
 static LOG_PYTHON: Mutex<bool> = Mutex::new(false);
 static NO_STDOUT: Mutex<bool> = Mutex::new(false);
 static FILE_LOG_LEVEL: Mutex<LogLevel> = Mutex::new(LogLevel::Info);
@@ -27,6 +28,11 @@ enum LogLevel {
 /// Get the current verbosity level for use by other modules (e.g., Python bridge)
 pub fn get_verbosity() -> u8 {
     VERBOSITY.lock().ok().map_or(0, |v| *v)
+}
+
+/// Get the number of quiet flags supplied by the user.
+pub fn get_quiet_level() -> u8 {
+    QUIET.lock().ok().map_or(0, |v| *v)
 }
 
 /// Get whether Python logging to console is enabled
@@ -63,6 +69,7 @@ pub fn set_current_plugin(plugin_name: Option<String>) {
 /// Initialize logger with optional path override, file level, and max file size.
 pub fn init_with_config(
     verbosity: u8,
+    quiet: u8,
     log_python: bool,
     no_stdout: bool,
     log_path: Option<&str>,
@@ -71,6 +78,10 @@ pub fn init_with_config(
     // Set verbosity level
     if let Ok(mut v) = VERBOSITY.lock() {
         *v = verbosity;
+    }
+
+    if let Ok(mut q) = QUIET.lock() {
+        *q = quiet;
     }
 
     // Set log_python flag
@@ -150,7 +161,16 @@ fn write_to_log_with_source(level: LogLevel, message: &str, source: &str) {
     if level > allowed_level {
         return;
     }
+    write_log_line(message, source);
+}
 
+/// Write a subprocess transcript regardless of the configured log level.
+fn write_to_log_unfiltered(message: &str) {
+    write_log_line(message, "RUST");
+}
+
+fn write_log_line(message: &str, source: &str) {
+    let message = redact_sensitive_text(&sanitize_log_message(message));
     if let Ok(log_file_guard) = LOG_FILE.lock() {
         if let Some(ref log_path) = *log_file_guard {
             let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
@@ -162,6 +182,181 @@ fn write_to_log_with_source(level: LogLevel, message: &str, source: &str) {
             }
         }
     }
+}
+
+/// Redact credentials from command summaries and persisted log messages.
+pub fn redact_sensitive_text(message: &str) -> String {
+    let mut redacted = redact_url_userinfo(message);
+    for key in [
+        "access_token",
+        "refresh_token",
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "api_key",
+        "api-key",
+        "apikey",
+        "private_key",
+        "private-key",
+    ] {
+        redacted = redact_key_value(&redacted, key);
+    }
+    redacted
+}
+
+fn redact_url_userinfo(message: &str) -> String {
+    let mut result = String::with_capacity(message.len());
+    let mut cursor = 0;
+
+    while let Some(relative_scheme_end) = message[cursor..].find("://") {
+        let scheme_end = cursor + relative_scheme_end;
+        let authority_start = scheme_end + 3;
+        let authority_end = message[authority_start..]
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '/' | '?' | '#' | ')' | ']')
+            })
+            .map_or(message.len(), |offset| authority_start + offset);
+        let authority = &message[authority_start..authority_end];
+
+        let Some(userinfo_end) = authority.find('@') else {
+            result.push_str(&message[cursor..authority_end]);
+            cursor = authority_end;
+            continue;
+        };
+        let userinfo = &authority[..userinfo_end];
+        if userinfo == "git" {
+            result.push_str(&message[cursor..authority_end]);
+        } else {
+            result.push_str(&message[cursor..authority_start]);
+            result.push_str("[REDACTED]@");
+            result.push_str(&authority[userinfo_end + 1..]);
+        }
+        cursor = authority_end;
+    }
+
+    result.push_str(&message[cursor..]);
+    result
+}
+
+fn redact_key_value(message: &str, key: &str) -> String {
+    let lower_message = message.to_ascii_lowercase();
+    let mut result = String::with_capacity(message.len());
+    let mut cursor = 0;
+
+    while let Some(relative_key_start) = lower_message[cursor..].find(key) {
+        let key_start = cursor + relative_key_start;
+        let key_end = key_start + key.len();
+        let boundary_before = key_start == 0
+            || !message[..key_start]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+        let boundary_after = key_end == message.len()
+            || !message[key_end..]
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+
+        if !boundary_before || !boundary_after {
+            result.push_str(&message[cursor..key_end]);
+            cursor = key_end;
+            continue;
+        }
+
+        let key_syntax_end = if message[key_end..].starts_with('"') {
+            key_end + 1
+        } else {
+            key_end
+        };
+        let separator_start = message[key_syntax_end..]
+            .find(|character: char| !character.is_ascii_whitespace())
+            .map_or(message.len(), |offset| key_syntax_end + offset);
+        let has_separator = separator_start < message.len()
+            && matches!(message.as_bytes()[separator_start], b'=' | b':');
+        let is_option = message[..key_start].ends_with("--");
+        if !has_separator && !is_option {
+            result.push_str(&message[cursor..key_end]);
+            cursor = key_end;
+            continue;
+        }
+
+        let value_start = if has_separator {
+            message[separator_start + 1..]
+                .find(|character: char| !character.is_ascii_whitespace())
+                .map_or(message.len(), |offset| separator_start + 1 + offset)
+        } else {
+            separator_start
+        };
+        if value_start == message.len() {
+            result.push_str(&message[cursor..key_end]);
+            cursor = key_end;
+            continue;
+        }
+
+        let quoted = matches!(message.as_bytes()[value_start], b'"' | b'\'');
+        let (value_content_start, value_end, closing_quote) = if quoted {
+            let quote = message.as_bytes()[value_start];
+            let content_start = value_start + 1;
+            let content_end = message[content_start..]
+                .find(|character: char| character as u8 == quote)
+                .map_or(message.len(), |offset| content_start + offset);
+            (
+                content_start,
+                content_end,
+                (content_end < message.len()).then_some(quote),
+            )
+        } else {
+            let content_end = message[value_start..]
+                .find(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '&' | ',' | ')' | ']' | '"' | '\'')
+                })
+                .map_or(message.len(), |offset| value_start + offset);
+            (value_start, content_end, None)
+        };
+
+        result.push_str(&message[cursor..value_content_start]);
+        if value_content_start < value_end {
+            result.push_str("[REDACTED]");
+        }
+        if let Some(quote) = closing_quote {
+            result.push(quote as char);
+            cursor = value_end + 1;
+        } else {
+            cursor = value_end;
+        }
+    }
+
+    result.push_str(&message[cursor..]);
+    result
+}
+
+fn sanitize_log_message(message: &str) -> String {
+    let mut sanitized = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            // Drop ANSI CSI sequences, including carriage movement and color.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for sequence_character in chars.by_ref() {
+                    if ('@'..='~').contains(&sequence_character) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if character == '\r' || (character.is_control() && character != '\n' && character != '\t') {
+            continue;
+        }
+        sanitized.push(character);
+    }
+
+    sanitized
 }
 
 fn maybe_rotate_log_file(log_path: &PathBuf, incoming_bytes: u64) {
@@ -195,6 +390,47 @@ pub fn info(message: &str) {
     if get_verbosity() >= 1 {
         eprintln!("{}", message);
     }
+}
+
+/// Emit a user-facing status line on stderr unless quiet output was requested.
+///
+/// Status lines are deliberately separate from [`info`]: normal commands need
+/// to show progress, while informational diagnostics remain controlled by
+/// `-v`.
+pub fn status(message: &str) {
+    let safe_message = redact_sensitive_text(&sanitize_log_message(message));
+    write_to_log(LogLevel::Info, &format!("STATUS {}", safe_message));
+    if get_quiet_level() == 0 {
+        eprintln!("{}", safe_message);
+    }
+}
+
+/// Record a subprocess invocation without copying interactive terminal output into the log.
+pub fn record_command(
+    phase: &str,
+    target: &str,
+    command: &str,
+    status: Option<i32>,
+    elapsed: std::time::Duration,
+) {
+    write_to_log(
+        LogLevel::Info,
+        &format!(
+            "COMMAND phase={phase:?} target={target:?} command={command:?} exit={status:?} elapsed_ms={}",
+            elapsed.as_millis()
+        ),
+    );
+}
+
+/// Record a non-interactive subprocess output chunk after sanitizing it for the log.
+pub fn record_command_output(phase: &str, target: &str, stream: &str, output: &[u8]) {
+    let output = String::from_utf8_lossy(output);
+    if output.is_empty() {
+        return;
+    }
+    write_to_log_unfiltered(&format!(
+        "COMMAND_OUTPUT phase={phase:?} target={target:?} stream={stream:?}:\n{output}"
+    ));
 }
 
 /// Log a debug message (to console if verbose >= 1, always to file)
@@ -236,8 +472,10 @@ pub fn error(message: &str) {
 /// Log a success message (to console only for user feedback)
 pub fn success(message: &str) {
     write_to_log(LogLevel::Info, &format!("SUCCESS {}", message));
-    let check = "\u{2714}".green().bold(); // 🗸 HEAVY CHECK MARK
-    eprintln!("{} {}", check, message);
+    if get_quiet_level() == 0 {
+        let check = "\u{2714}".green().bold(); // 🗸 HEAVY CHECK MARK
+        eprintln!("{} {}", check, message);
+    }
 }
 
 /// Log a step message (important user-facing step)
@@ -246,55 +484,6 @@ pub fn step(message: &str) {
         eprintln!("TRACE: {}", message);
     }
     write_to_log(LogLevel::Info, &format!("STEP: {}", message));
-}
-
-/// Capture command output and log it
-pub fn capture_output(command_name: &str, output: &std::process::Output) {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    write_to_log(
-        LogLevel::Debug,
-        &format!(
-            "COMMAND: {} (exit code: {:?})",
-            command_name,
-            output.status.code()
-        ),
-    );
-
-    if !stdout.is_empty() {
-        write_to_log(LogLevel::Debug, &format!("  STDOUT:\n{}", stdout));
-    }
-
-    if !stderr.is_empty() {
-        write_to_log(LogLevel::Debug, &format!("  STDERR:\n{}", stderr));
-    }
-}
-
-/// Capture command output and always persist it to log file at info level.
-///
-/// This is useful for noisy subprocesses where console output is suppressed
-/// by default but full output should remain available in logs.
-pub fn capture_output_always(command_name: &str, output: &std::process::Output) {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    write_to_log(
-        LogLevel::Info,
-        &format!(
-            "COMMAND: {} (exit code: {:?})",
-            command_name,
-            output.status.code()
-        ),
-    );
-
-    if !stdout.is_empty() {
-        write_to_log(LogLevel::Info, &format!("  STDOUT:\n{}", stdout));
-    }
-
-    if !stderr.is_empty() {
-        write_to_log(LogLevel::Info, &format!("  STDERR:\n{}", stderr));
-    }
 }
 
 /// Get the log file path for display
@@ -354,8 +543,10 @@ pub fn spinner_success(message: &str) {
             spinner.finish_and_clear();
         }
     }
-    // Show success message with checkmark
-    eprintln!("{} {}", "✔".green().bold(), message);
+    // Show success message with checkmark unless quiet output was requested
+    if get_quiet_level() == 0 {
+        eprintln!("{} {}", "✔".green().bold(), message);
+    }
 }
 
 /// Stop the spinner with an error message
@@ -400,6 +591,74 @@ mod tests {
         });
 
         assert!(!called.get());
+    }
+
+    #[test]
+    fn sanitize_log_message_removes_terminal_control_sequences() {
+        assert_eq!(
+            sanitize_log_message("\u{1b}[2K\r\u{1b}[32mready\u{1b}[0m"),
+            "ready"
+        );
+    }
+
+    #[test]
+    fn redact_sensitive_text_removes_url_and_key_value_credentials() {
+        let message = "git+https://user:secret@example.com/pkg?token=abc123";
+        assert_eq!(
+            redact_sensitive_text(message),
+            "git+https://[REDACTED]@example.com/pkg?token=[REDACTED]"
+        );
+        assert_eq!(
+            redact_sensitive_text("git@github.com:org/repo.git"),
+            "git@github.com:org/repo.git"
+        );
+        assert_eq!(
+            redact_sensitive_text(r#"{"token": "abc"} --token secret"#),
+            r#"{"token": "[REDACTED]"} --token [REDACTED]"#
+        );
+        assert_eq!(
+            redact_sensitive_text("--api-key=secret --private-key secret"),
+            "--api-key=[REDACTED] --private-key [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn command_output_is_logged_even_when_file_level_is_error() {
+        let Ok(_guard) = TEST_LOCK.lock() else {
+            return;
+        };
+        let log_path = std::env::temp_dir().join(format!(
+            "r2x-logger-test-{}-{}.log",
+            std::process::id(),
+            "command-output"
+        ));
+        let path_string = log_path.to_string_lossy().to_string();
+        if init_with_config(0, 0, false, false, Some(&path_string), None).is_err() {
+            return;
+        }
+        if let Ok(mut file_level) = FILE_LOG_LEVEL.lock() {
+            *file_level = LogLevel::Error;
+        }
+
+        record_command_output(
+            "Installing",
+            "demo",
+            "stderr",
+            b"\x1b[2K\rpassword=secret\n",
+        );
+
+        let contents = match fs::read_to_string(&log_path) {
+            Ok(contents) => contents,
+            Err(_) => return,
+        };
+        assert!(contents.contains("COMMAND_OUTPUT"));
+        assert!(contents.contains("password=[REDACTED]"));
+        assert!(!contents.contains('\u{1b}'));
+        let _ = fs::remove_file(log_path);
+
+        if let Ok(mut file_level) = FILE_LOG_LEVEL.lock() {
+            *file_level = LogLevel::Info;
+        }
     }
 
     #[test]

@@ -392,6 +392,13 @@ r2x log set --help
 
 Persisted logging defaults can be set with `r2x log set ...`.
 
+Plugin installation and `r2x sync --upgrade` print an immediate phase status to
+stderr and stream uv diagnostics there. uv's progress display is enabled only
+for an interactive terminal; pipes, CI, `NO_COLOR`, and `TERM=dumb` receive
+plain, line-oriented status instead. Use `-q` or `-qq` to suppress status and
+uv informational output, and `-v` or `-vv` to pass diagnostic verbosity through to uv. stdin is
+inherited, so private Git and SSH installs can still prompt for credentials.
+
 ## Architecture
 
 ```mermaid

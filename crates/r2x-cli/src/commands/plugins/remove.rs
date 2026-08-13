@@ -1,6 +1,6 @@
 use crate::commands::plugins::context::PluginContext;
 use crate::plugins::error::PluginError;
-use colored::Colorize;
+use crate::uv;
 use r2x_logger as logger;
 use std::process::Command;
 
@@ -36,19 +36,11 @@ pub fn remove_plugin(package: &str, ctx: &mut PluginContext) -> Result<(), Plugi
         }
     }
 
-    println!(
-        "{}",
-        format!("Uninstalled {} plugin(s)", removed_plugin_count).dimmed()
-    );
-    println!(" {} {}", "-".bold().red(), package.bold());
-
+    logger::status(&format!(
+        "Uninstalled {removed_plugin_count} plugin(s): {package}"
+    ));
     for dep in &orphaned_dependencies {
-        println!(
-            " {} {} {}",
-            "-".bold().red(),
-            dep.bold(),
-            "(dependency)".dimmed()
-        );
+        logger::status(&format!("Uninstalled dependency: {dep}"));
     }
 
     Ok(())
@@ -67,29 +59,14 @@ fn is_package_installed(
 }
 
 fn uninstall_package(uv_path: &str, python_path: &str, package: &str) -> Result<(), PluginError> {
-    logger::debug(&format!(
-        "Running: {} pip uninstall --python {} {}",
-        uv_path, python_path, package
-    ));
-
-    let output = Command::new(uv_path)
-        .args(["pip", "uninstall", "--python", python_path, package])
-        .output()
-        .map_err(|e| {
-            logger::error(&format!("Failed to run pip uninstall: {}", e));
-            PluginError::Io(e)
-        })?;
-
-    logger::capture_output(&format!("uv pip uninstall {}", package), &output);
-
-    if !output.status.success() {
-        logger::error(&format!("pip uninstall failed for package '{}'", package));
-        return Err(PluginError::CommandFailed {
-            command: format!("{} pip uninstall {}", uv_path, package),
-            status: output.status.code(),
-        });
-    }
-
-    logger::info(&format!("Package '{}' uninstalled successfully", package));
-    Ok(())
+    let uninstall_args = vec![
+        "pip".to_string(),
+        "uninstall".to_string(),
+        "--python".to_string(),
+        python_path.to_string(),
+        package.to_string(),
+    ];
+    uv::run(uv_path, "Uninstalling", package, uninstall_args)
+        .map(|_| ())
+        .map_err(PluginError::from)
 }

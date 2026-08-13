@@ -229,6 +229,7 @@ fn main() {
     // Initialize logger with verbosity level, log_python flag, and no_stdout flag
     if let Err(e) = logger::init_with_config(
         cli.global.verbosity_level(),
+        cli.global.quiet,
         effective_log_python,
         effective_no_stdout,
         saved_log_path,
