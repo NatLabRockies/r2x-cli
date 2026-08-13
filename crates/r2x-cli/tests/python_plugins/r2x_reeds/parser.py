@@ -88,3 +88,22 @@ def test_exporter(system):
     if system.data.get("system") != "reeds":
         raise ValueError("expected a ReEDS System")
     return None
+
+
+class ContextExporter:
+    """Context-based exporter that reads System from PluginContext."""
+
+    def __init__(self, context):
+        self.context = context
+
+    @classmethod
+    def from_context(cls, ctx: PluginContext) -> "ContextExporter":
+        """Create exporter instance from a PluginContext."""
+        return cls(ctx)
+
+    def run(self) -> None:
+        """Export using only PluginContext.system and return no output."""
+        system = self.context.system
+        if system is None or getattr(system, "data", {}).get("system") != "reeds":
+            raise ValueError("expected a ReEDS System in PluginContext.system")
+        return None

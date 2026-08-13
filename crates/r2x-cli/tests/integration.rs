@@ -434,6 +434,41 @@ fn test_direct_exporter_consumes_system_without_emitting_json(
 }
 
 #[test]
+fn test_direct_context_exporter_uses_plugin_context_system(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let mut producer = env
+        .std_command()
+        .args(["run", "r2x_reeds.system_with_sidecar"])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let producer_stdout = producer.stdout.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "producer stdout was not captured",
+        )
+    })?;
+    let consumer = env
+        .std_command()
+        .args(["run", "r2x_reeds.context_exporter"])
+        .stdin(Stdio::from(producer_stdout))
+        .output()?;
+
+    assert!(producer.wait()?.success());
+    assert!(
+        consumer.status.success(),
+        "context exporter stderr: {}",
+        String::from_utf8_lossy(&consumer.stderr)
+    );
+    assert!(consumer.stdout.is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn test_direct_plugin_output_materializes_system_sidecars_for_file_input(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Ok(env) = PipelineHarness::new() else {
@@ -1526,6 +1561,14 @@ name = "r2x_reeds.test_exporter"
 type = "function"
 module = "r2x_reeds.parser"
 function_name = "test_exporter"
+
+[[packages.plugins]]
+name = "r2x_reeds.context_exporter"
+type = "class"
+module = "r2x_reeds.parser"
+class_name = "ContextExporter"
+config_class = "ReEDSConfig"
+config_module = "r2x_reeds.parser"
 
 [[packages]]
 name = "r2x-sienna"
