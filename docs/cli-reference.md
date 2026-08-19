@@ -56,7 +56,7 @@ output_folder: ${some_variable}
 
 ### Naming convention for plugin steps
 
-In `pipelines`, each step uses the plugin identifier:
+In `pipelines`, each step uses the fully-qualified plugin identifier:
 
 `<package-name>.<plugin-name>`
 
@@ -69,6 +69,15 @@ Examples:
 - `r2x-plexos.plexos-exporter`
 
 The same identifier must be used as the key under `config`.
+
+When no other installed plugin shares the same name, the short form (plugin name only) is equivalent:
+
+```yaml
+pipelines:
+  r2s:
+    - r2x-reeds.reeds-parser
+    - break-gens        # equivalent to r2x-reeds.break-gens when unambiguous
+```
 
 ## Configuration
 
