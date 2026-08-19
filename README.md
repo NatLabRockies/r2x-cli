@@ -126,8 +126,12 @@ minute.
 Pipelines chain plugins together in a named sequence defined in
 a YAML file. See [Pipeline File Format](#pipeline-file-format)
 for the full spec.
-For ready-to-use translation examples across ReEDS, Sienna, and
-PLEXOS, see [Translation Pipeline Configurations](docs/translation-pipeline-configs.md).
+For ready-to-use translation examples across ReEDS, Sienna, and PLEXOS, see:
+
+- [ReEDS → PLEXOS](docs/r2x-reeds-to-plexos.md)
+- [ReEDS → Sienna](docs/r2x-reeds-to-sienna.md)
+- [Sienna → PLEXOS](docs/r2x-sienna-to-plexos.md)
+- [PLEXOS → Sienna](docs/r2x-plexos-to-sienna.md)
 
 ```bash
 # List available pipelines

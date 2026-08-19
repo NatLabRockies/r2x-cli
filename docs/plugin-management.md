@@ -59,11 +59,10 @@ r2x sync --upgrade
 r2x remove <plugin-name>
 ```
 
-> **Note:** To update a plugin to a specific branch, tag, or git version, you must **remove it first** and then reinstall. Simply re-running `r2x install` on an already-installed plugin will not update it.
+> **Note:** To update a plugin to a specific branch, tag, or git version, use `--no-cache` to bypass cached metadata and force the new ref to be resolved:
 >
 > ```bash
-> r2x remove <plugin-name>
-> r2x install "git+https://github.com/NatLabRockies/<repo-name>.git@<branch-name>"
+> r2x install --no-cache "git+https://github.com/NatLabRockies/<repo-name>.git@<branch-name>"
 > ```
 
 ## Remove All Plugins and Clean Cache
