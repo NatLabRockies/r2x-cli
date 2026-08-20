@@ -218,13 +218,13 @@ pub(crate) fn build_package_spec_with_subdirectory(
         }
         let git_host = host.as_deref().unwrap_or("github.com");
         let url = format!("git+https://{git_host}/{repo_path}");
-        return Ok(add_git_options(&url, branch, tag, commit, subdirectory)?);
+        return add_git_options(&url, branch, tag, commit, subdirectory);
     }
 
     // 3. Any git URL (SSH, HTTPS, HTTP, git+, ssh://)
     if is_git_url(package) {
         let url = normalize_git_url(package);
-        return Ok(add_git_options(&url, branch, tag, commit, subdirectory)?);
+        return add_git_options(&url, branch, tag, commit, subdirectory);
     }
 
     // 4. Bare owner/repo is no longer accepted: require explicit gh:owner/repo.

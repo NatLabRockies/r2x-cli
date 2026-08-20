@@ -37,7 +37,7 @@ pub fn get_quiet_level() -> u8 {
 
 /// Get whether Python logging to console is enabled
 pub fn get_log_python() -> bool {
-    LOG_PYTHON.lock().ok().is_some_and(|v| *v)
+    LOG_PYTHON.lock().is_ok_and(|v| *v)
 }
 
 /// Set whether Python logging to console is enabled
@@ -49,7 +49,7 @@ fn set_log_python(enabled: bool) {
 
 /// Get whether stdout logging is disabled
 pub fn get_no_stdout() -> bool {
-    NO_STDOUT.lock().ok().is_some_and(|v| *v)
+    NO_STDOUT.lock().is_ok_and(|v| *v)
 }
 
 /// Set whether stdout logging is disabled
@@ -446,8 +446,7 @@ pub fn debug_enabled() -> bool {
     get_verbosity() >= 1
         || FILE_LOG_LEVEL
             .lock()
-            .ok()
-            .is_some_and(|level| *level >= LogLevel::Debug)
+            .is_ok_and(|level| *level >= LogLevel::Debug)
 }
 
 /// Log a lazily-built debug message.
