@@ -108,6 +108,10 @@ fn strip_git_ref(url: &str) -> &str {
 ///   - `git+ssh://git@host/org/R2X.git`      → `R2X`
 ///   - `r2x-reeds`                            → `r2x-reeds`
 pub(crate) fn extract_package_name(package: &str) -> Result<String, PluginError> {
+    if let Some(subdirectory) = git_subdirectory_name(package) {
+        return Ok(subdirectory);
+    }
+
     let pkg = strip_git_ref(package);
 
     if let Some(repo_path) = pkg.strip_prefix("gh:") {
@@ -148,6 +152,21 @@ pub(crate) fn extract_package_name(package: &str) -> Result<String, PluginError>
         // For PyPI packages, use as-is
         Ok(pkg.to_string())
     }
+}
+
+fn git_subdirectory_name(package: &str) -> Option<String> {
+    let subdirectory = package
+        .split_once("#subdirectory=")?
+        .1
+        .split('&')
+        .next()?
+        .trim_matches('/');
+
+    subdirectory
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Build package specifier for pip install.
@@ -404,6 +423,14 @@ mod tests {
             extract_package_name("https://github.com/NatLabRockies/R2X.git@v2.0.0")
                 .is_ok_and(|s| s == "R2X")
         );
+    }
+
+    #[test]
+    fn test_extract_name_git_subdirectory() {
+        assert!(extract_package_name(
+            "git+https://github.com/NatLabRockies/R2X.git@main#subdirectory=packages/r2x-reeds-to-plexos"
+        )
+        .is_ok_and(|s| s == "r2x-reeds-to-plexos"));
     }
 
     #[test]
