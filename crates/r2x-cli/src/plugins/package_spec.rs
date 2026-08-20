@@ -179,13 +179,29 @@ pub(crate) fn build_package_spec(
     tag: Option<String>,
     commit: Option<String>,
 ) -> Result<String, PluginError> {
+    build_package_spec_with_subdirectory(package, host, branch, tag, commit, None)
+}
+
+pub(crate) fn build_package_spec_with_subdirectory(
+    package: &str,
+    host: Option<String>,
+    branch: Option<String>,
+    tag: Option<String>,
+    commit: Option<String>,
+    subdirectory: Option<String>,
+) -> Result<String, PluginError> {
     // Expand tilde to home directory (cross-platform)
     let expanded_package = expand_tilde(package);
     let package = expanded_package.as_str();
 
     // 1. Local paths
     if is_local_path(package) {
-        if branch.is_some() || tag.is_some() || commit.is_some() || host.is_some() {
+        if branch.is_some()
+            || tag.is_some()
+            || commit.is_some()
+            || host.is_some()
+            || subdirectory.is_some()
+        {
             return Err(PluginError::PackageSpec(
                 "Cannot use git flags with local paths".to_string(),
             ));
@@ -202,13 +218,13 @@ pub(crate) fn build_package_spec(
         }
         let git_host = host.as_deref().unwrap_or("github.com");
         let url = format!("git+https://{git_host}/{repo_path}");
-        return Ok(add_git_ref(&url, branch, tag, commit));
+        return Ok(add_git_options(&url, branch, tag, commit, subdirectory)?);
     }
 
     // 3. Any git URL (SSH, HTTPS, HTTP, git+, ssh://)
     if is_git_url(package) {
         let url = normalize_git_url(package);
-        return Ok(add_git_ref(&url, branch, tag, commit));
+        return Ok(add_git_options(&url, branch, tag, commit, subdirectory)?);
     }
 
     // 4. Bare owner/repo is no longer accepted: require explicit gh:owner/repo.
@@ -220,7 +236,12 @@ pub(crate) fn build_package_spec(
     }
 
     // 5. PyPI package name
-    if branch.is_some() || tag.is_some() || commit.is_some() || host.is_some() {
+    if branch.is_some()
+        || tag.is_some()
+        || commit.is_some()
+        || host.is_some()
+        || subdirectory.is_some()
+    {
         return Err(PluginError::PackageSpec(
             "Cannot use git flags with PyPI package name".to_string(),
         ));
@@ -235,15 +256,64 @@ fn add_git_ref(
     tag: Option<String>,
     commit: Option<String>,
 ) -> String {
-    if let Some(b) = branch {
-        format!("{url}@{b}")
+    let (base, fragment) = url.split_once('#').unwrap_or((url, ""));
+    let ref_suffix = if let Some(b) = branch {
+        Some(format!("@{b}"))
     } else if let Some(t) = tag {
-        format!("{url}@{t}")
-    } else if let Some(c) = commit {
-        format!("{url}@{c}")
+        Some(format!("@{t}"))
     } else {
-        url.to_string()
+        commit.map(|c| format!("@{c}"))
+    };
+
+    let mut result = base.to_string();
+    if let Some(ref_suffix) = ref_suffix {
+        result.push_str(&ref_suffix);
     }
+    if !fragment.is_empty() {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
+}
+
+fn add_git_options(
+    url: &str,
+    branch: Option<String>,
+    tag: Option<String>,
+    commit: Option<String>,
+    subdirectory: Option<String>,
+) -> Result<String, PluginError> {
+    if let Some(subdirectory) = subdirectory.as_deref() {
+        validate_subdirectory(subdirectory)?;
+        if url.contains("#subdirectory=") {
+            return Err(PluginError::PackageSpec(
+                "Cannot specify --subdirectory when the git URL already contains #subdirectory"
+                    .to_string(),
+            ));
+        }
+    }
+
+    let url = add_git_ref(url, branch, tag, commit);
+    Ok(match subdirectory {
+        Some(subdirectory) => format!("{url}#subdirectory={subdirectory}"),
+        None => url,
+    })
+}
+
+fn validate_subdirectory(subdirectory: &str) -> Result<(), PluginError> {
+    let path = subdirectory.trim_matches('/');
+    if path.is_empty()
+        || subdirectory.starts_with('/')
+        || subdirectory.contains('\\')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(PluginError::PackageSpec(
+            "Git subdirectory must be a non-empty relative repository path".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Expand tilde (~) to home directory path (cross-platform)
@@ -511,6 +581,21 @@ mod tests {
     }
 
     #[test]
+    fn test_spec_gh_with_branch_and_subdirectory() {
+        let result = build_package_spec_with_subdirectory(
+            "gh:NatLabRockies/R2X",
+            None,
+            Some("main".to_string()),
+            None,
+            None,
+            Some("packages/r2x-reeds-to-plexos".to_string()),
+        );
+        assert!(result.is_ok_and(|s| {
+            s == "git+https://github.com/NatLabRockies/R2X@main#subdirectory=packages/r2x-reeds-to-plexos"
+        }));
+    }
+
+    #[test]
     fn test_spec_gh_with_custom_host() {
         let result = build_package_spec(
             "gh:acme/r2x-plugin",
@@ -538,6 +623,52 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_spec_rejects_subdirectory_for_pypi() {
+        assert!(build_package_spec_with_subdirectory(
+            "r2x-reeds",
+            None,
+            None,
+            None,
+            None,
+            Some("packages/r2x-reeds".to_string()),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_spec_rejects_duplicate_subdirectory() {
+        assert!(build_package_spec_with_subdirectory(
+            "https://github.com/NatLabRockies/R2X.git#subdirectory=packages/old",
+            None,
+            None,
+            None,
+            None,
+            Some("packages/r2x-reeds".to_string()),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_spec_rejects_invalid_subdirectory_paths() {
+        for subdirectory in [
+            "",
+            "/packages/plugin",
+            "packages/../plugin",
+            "packages\\plugin",
+        ] {
+            assert!(build_package_spec_with_subdirectory(
+                "gh:NatLabRockies/R2X",
+                None,
+                None,
+                None,
+                None,
+                Some(subdirectory.to_string()),
+            )
+            .is_err());
+        }
     }
 
     #[test]

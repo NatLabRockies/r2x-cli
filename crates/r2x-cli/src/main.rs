@@ -83,6 +83,9 @@ enum Commands {
         /// Install from a git commit hash
         #[arg(long, conflicts_with_all = ["branch", "tag"])]
         commit: Option<String>,
+        /// Install a package from a repository subdirectory
+        #[arg(long)]
+        subdirectory: Option<String>,
     },
     /// Remove a plugin
     Remove { plugin: String },
@@ -273,6 +276,7 @@ fn main() {
             branch,
             tag,
             commit,
+            subdirectory,
         } => match plugin {
             Some(pkg) => {
                 exit_on_plugin_error(with_plugin_context(|ctx| {
@@ -285,6 +289,7 @@ fn main() {
                             branch,
                             tag,
                             commit,
+                            subdirectory,
                         },
                         ctx,
                     )
