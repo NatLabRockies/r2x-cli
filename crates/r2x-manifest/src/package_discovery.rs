@@ -1210,7 +1210,7 @@ my_transform = r2x_transforms.transform:MyTransform
         }
 
         let direct_url = r#"{
-  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+    "url": "ssh://git@github.com/NatLabRockies/r2x-sienna",
   "vcs_info": { "vcs": "git" }
 }"#;
         if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
@@ -1406,7 +1406,7 @@ my_transform = r2x_transforms.transform:MyTransform
         }
 
         let direct_url = r#"{
-  "url": "ssh://git@github.com/NREL-Sienna/r2x-sienna",
+    "url": "ssh://git@github.com/NatLabRockies/r2x-sienna",
   "vcs_info": { "vcs": "git" }
 }"#;
         if fs::write(dist_info.join("direct_url.json"), direct_url).is_err() {
