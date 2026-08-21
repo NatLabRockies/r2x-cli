@@ -8,6 +8,7 @@ power systems modeling ecosystem.
 
 [![CI](https://github.com/NatLabRockies/r2x-cli/actions/workflows/build.yml/badge.svg)](https://github.com/NatLabRockies/r2x-cli/actions/workflows/build.yml)
 [![Release](https://github.com/NatLabRockies/r2x-cli/actions/workflows/release.yml/badge.svg?event=push)](https://github.com/NatLabRockies/r2x-cli/actions/workflows/release.yml)
+[![Documentation](https://img.shields.io/badge/docs-user%20guide-blue)](https://github.com/NatLabRockies/r2x-cli/tree/main/docs)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](./LICENSE.txt)
 
 </div>
@@ -442,7 +443,7 @@ models; and translation packages convert between formats.
 | [R2X](https://github.com/NatLabRockies/R2X) | Translation plugins: ReEDS to PLEXOS, Sienna to PLEXOS, and more |
 | [r2x-reeds](https://github.com/NatLabRockies/r2x-reeds) | ReEDS parser, transform plugins, and component models |
 | [r2x-plexos](https://github.com/NatLabRockies/r2x-plexos) | PLEXOS parser/exporter and component models |
-| [r2x-sienna](https://github.com/NREL-Sienna/r2x-sienna) | Sienna parser/exporter and PowerSystems.jl-compatible models |
+| [r2x-sienna](https://github.com/NatLabRockies/r2x-sienna) | Sienna parser/exporter and PowerSystems.jl-compatible models |
 | [infrasys](https://github.com/NatLabRockies/infrasys) | Foundational `System` container, time series management, and component storage |
 | [plexosdb](https://github.com/NatLabRockies/plexosdb) | Standalone PLEXOS XML database reader/writer |
 

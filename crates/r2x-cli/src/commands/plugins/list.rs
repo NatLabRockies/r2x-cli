@@ -531,7 +531,7 @@ mod tests {
         }
         if fs::write(
             dist_info.join("direct_url.json"),
-            r#"{"url":"ssh://git@github.com/NREL-Sienna/r2x-sienna","vcs_info":{"vcs":"git"}}"#,
+            r#"{"url":"ssh://git@github.com/NatLabRockies/r2x-sienna","vcs_info":{"vcs":"git"}}"#,
         )
         .is_err()
         {

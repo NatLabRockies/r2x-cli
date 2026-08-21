@@ -1349,8 +1349,7 @@ fn method_stdin_support(method: &pyo3::Bound<'_, PyAny>) -> PyResult<StdinSignat
     let usable = (argcount + kwonly_argcount).min(varnames.len());
     let start_index = method
         .getattr("__self__")
-        .ok()
-        .is_some_and(|bound_self| !bound_self.is_none());
+        .is_ok_and(|bound_self| !bound_self.is_none());
     let start_index = usize::from(start_index);
 
     if usable <= start_index {
