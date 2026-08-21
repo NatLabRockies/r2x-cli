@@ -108,10 +108,6 @@ fn strip_git_ref(url: &str) -> &str {
 ///   - `git+ssh://git@host/org/R2X.git`      → `R2X`
 ///   - `r2x-reeds`                            → `r2x-reeds`
 pub(crate) fn extract_package_name(package: &str) -> Result<String, PluginError> {
-    if let Some(subdirectory) = git_subdirectory_name(package) {
-        return Ok(subdirectory);
-    }
-
     let pkg = strip_git_ref(package);
 
     if let Some(repo_path) = pkg.strip_prefix("gh:") {
@@ -154,19 +150,8 @@ pub(crate) fn extract_package_name(package: &str) -> Result<String, PluginError>
     }
 }
 
-fn git_subdirectory_name(package: &str) -> Option<String> {
-    let subdirectory = package
-        .split_once("#subdirectory=")?
-        .1
-        .split('&')
-        .next()?
-        .trim_matches('/');
-
-    subdirectory
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-        .map(ToString::to_string)
+pub(crate) fn has_git_subdirectory(package: &str) -> bool {
+    package.contains("#subdirectory=")
 }
 
 /// Build package specifier for pip install.
@@ -285,9 +270,9 @@ fn add_git_options(
 ) -> Result<String, PluginError> {
     if let Some(subdirectory) = subdirectory.as_deref() {
         validate_subdirectory(subdirectory)?;
-        if url.contains("#subdirectory=") {
+        if url.contains('#') {
             return Err(PluginError::PackageSpec(
-                "Cannot specify --subdirectory when the git URL already contains #subdirectory"
+                "Cannot specify --subdirectory when the git URL already contains a fragment"
                     .to_string(),
             ));
         }
@@ -304,7 +289,9 @@ fn validate_subdirectory(subdirectory: &str) -> Result<(), PluginError> {
     let path = subdirectory.trim_matches('/');
     if path.is_empty()
         || subdirectory.starts_with('/')
-        || subdirectory.contains('\\')
+        || subdirectory
+            .chars()
+            .any(|character| matches!(character, '\\' | '#' | '&' | '?' | '=' | '%'))
         || path
             .split('/')
             .any(|component| component.is_empty() || component == "." || component == "..")
@@ -500,7 +487,7 @@ mod tests {
         assert!(extract_package_name(
             "git+https://github.com/NatLabRockies/R2X.git@main#subdirectory=packages/r2x-reeds-to-plexos"
         )
-        .is_ok_and(|s| s == "r2x-reeds-to-plexos"));
+        .is_ok_and(|s| s == "R2X"));
     }
 
     #[test]
@@ -652,12 +639,30 @@ mod tests {
     }
 
     #[test]
+    fn test_spec_rejects_existing_fragment_with_subdirectory() {
+        assert!(build_package_spec_with_subdirectory(
+            "https://github.com/NatLabRockies/R2X.git#egg=repo",
+            None,
+            None,
+            None,
+            None,
+            Some("packages/plugin".to_string()),
+        )
+        .is_err());
+    }
+
+    #[test]
     fn test_spec_rejects_invalid_subdirectory_paths() {
         for subdirectory in [
             "",
             "/packages/plugin",
             "packages/../plugin",
             "packages\\plugin",
+            "packages/plugin#name",
+            "packages/plugin&name",
+            "packages/plugin?name",
+            "packages/plugin=name",
+            "packages/plugin%2Fname",
         ] {
             assert!(build_package_spec_with_subdirectory(
                 "gh:NatLabRockies/R2X",

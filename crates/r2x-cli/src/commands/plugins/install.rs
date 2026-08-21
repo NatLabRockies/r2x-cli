@@ -61,7 +61,12 @@ pub fn install_plugin(
         return discover_all_installed_packages(ctx, true, total_start);
     }
 
-    let package_name_for_query = extract_package_name(&package_spec)?;
+    let package_name_for_query =
+        if crate::plugins::package_spec::has_git_subdirectory(&package_spec) {
+            None
+        } else {
+            Some(extract_package_name(&package_spec)?)
+        };
 
     let can_reuse_installed_package = !editable
         && !crate::plugins::package_spec::is_git_url(&package_spec)
@@ -70,23 +75,27 @@ pub fn install_plugin(
     let installed_info = if no_cache || !can_reuse_installed_package {
         None
     } else {
-        get_package_info(&ctx.uv_path, &ctx.python_path, &package_name_for_query).ok()
+        package_name_for_query
+            .as_deref()
+            .and_then(|name| get_package_info(&ctx.uv_path, &ctx.python_path, name).ok())
     };
     let is_already_installed = installed_info.as_ref().is_some_and(|(version, _deps)| {
-        ctx.manifest
-            .get_package(&package_name_for_query)
-            .is_some_and(|pkg| {
-                let version_matches = version
-                    .as_deref()
-                    .is_some_and(|installed_version| pkg.version.as_ref() == installed_version);
-                !pkg.plugins.is_empty() && version_matches
+        package_name_for_query
+            .as_deref()
+            .is_some_and(|package_name| {
+                ctx.manifest.get_package(package_name).is_some_and(|pkg| {
+                    let version_matches = version
+                        .as_deref()
+                        .is_some_and(|installed_version| pkg.version.as_ref() == installed_version);
+                    !pkg.plugins.is_empty() && version_matches
+                })
             })
     });
 
     if is_already_installed {
         logger::debug(&format!(
             "Package '{}' already installed and registered (check took {:?}); refreshing plugin metadata",
-            package_name_for_query,
+            package_name_for_query.as_deref().unwrap_or_default(),
             check_start.elapsed()
         ));
     } else {
@@ -108,6 +117,14 @@ pub fn install_plugin(
         // locator cache so entry_points.txt discovery can see newly installed packages.
         ctx.refresh_locator()?;
     }
+
+    let package_name_for_query = package_name_for_query
+        .or_else(|| ctx.locator.find_distribution_for_source(&package_spec))
+        .ok_or_else(|| {
+            PluginError::Locator(format!(
+                "Failed to resolve installed distribution for Git source: {package_spec}"
+            ))
+        })?;
 
     let start = std::time::Instant::now();
     let (package_version, dependencies) = if is_already_installed {

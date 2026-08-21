@@ -237,6 +237,34 @@ impl PackageLocator {
             .clone()
     }
 
+    /// Find the installed distribution name for a Git source with an optional
+    /// revision and subdirectory.
+    pub fn find_distribution_for_source(&self, source: &str) -> Option<String> {
+        let expected_url = normalized_git_url(source)?;
+        let expected_revision = git_revision(source);
+        let expected_subdirectory = git_subdirectory(source);
+
+        for (filename, dist_info_path) in self.dir_entries() {
+            if !filename.ends_with(".dist-info") {
+                continue;
+            }
+
+            let Some(metadata) = Self::direct_url_metadata_for_path(dist_info_path) else {
+                continue;
+            };
+            if normalized_git_url(&metadata.url).as_deref() != Some(expected_url.as_str())
+                || metadata.subdirectory.as_deref() != expected_subdirectory.as_deref()
+                || !revision_matches(expected_revision.as_deref(), metadata.vcs_info.as_ref())
+            {
+                continue;
+            }
+
+            return distribution_name(dist_info_path);
+        }
+
+        None
+    }
+
     /// Locate a package root suitable for AST discovery.
     pub fn find_package_path(&self, package_name_full: &str) -> Result<PathBuf> {
         let normalized = package_name_full.replace('-', "_");
@@ -342,6 +370,10 @@ impl PackageLocator {
 
     fn direct_url_metadata(&self, package_name: &str) -> Option<DirectUrlMetadata> {
         let dist_info = self.find_dist_info_path(package_name)?;
+        Self::direct_url_metadata_for_path(&dist_info)
+    }
+
+    fn direct_url_metadata_for_path(dist_info: &Path) -> Option<DirectUrlMetadata> {
         let direct_url_path = dist_info.join("direct_url.json");
         let content = fs::read_to_string(&direct_url_path).ok()?;
         serde_json::from_str(&content).ok()
@@ -359,6 +391,63 @@ impl PackageLocator {
 
         PackageSource::Pypi
     }
+}
+
+fn distribution_name(dist_info_path: &Path) -> Option<String> {
+    let metadata = fs::read_to_string(dist_info_path.join("METADATA")).ok()?;
+    metadata
+        .lines()
+        .find_map(|line| line.strip_prefix("Name: "))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalized_git_url(source: &str) -> Option<String> {
+    let source = source.split('#').next()?;
+    let source = source.strip_prefix("git+").unwrap_or(source);
+    let source = if let Some(rest) = source.strip_prefix("git@") {
+        rest.replacen(':', "/", 1)
+    } else {
+        let source = source
+            .strip_prefix("https://")
+            .or_else(|| source.strip_prefix("http://"))
+            .or_else(|| source.strip_prefix("ssh://"))
+            .unwrap_or(source);
+        source
+            .strip_prefix("git@")
+            .map_or_else(|| source.to_string(), |rest| rest.replace(':', "/"))
+    };
+    let repository = source.split('@').next().unwrap_or(&source);
+    Some(repository.trim_end_matches(".git").to_ascii_lowercase())
+}
+
+fn git_revision(source: &str) -> Option<String> {
+    let source = source.split('#').next()?;
+    let protocol_end = source.find("://")?;
+    let path_start = protocol_end + 3 + source[protocol_end + 3..].find('/')?;
+    let at = source[path_start..].rfind('@')? + path_start;
+    let revision = &source[at + 1..];
+    (!revision.is_empty()).then(|| revision.to_string())
+}
+
+fn git_subdirectory(source: &str) -> Option<String> {
+    source
+        .split_once("#subdirectory=")?
+        .1
+        .split('&')
+        .next()
+        .map(ToString::to_string)
+}
+
+fn revision_matches(expected: Option<&str>, actual: Option<&DirectUrlVcsInfo>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    actual.is_some_and(|actual| {
+        actual.requested_revision.as_deref() == Some(expected)
+            || actual.commit_id.as_deref() == Some(expected)
+    })
 }
 
 /// Information about a discovered r2x package
@@ -1235,6 +1324,44 @@ my_transform = r2x_transforms.transform:MyTransform
                 "git+ssh://git@github.com/NatLabRockies/R2X.git@v2.0.0#subdirectory=packages/r2x-reeds-to-sienna"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn test_find_distribution_for_source_uses_metadata_name() {
+        let Ok(temp_dir) = TempDir::new() else {
+            return;
+        };
+        let site_packages = temp_dir.path();
+        let dist_info = site_packages.join("plugin_alias-0.0.0.dist-info");
+        if fs::create_dir(&dist_info).is_err() {
+            return;
+        }
+
+        let direct_url = r#"{
+  "url": "git@github.com:NatLabRockies/R2X.git",
+  "vcs_info": { "vcs": "git", "requested_revision": "main" },
+  "subdirectory": "packages/plugin-dir"
+}"#;
+        if fs::write(dist_info.join("direct_url.json"), direct_url).is_err()
+            || fs::write(
+                dist_info.join("METADATA"),
+                "Name: plugin-alias\nVersion: 0.0.0\n",
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        let Ok(locator) = PackageLocator::new(site_packages.to_path_buf()) else {
+            return;
+        };
+
+        assert_eq!(
+            locator.find_distribution_for_source(
+                "git+https://github.com/NatLabRockies/R2X.git@main#subdirectory=packages/plugin-dir"
+            ),
+            Some("plugin-alias".to_string())
         );
     }
 
