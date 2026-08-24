@@ -164,7 +164,7 @@ impl PluginCommand {
     /// Clap stops parsing named fields after a trailing positional argument
     /// begins, so `--pdb` can otherwise be forwarded as plugin configuration
     /// when it follows a plugin-specific option.
-    pub(crate) fn promote_pdb_arg(&mut self) {
+    fn promote_pdb_arg(&mut self) {
         if self.args.iter().any(|arg| arg == "--pdb") {
             self.pdb = true;
             self.args.retain(|arg| arg != "--pdb");

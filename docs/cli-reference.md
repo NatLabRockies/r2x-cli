@@ -25,15 +25,29 @@ The `<pipeline-name>` is the key under the `pipelines` entry in the YAML file.
 | `--list` | List all pipelines defined in the YAML file |
 | `--print` | Print the resolved pipeline config without running |
 | `-o <file>` | Write output to a file instead of stdout |
+| `--pdb` | Enter post-mortem PDB on an uncaught plugin exception (interactive terminals only) |
 
 ### Run a single plugin directly
 
 ```bash
 r2x run plugin <plugin-name>               # run with interactive config
 r2x run plugin <plugin-name> --show-help   # show plugin-specific help
+r2x run plugin <plugin-name> --pdb --input input.json  # debug an uncaught exception
 r2x run plugin <plugin-name> --benchmark   # print benchmark summary
 r2x run plugin <plugin-name> --repeat <N>  # run N times
 ```
+
+## Post-mortem debugging
+
+Pass `--pdb` to a direct plugin or pipeline run to enter Python's
+post-mortem debugger for an uncaught plugin exception. In a pipeline, the
+failure is debugged in the failing plugin and the pipeline stops there.
+Continue or quit PDB to return the original failure and nonzero exit status.
+
+`--pdb` requires an interactive stdin and stderr and fails immediately in
+piped or CI execution. Debugger prompts are written to stderr. For direct
+plugin debugging, prefer `--input FILE` so stdin remains available for PDB
+commands. Exceptions caught by plugin code do not start a debugger.
 
 ## Pipeline YAML Structure
 

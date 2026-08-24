@@ -189,6 +189,13 @@ r2x run r2x-reeds.add-pcm-defaults \
   -i artifacts/system.json \
   --pcm-defaults-fpath config/pcm_defaults.json
 
+# Debug an uncaught plugin exception in an interactive post-mortem PDB session
+# Use --input FILE for a durable input so stdin remains available to PDB
+r2x run plugin <plugin-name> --pdb --input input.json
+
+# Debug the failing step in a pipeline
+r2x run pipeline.yaml my-pipeline --pdb
+
 # Show a plugin's help
 r2x run plugin r2x-reeds.reeds-parser --show-help
 
@@ -216,6 +223,13 @@ export R2X_BENCHMARK_REGRESSION_PCT=15
 # List all runnable plugins
 r2x run plugin
 ```
+
+Use `--pdb` only from an interactive terminal. It opens Python's post-mortem
+pdb for uncaught plugin exceptions, including failures in a pipeline, and
+returns the original plugin error after `continue` or `quit`. Debugger prompts
+are written to stderr. Noninteractive or piped invocations fail immediately;
+when debugging interactively, prefer `--input FILE` so stdin remains available
+for PDB commands.
 
 Without `-o`, System JSON on stdout embeds an absolute r2x sidecar location,
 so it is safe to pass to the next command in the same shell job. With `-o`,
