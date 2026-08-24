@@ -8,14 +8,21 @@ use r2x_logger as logger;
 use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_manifest::types::Plugin;
-use r2x_python::plugin_invoker::{PluginInput, PluginInvocationOutput, PluginInvocationResult};
+use r2x_python::plugin_invoker::{
+    PluginInput, PluginInvocationOptions, PluginInvocationOutput, PluginInvocationResult,
+};
 use r2x_python::python_bridge::Bridge;
 use std::collections::BTreeSet;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Result<(), RunError> {
+pub(super) fn handle_plugin_command(
+    mut cmd: PluginCommand,
+    opts: &GlobalOpts,
+) -> Result<(), RunError> {
+    cmd.promote_pdb_arg();
+
     match cmd.plugin_name {
         Some(plugin_name) => {
             if cmd.show_help {
@@ -26,10 +33,13 @@ pub(super) fn handle_plugin_command(cmd: PluginCommand, opts: &GlobalOpts) -> Re
                     &plugin_name,
                     &cmd.args,
                     opts,
-                    cmd.input,
-                    cmd.output,
-                    cmd.repeat.get(),
-                    cmd.benchmark,
+                    PluginRunOptions {
+                        input_file: cmd.input,
+                        output_file: cmd.output,
+                        repeat: cmd.repeat.get(),
+                        benchmark: cmd.benchmark,
+                        pdb: cmd.pdb,
+                    },
                 )?;
             }
         }
@@ -52,15 +62,35 @@ fn list_available_plugins() -> Result<(), RunError> {
     Ok(())
 }
 
-fn run_plugin(
-    plugin_name: &str,
-    args: &[String],
-    opts: &GlobalOpts,
+struct PluginRunOptions {
     input_file: Option<PathBuf>,
     output_file: Option<PathBuf>,
     repeat: usize,
     benchmark: bool,
+    pdb: bool,
+}
+
+fn run_plugin(
+    plugin_name: &str,
+    args: &[String],
+    opts: &GlobalOpts,
+    run_options: PluginRunOptions,
 ) -> Result<(), RunError> {
+    let PluginRunOptions {
+        input_file,
+        output_file,
+        repeat,
+        benchmark,
+        pdb,
+    } = run_options;
+
+    if pdb && !interactive_debugger_terminal() {
+        return Err(RunError::InvalidArgs(
+            "--pdb requires an interactive terminal on stdin and stderr; do not use it in a piped or CI invocation"
+                .to_string(),
+        ));
+    }
+
     logger::step(&format!("Running plugin: {}", plugin_name));
     logger::debug(&format!("Received args: {:?}", args));
 
@@ -117,6 +147,7 @@ fn run_plugin(
             invocation_input,
             invocation_output,
             Some(plugin),
+            PluginInvocationOptions { pdb },
         );
         let elapsed = start.elapsed();
         total_elapsed += elapsed;
@@ -272,6 +303,10 @@ fn read_plugin_input(input_file: Option<&Path>) -> Result<Option<PluginInputSour
     }
 
     Ok(stdin.map(PluginInputSource::Stdin))
+}
+
+fn interactive_debugger_terminal() -> bool {
+    io::stdin().is_terminal() && io::stderr().is_terminal()
 }
 
 fn read_piped_stdin() -> Result<Option<String>, RunError> {
@@ -586,7 +621,40 @@ fn parse_json_value(value_str: &str) -> Result<serde_json::Value, RunError> {
 
 #[cfg(test)]
 mod tests {
+    use super::PluginCommand;
     use crate::commands::run::plugin::{parse_plugin_args, PluginArgumentSpec};
+    use clap::Parser;
+
+    #[test]
+    fn parses_pdb_after_plugin_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let mut command = PluginCommand::try_parse_from([
+            "r2x run plugin",
+            "plugin-name",
+            "--solve-year",
+            "2030",
+            "--pdb",
+        ])?;
+
+        assert!(!command.pdb);
+        command.promote_pdb_arg();
+        assert!(command.pdb);
+        assert_eq!(command.args, ["--solve-year", "2030"]);
+
+        let command = PluginCommand::try_parse_from([
+            "r2x run plugin",
+            "plugin-name",
+            "--pdb",
+            "--input",
+            "input.json",
+        ])?;
+        assert!(command.pdb);
+        assert_eq!(
+            command.input.as_deref(),
+            Some(std::path::Path::new("input.json"))
+        );
+        assert!(command.args.is_empty());
+        Ok(())
+    }
 
     fn spec() -> PluginArgumentSpec {
         PluginArgumentSpec::for_test(

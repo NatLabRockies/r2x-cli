@@ -181,7 +181,31 @@ fn test_plugins_help() {
         .stdout(predicate::str::contains("--input <FILE>"))
         .stdout(predicate::str::contains("--output <FILE>"))
         .stdout(predicate::str::contains("--repeat"))
-        .stdout(predicate::str::contains("--benchmark"));
+        .stdout(predicate::str::contains("--benchmark"))
+        .stdout(predicate::str::contains("--pdb"));
+}
+
+#[test]
+fn test_pdb_rejects_noninteractive_invocation() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    env.command()
+        .args(["run", "plugin", "r2x_reeds.no_stdin_function", "--pdb"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--pdb requires an interactive terminal",
+        ));
+
+    env.command()
+        .args(["run", &env.reeds_pipeline(), "reeds-test", "--pdb"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--pdb requires an interactive terminal",
+        ));
 }
 
 #[test]

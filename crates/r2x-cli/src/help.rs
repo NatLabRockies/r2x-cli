@@ -41,10 +41,14 @@ pub(crate) fn show_run_help() -> Result<(), String> {
     println!("  Run a plugin directly:");
     println!("    r2x run <plugin-name> [OPTIONS]");
     println!("      (use -i/--input for a durable System, -o/--output to persist one)");
+    println!("      (use --pdb for interactive post-mortem debugging; prefer --input FILE)");
     println!("      (use `r2x run plugin <plugin-name>` for the legacy explicit form)");
     println!();
     println!("  Get plugin help:");
     println!("    r2x run <plugin-name> --show-help");
+    println!();
+    println!("  Debug a failing pipeline step:");
+    println!("    r2x run <pipeline.yaml> <pipeline-name> --pdb");
     println!();
     println!("  List pipelines in YAML:");
     println!("    r2x run <pipeline.yaml> --list");

@@ -10,10 +10,11 @@ use r2x_logger as logger;
 use r2x_manifest::runtime::build_runtime_bindings;
 use r2x_manifest::types::Manifest;
 use r2x_python::plugin_invoker::{
-    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInvocationOutput,
-    PluginInvocationResult, PluginInvocationTimings,
+    ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInvocationOptions,
+    PluginInvocationOutput, PluginInvocationResult, PluginInvocationTimings,
 };
 use r2x_python::python_bridge::Bridge;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Instant;
 
@@ -58,6 +59,7 @@ pub(super) struct PipelineModeOptions {
     pub dry_run: bool,
     pub output: Option<String>,
     pub zip_output: bool,
+    pub pdb: bool,
 }
 
 pub(super) fn handle_pipeline_mode(
@@ -94,6 +96,7 @@ pub(super) fn handle_pipeline_mode(
                 &name,
                 options.output.as_deref(),
                 options.zip_output,
+                options.pdb,
                 opts,
             )?;
         }
@@ -176,9 +179,17 @@ fn run_pipeline(
     pipeline_name: &str,
     output_file: Option<&str>,
     zip_output: bool,
+    pdb: bool,
     opts: &GlobalOpts,
 ) -> Result<(), RunError> {
-    let execution = execute_pipeline(config, pipeline_name, opts)?;
+    if pdb && !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return Err(RunError::InvalidArgs(
+            "--pdb requires an interactive terminal on stdin and stderr; do not use it in a piped or CI invocation"
+                .to_string(),
+        ));
+    }
+
+    let execution = execute_pipeline(config, pipeline_name, pdb, opts)?;
     write_pipeline_output(
         execution.final_payload.as_ref(),
         output_file,
@@ -190,6 +201,7 @@ fn run_pipeline(
 fn execute_pipeline(
     config: &PipelineConfig,
     pipeline_name: &str,
+    pdb: bool,
     opts: &GlobalOpts,
 ) -> Result<PipelineExecution, RunError> {
     let pipeline = config
@@ -300,13 +312,20 @@ fn execute_pipeline(
                     &final_config_json,
                     Some(input),
                     Some(&bindings),
+                    PluginInvocationOptions { pdb },
                 )
                 .map(PipelineInvocation::Inline),
             Some(PipelinePayload::Artifact(_))
                 if bindings.role == r2x_manifest::runtime::PluginRole::Upgrader =>
             {
                 bridge
-                    .invoke_plugin_with_bindings(&target, &final_config_json, None, Some(&bindings))
+                    .invoke_plugin_with_bindings(
+                        &target,
+                        &final_config_json,
+                        None,
+                        Some(&bindings),
+                        PluginInvocationOptions { pdb },
+                    )
                     .map(PipelineInvocation::Inline)
             }
             Some(PipelinePayload::Artifact(input)) => bridge
@@ -316,10 +335,17 @@ fn execute_pipeline(
                     Some(input),
                     &output_artifact,
                     Some(&bindings),
+                    PluginInvocationOptions { pdb },
                 )
                 .map(PipelineInvocation::Artifact),
             None if bindings.role == r2x_manifest::runtime::PluginRole::Upgrader => bridge
-                .invoke_plugin_with_bindings(&target, &final_config_json, None, Some(&bindings))
+                .invoke_plugin_with_bindings(
+                    &target,
+                    &final_config_json,
+                    None,
+                    Some(&bindings),
+                    PluginInvocationOptions { pdb },
+                )
                 .map(PipelineInvocation::Inline),
             None => bridge
                 .invoke_plugin_with_artifact_bindings(
@@ -328,6 +354,7 @@ fn execute_pipeline(
                     None,
                     &output_artifact,
                     Some(&bindings),
+                    PluginInvocationOptions { pdb },
                 )
                 .map(PipelineInvocation::Artifact),
         };

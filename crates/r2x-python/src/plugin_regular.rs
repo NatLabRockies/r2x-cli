@@ -3,7 +3,8 @@
 use crate::errors::BridgeError;
 use crate::plugin_invoker::{
     ArtifactBundle, ArtifactOutputKind, PluginArtifactInvocationResult, PluginInput,
-    PluginInvocationOutput, PluginInvocationResult, PluginInvocationTimings,
+    PluginInvocationOptions, PluginInvocationOutput, PluginInvocationResult,
+    PluginInvocationTimings,
 };
 use crate::python_bridge::Bridge;
 use once_cell::sync::Lazy;
@@ -12,6 +13,7 @@ use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyModule}
 use pyo3::{Bound, PyResult};
 use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -191,6 +193,60 @@ struct RegularInvocationOptions<'a> {
     output_path: Option<&'a Path>,
     reject_unused_input: bool,
     redirect_plugin_stdout: bool,
+    pdb: bool,
+}
+
+thread_local! {
+    static POST_MORTEM_ENABLED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct PostMortemGuard {
+    previous: bool,
+}
+
+impl PostMortemGuard {
+    pub(crate) fn new(enabled: bool) -> Self {
+        let previous = POST_MORTEM_ENABLED.with(|state| {
+            let previous = state.get();
+            state.set(enabled);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for PostMortemGuard {
+    fn drop(&mut self) {
+        POST_MORTEM_ENABLED.with(|state| state.set(self.previous));
+    }
+}
+
+fn post_mortem_enabled() -> bool {
+    POST_MORTEM_ENABLED.with(Cell::get)
+}
+
+fn enter_post_mortem(py: pyo3::Python<'_>, traceback: &Bound<'_, PyAny>) {
+    if !post_mortem_enabled() {
+        return;
+    }
+
+    let result = (|| -> PyResult<()> {
+        let pdb = PyModule::import(py, "pdb")?;
+        let _debugger_stdout = StdoutGuard::redirect_to_stderr(py)
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+
+        // `pdb.post_mortem` raises `bdb.BdbQuit` for the debugger's `quit`
+        // command. Ignore debugger errors so the original plugin exception is
+        // always formatted and returned to the CLI.
+        if let Err(error) = pdb.getattr("post_mortem")?.call1((traceback,)) {
+            logger::debug_lazy(|| format!("Post-mortem debugger ended: {error}"));
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        logger::debug_lazy(|| format!("Post-mortem debugger ended: {error}"));
+    }
 }
 
 fn input_system<'py>(
@@ -331,6 +387,7 @@ impl Bridge {
         config_json: &str,
         stdin_json: Option<&str>,
         runtime_bindings: Option<&RuntimeBindings>,
+        options: PluginInvocationOptions,
     ) -> Result<PluginInvocationResult, BridgeError> {
         self.invoke_plugin_regular_with_options(
             target,
@@ -341,6 +398,7 @@ impl Bridge {
                 output_path: None,
                 reject_unused_input: false,
                 redirect_plugin_stdout: false,
+                pdb: options.pdb,
             },
         )
     }
@@ -352,6 +410,7 @@ impl Bridge {
         input: Option<PluginInput<'_>>,
         output_path: Option<&Path>,
         runtime_bindings: Option<&RuntimeBindings>,
+        options: PluginInvocationOptions,
     ) -> Result<PluginInvocationResult, BridgeError> {
         self.invoke_plugin_regular_with_options(
             target,
@@ -362,6 +421,7 @@ impl Bridge {
                 output_path,
                 reject_unused_input: true,
                 redirect_plugin_stdout: true,
+                pdb: options.pdb,
             },
         )
     }
@@ -374,6 +434,7 @@ impl Bridge {
         options: RegularInvocationOptions<'_>,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
+            let _post_mortem = PostMortemGuard::new(options.pdb);
             let _guard = if logger::get_no_stdout() {
                 StdoutGuard::new(py, true)?
             } else if options.redirect_plugin_stdout {
@@ -644,8 +705,10 @@ impl Bridge {
         input: Option<&ArtifactBundle>,
         output: &ArtifactBundle,
         runtime_bindings: Option<&RuntimeBindings>,
+        options: PluginInvocationOptions,
     ) -> Result<PluginArtifactInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
+            let _post_mortem = PostMortemGuard::new(options.pdb);
             let _guard = StdoutGuard::new(py, logger::get_no_stdout())?;
 
             let parts: Vec<&str> = target.split(':').collect();
@@ -1265,6 +1328,9 @@ fn format_duration(duration: Duration) -> String {
 /// This function extracts the traceback from a `PyErr` and formats it
 /// into a human-readable string with context.
 pub(crate) fn format_python_error(py: pyo3::Python<'_>, err: pyo3::PyErr, context: &str) -> String {
+    if let Some(traceback) = err.traceback(py) {
+        enter_post_mortem(py, traceback.as_any());
+    }
     if let Some(traceback_text) = render_traceback(py, &err) {
         format!("{}:\n{}", context, traceback_text)
     } else {
@@ -1321,6 +1387,20 @@ fn format_exception_value(py: pyo3::Python<'_>, exc_value: &Bound<'_, PyAny>) ->
 /// Falls back to the legacy `format_exception_value()` path if
 /// `format_error()` is unavailable (older rust-ok versions).
 pub(crate) fn format_err_result(py: pyo3::Python<'_>, err_result: &Bound<'_, PyAny>) -> String {
+    let err_value = err_result
+        .getattr("error")
+        .or_else(|_| err_result.getattr("err_value"))
+        .or_else(|_| err_result.getattr("value"))
+        .ok();
+
+    if let Some(err_value) = err_value.as_ref() {
+        if let Ok(traceback) = err_value.getattr("__traceback__") {
+            if !traceback.is_none() {
+                enter_post_mortem(py, &traceback);
+            }
+        }
+    }
+
     if let Ok(formatted) = err_result.call_method0("format_error") {
         if let Ok(text) = formatted.extract::<String>() {
             if !text.is_empty() {
@@ -1330,14 +1410,9 @@ pub(crate) fn format_err_result(py: pyo3::Python<'_>, err_result: &Bound<'_, PyA
     }
 
     // Fallback for older rust-ok versions without format_error()
-    let err_value = err_result
-        .getattr("error")
-        .or_else(|_| err_result.getattr("err_value"))
-        .or_else(|_| err_result.getattr("value"));
-
     match err_value {
-        Ok(val) => format_exception_value(py, &val),
-        Err(_) => format!("Plugin returned Err: {}", err_result),
+        Some(val) => format_exception_value(py, &val),
+        None => format!("Plugin returned Err: {}", err_result),
     }
 }
 
@@ -1541,14 +1616,18 @@ mod tests {
         should_parse_stdin_for_function_kwargs, stdin_payload_bytes, PythonJson,
     };
     use crate::plugin_invoker::{
-        ArtifactBundle, ArtifactOutputKind, PluginInput, PluginInvocationOutput,
+        ArtifactBundle, ArtifactOutputKind, PluginInput, PluginInvocationOptions,
+        PluginInvocationOutput,
     };
     use crate::python_bridge::Bridge;
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyModule};
     use r2x_manifest::runtime::RuntimeBindings;
     use r2x_manifest::types::Parameter;
     use std::ffi::CString;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static POST_MORTEM_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn install_module<'py>(
         py: pyo3::Python<'py>,
@@ -1574,6 +1653,114 @@ mod tests {
             .set_item(name, &module)
             .map_err(|error| error.to_string())?;
         Ok(module)
+    }
+
+    #[test]
+    fn post_mortem_debugger_receives_traceback_and_writes_to_stderr() -> Result<(), String> {
+        let _lock = POST_MORTEM_TEST_LOCK
+            .lock()
+            .map_err(|error| error.to_string())?;
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| -> Result<(), String> {
+            let fake_pdb = install_module(
+                py,
+                "pdb",
+                r"
+called = False
+calls = 0
+stdout_was_stderr = False
+
+def post_mortem(traceback):
+    global called, calls, stdout_was_stderr
+    import sys
+    called = traceback is not None
+    calls += 1
+    stdout_was_stderr = sys.stdout is sys.stderr
+    raise RuntimeError('debugger quit')
+",
+            )?;
+            let sys = PyModule::import(py, "sys").map_err(|error| error.to_string())?;
+            let modules_obj = sys.getattr("modules").map_err(|error| error.to_string())?;
+            let modules = modules_obj
+                .cast::<PyDict>()
+                .map_err(|error| error.to_string())?;
+            let previous_pdb = modules.get_item("pdb").map_err(|error| error.to_string())?;
+            modules
+                .set_item("pdb", &fake_pdb)
+                .map_err(|error| error.to_string())?;
+
+            let failing = install_module(
+                py,
+                "post_mortem_failure",
+                "def fail():\n    raise AssertionError('debug me')\n",
+            )?;
+            let error = match failing
+                .getattr("fail")
+                .and_then(|function| function.call0())
+            {
+                Ok(_) => return Err("the test plugin must fail".to_string()),
+                Err(error) => error,
+            };
+
+            let _guard = super::PostMortemGuard::new(true);
+            let (formatted, called, stdout_was_stderr) = {
+                let formatted = super::format_python_error(py, error, "Plugin failed");
+                let called = fake_pdb
+                    .getattr("called")
+                    .map_err(|error| error.to_string())?
+                    .extract::<bool>()
+                    .map_err(|error| error.to_string())?;
+                let stdout_was_stderr = fake_pdb
+                    .getattr("stdout_was_stderr")
+                    .map_err(|error| error.to_string())?
+                    .extract::<bool>()
+                    .map_err(|error| error.to_string())?;
+                (formatted, called, stdout_was_stderr)
+            };
+
+            let err_module = install_module(
+                py,
+                "post_mortem_err_result",
+                r"
+class Err:
+    def __init__(self, error):
+        self.error = error
+
+    def format_error(self):
+        return 'formatted error'
+
+def make_err():
+    try:
+        raise AssertionError('returned err')
+    except AssertionError as error:
+        return Err(error)
+",
+            )?;
+            let err_result = err_module
+                .getattr("make_err")
+                .and_then(|function| function.call0())
+                .map_err(|error| error.to_string())?;
+            let formatted_err = super::format_err_result(py, &err_result);
+
+            let calls = fake_pdb
+                .getattr("calls")
+                .map_err(|error| error.to_string())?
+                .extract::<usize>()
+                .map_err(|error| error.to_string())?;
+            if let Some(previous) = previous_pdb {
+                modules
+                    .set_item("pdb", previous)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                modules.del_item("pdb").map_err(|error| error.to_string())?;
+            }
+            assert!(formatted.contains("AssertionError: debug me"));
+            assert!(called);
+            assert!(stdout_was_stderr);
+            assert_eq!(formatted_err, "Plugin returned Err:\nformatted error");
+            assert_eq!(calls, 2);
+            Ok(())
+        })
     }
 
     fn install_artifact_test_modules(py: pyo3::Python<'_>) -> Result<(), String> {
@@ -2369,6 +2556,7 @@ obj = NotSerializable()
                     Some(&generic_input),
                     &generic_output,
                     None,
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(generic_result.output_kind, ArtifactOutputKind::Json);
@@ -2386,6 +2574,7 @@ obj = NotSerializable()
                     None,
                     &raw_json_output,
                     None,
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(raw_json_result.output_kind, ArtifactOutputKind::Json);
@@ -2416,6 +2605,7 @@ obj = NotSerializable()
                     Some(&generic_input),
                     &hidden_output,
                     Some(&stdin_bindings),
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(hidden_result.output_kind, ArtifactOutputKind::Json);
@@ -2432,6 +2622,7 @@ obj = NotSerializable()
                     None,
                     &none_output,
                     None,
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(none_result.output_kind, ArtifactOutputKind::Empty);
@@ -2446,6 +2637,7 @@ obj = NotSerializable()
                 None,
                 &broken_output,
                 None,
+                PluginInvocationOptions::default(),
             );
             assert!(matches!(
                 broken_result,
@@ -2463,6 +2655,7 @@ obj = NotSerializable()
                     Some(&system_input),
                     &system_output,
                     None,
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(system_result.output_kind, ArtifactOutputKind::System);
@@ -2478,6 +2671,7 @@ obj = NotSerializable()
                     Some(&system_input),
                     &class_output,
                     Some(&class_bindings(r2x_manifest::runtime::PluginRole::Modifier)),
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(class_result.output_kind, ArtifactOutputKind::System);
@@ -2496,6 +2690,7 @@ obj = NotSerializable()
                     Some(&system_input),
                     &exporter_output,
                     Some(&exporter_bindings),
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert_eq!(exporter_result.output_kind, ArtifactOutputKind::Empty);
@@ -2510,6 +2705,7 @@ obj = NotSerializable()
                         r2x_manifest::runtime::PluginRole::Exporter,
                         Vec::new(),
                     )),
+                    PluginInvocationOptions::default(),
                 )
                 .map_err(|error| error.to_string())?;
             assert!(matches!(
@@ -2536,6 +2732,7 @@ obj = NotSerializable()
                     Some(&missing_input),
                     &missing_output,
                     None,
+                    PluginInvocationOptions::default(),
                 )
                 .err()
                 .ok_or_else(|| "missing sidecar should fail".to_string())?;
