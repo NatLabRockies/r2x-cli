@@ -78,7 +78,9 @@ impl From<PipelineError> for RunError {
 
 #[derive(Parser, Debug)]
 #[command(
-    after_help = "Modes:\n  r2x run <plugin-ref> [PLUGIN_OPTIONS...]\n  r2x run <pipeline.yaml> <pipeline-name> [--list|--print|--dry-run]\n\nUse `r2x run plugin <plugin-ref>` to force legacy direct-plugin mode when a pipeline name and plugin name conflict."
+    after_help = "Modes:\n  r2x run <plugin-ref> [PLUGIN_OPTIONS...]\n  r2x run <pipeline.yaml> <pipeline-name> [--list|--print|--dry-run|--pdb]\n\nUse `r2x run plugin <plugin-ref>` to force legacy direct-plugin mode when a pipeline name and plugin name conflict.
+
+Pass `--pdb` to an executing plugin or pipeline for interactive Python post-mortem debugging. Prefer `--input FILE` so stdin remains available for debugger commands."
 )]
 pub struct RunCommand {
     #[command(subcommand)]
@@ -108,6 +110,9 @@ struct PipelineCommand {
     /// Save a system pipeline output as an infrasys ZIP archive
     #[arg(long)]
     zip: bool,
+    /// Enter Python's post-mortem debugger when a plugin fails (prefer --input FILE)
+    #[arg(long)]
+    pdb: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -146,8 +151,25 @@ pub struct PluginCommand {
         help = "Print benchmark summary (also implied when --repeat > 1)"
     )]
     benchmark: bool,
+    /// Enter Python's post-mortem debugger when the plugin fails; prefer --input FILE
+    #[arg(long)]
+    pdb: bool,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
+}
+
+impl PluginCommand {
+    /// Promote a `--pdb` flag captured by the trailing plugin arguments.
+    ///
+    /// Clap stops parsing named fields after a trailing positional argument
+    /// begins, so `--pdb` can otherwise be forwarded as plugin configuration
+    /// when it follows a plugin-specific option.
+    fn promote_pdb_arg(&mut self) {
+        if self.args.iter().any(|arg| arg == "--pdb") {
+            self.pdb = true;
+            self.args.retain(|arg| arg != "--pdb");
+        }
+    }
 }
 
 pub fn handle_run(cmd: RunCommand, opts: GlobalOpts) -> Result<(), RunError> {
@@ -223,6 +245,7 @@ fn handle_pipeline_command(args: &[String], opts: &GlobalOpts) -> Result<(), Run
             dry_run: pipeline_cmd.dry_run,
             output: pipeline_cmd.output,
             zip_output: pipeline_cmd.zip,
+            pdb: pipeline_cmd.pdb,
         },
         opts,
     )

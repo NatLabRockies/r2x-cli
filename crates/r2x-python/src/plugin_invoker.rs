@@ -124,6 +124,13 @@ pub enum PluginInput<'a> {
     File(&'a Path),
 }
 
+/// Options that control one plugin invocation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PluginInvocationOptions {
+    /// Enter Python's post-mortem debugger when an uncaught plugin exception occurs.
+    pub pdb: bool,
+}
+
 /// Materialized result of running a plugin through the Python bridge.
 #[derive(Debug)]
 pub enum PluginInvocationOutput {
@@ -157,6 +164,7 @@ impl crate::python_bridge::Bridge {
         input: Option<PluginInput<'_>>,
         output_path: Option<&Path>,
         plugin_metadata: Option<&Plugin>,
+        options: PluginInvocationOptions,
     ) -> Result<PluginInvocationResult, BridgeError> {
         let runtime_bindings = plugin_metadata.map(build_runtime_bindings);
 
@@ -175,6 +183,7 @@ impl crate::python_bridge::Bridge {
                 runtime_bindings.as_ref(),
                 plugin_metadata,
                 true,
+                options,
             );
         }
 
@@ -184,6 +193,7 @@ impl crate::python_bridge::Bridge {
             input,
             output_path,
             runtime_bindings.as_ref(),
+            options,
         )
     }
 
@@ -193,6 +203,7 @@ impl crate::python_bridge::Bridge {
         config_json: &str,
         stdin_json: Option<&str>,
         runtime_bindings: Option<&RuntimeBindings>,
+        options: PluginInvocationOptions,
     ) -> Result<PluginInvocationResult, BridgeError> {
         if let Some(bindings) = runtime_bindings {
             if bindings.role == PluginRole::Upgrader {
@@ -203,11 +214,12 @@ impl crate::python_bridge::Bridge {
                     Some(bindings),
                     None,
                     false,
+                    options,
                 );
             }
         }
 
-        self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings)
+        self.invoke_plugin_regular(target, config_json, stdin_json, runtime_bindings, options)
     }
 
     /// Save a System artifact as an infrasys ZIP archive.
@@ -227,6 +239,7 @@ impl crate::python_bridge::Bridge {
         input: Option<&ArtifactBundle>,
         output: &ArtifactBundle,
         runtime_bindings: Option<&RuntimeBindings>,
+        options: PluginInvocationOptions,
     ) -> Result<PluginArtifactInvocationResult, BridgeError> {
         if runtime_bindings.is_some_and(|bindings| bindings.role == PluginRole::Upgrader) {
             return Err(BridgeError::UnsupportedArtifactMode(
@@ -242,6 +255,7 @@ impl crate::python_bridge::Bridge {
             input,
             output,
             runtime_bindings,
+            options,
         )
     }
 }
@@ -335,6 +349,7 @@ mod tests {
             None,
             &output,
             Some(&bindings),
+            PluginInvocationOptions::default(),
         );
         assert!(matches!(
             error,
@@ -357,6 +372,7 @@ mod tests {
             None,
             &output,
             None,
+            PluginInvocationOptions::default(),
         );
 
         assert!(matches!(result, Err(BridgeError::InvalidArtifact(_))));

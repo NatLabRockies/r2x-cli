@@ -1,7 +1,9 @@
 //! Upgrader plugin invocation
 
 use crate::errors::BridgeError;
-use crate::plugin_invoker::{PluginInvocationOutput, PluginInvocationResult};
+use crate::plugin_invoker::{
+    PluginInvocationOptions, PluginInvocationOutput, PluginInvocationResult,
+};
 use crate::plugin_regular::{format_err_result, format_python_error, PythonJson, StdoutGuard};
 use crate::python_bridge::Bridge;
 use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
@@ -19,8 +21,10 @@ impl Bridge {
         runtime_bindings: Option<&RuntimeBindings>,
         _plugin_metadata: Option<&Plugin>, // kept for API consistency across invoke methods
         redirect_plugin_stdout: bool,
+        options: PluginInvocationOptions,
     ) -> Result<PluginInvocationResult, BridgeError> {
         pyo3::Python::attach(|py| {
+            let _post_mortem = crate::plugin_regular::PostMortemGuard::new(options.pdb);
             let _guard = if logger::get_no_stdout() {
                 StdoutGuard::new(py, true)?
             } else if redirect_plugin_stdout {
