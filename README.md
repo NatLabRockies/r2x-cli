@@ -57,11 +57,13 @@ r2x --version
 ```
 
 > [!NOTE]
-> Pre-built binaries require Python shared libraries at runtime.
-> If `r2x --version` fails with a missing `libpython` error, run
-> `uv python install 3.12` to make the shared library available.
-> Source builds can target supported Python versions by setting
-> `R2X_PYTHON_VERSION=<version>` at build time.
+> On first run, R2X uses UV to provision its managed CPython runtime and
+> creates the R2X virtual environment. It does not require `python3.12` in
+> `PATH` or `~/.local/bin`. UV owns the CPython installation; R2X owns only
+> the plugin virtual environment, which references that interpreter. Use
+> `uv python list` to inspect UV's available interpreters.
+> Source builds select a supported version with `PYO3_PYTHON` from
+> `uv python find --managed-python` and `R2X_PYTHON_VERSION`.
 
 ## Upgrading
 
@@ -203,16 +205,19 @@ r2x run plugin r2x-reeds.reeds-parser --show-help
 r2x run r2x-reeds.reeds-parser --repeat 10 --benchmark solve_year=2030
 
 # Compare two benchmark outputs (baseline vs current)
-python3 scripts/compare_benchmark_summary.py --baseline baseline.txt --current current.txt
+uv run --no-config --no-project --managed-python --python 3.12 -- \
+  python scripts/compare_benchmark_summary.py --baseline baseline.txt --current current.txt
 
 # Emit machine-readable status line in stderr
-python3 scripts/compare_benchmark_summary.py \
+uv run --no-config --no-project --managed-python --python 3.12 -- \
+  python scripts/compare_benchmark_summary.py \
   --baseline baseline.txt \
   --current current.txt \
   --print-status-line
 
 # Fail when regression exceeds 15%
-python3 scripts/compare_benchmark_summary.py \
+uv run --no-config --no-project --managed-python --python 3.12 -- \
+  python scripts/compare_benchmark_summary.py \
   --baseline baseline.txt \
   --current current.txt \
   --fail-on-regression-pct 15
@@ -320,23 +325,27 @@ r2x read system.json --exec script.py -i
 r2x config show
 
 # Set values
-r2x config set python-version 3.13
 r2x config set cache-path /path/to/cache
 
 # Reset everything
 r2x config reset -y
 ```
 
+R2X uses the Python major.minor ABI that its PyO3 runtime was built against.
+Use `uv python list` and `uv python install` to inspect or manage interpreter
+installations directly. A configured Python patch version must use that same
+major.minor ABI.
+
 <details>
 <summary>Python and virtual environment management</summary>
 
-The `r2x python` command provides shortcuts for Python runtime management:
+The `r2x python` command manages R2X's UV-backed plugin environment:
 
 ```bash
-# Install a Python version
-r2x python install 3.13
+# Create or refresh the managed venv with UV
+r2x python install
 
-# Show installed Python versions
+# Show the R2X venv's Python configuration
 r2x python show
 
 # Get the Python executable path
@@ -483,25 +492,24 @@ uv python install 3.12
 
 ```bash
 git clone https://github.com/NatLabRockies/r2x-cli && cd r2x-cli
-R2X_PYTHON_VERSION=3.12 cargo install --path crates/r2x-cli --force --locked
+PYO3_PYTHON="$(uv python find --managed-python 3.12)" \
+  R2X_PYTHON_VERSION=3.12 cargo install --path crates/r2x-cli --bins --force --locked
 ```
 
 To build against another supported Python version:
 
 ```bash
 uv python install 3.13
-R2X_PYTHON_VERSION=3.13 cargo install --path crates/r2x-cli --force --locked
+PYO3_PYTHON="$(uv python find --managed-python 3.13)" \
+  R2X_PYTHON_VERSION=3.13 cargo install --path crates/r2x-cli --bins --force --locked
 ```
 
-`cargo` now resolves `R2X_PYTHON_VERSION` through `uv python find` automatically.
-For patch requests (for example `3.13.1`), r2x falls back to the matching ABI
-request (`3.13`) if the exact patch is unavailable.
-If the requested interpreter is missing, the build fails with
-fallback-aware guidance such as
-`uv python install <requested> || uv python install <abi>` and
-`uv python find <requested> || uv python find <abi>`.
+Set `PYO3_PYTHON` from `uv python find --managed-python` so PyO3 builds
+against the UV-managed interpreter. R2X passes the requested version directly
+to UV. Install that exact version first with `uv python install <version>`.
 
-This places the `r2x` binary in `~/.cargo/bin/`.
+This places `r2x` and its adjacent `r2x-runtime` payload in `~/.cargo/bin/`.
+Run `r2x`; keep both files together when moving the installation.
 
 ```bash
 r2x --version
@@ -511,25 +519,23 @@ r2x --version
 <summary>Manual build (custom install path)</summary>
 
 ```bash
-R2X_PYTHON_VERSION=3.12 cargo build --release
+PYO3_PYTHON="$(uv python find --managed-python 3.12)" \
+  R2X_PYTHON_VERSION=3.12 cargo build --release -p r2x --bins
 ```
 
-The binary lands at `target/release/r2x`. Copy it wherever you
-like.
+The build produces `target/release/r2x` and `target/release/r2x-runtime`.
+Copy them to the same directory, then invoke `r2x`.
 
 The justfile also honors `R2X_PYTHON_VERSION`, for example
 `R2X_PYTHON_VERSION=3.13 just test`.
 
-`R2X_PYTHON_VERSION` and `r2x config set python-version` accept major.minor
-versions such as `3.13` and patch versions such as `3.13.1`. r2x uses the
-requested version for uv, then uses the matching major.minor ABI version for
-`libpython` paths.
+`R2X_PYTHON_VERSION` selects the Python ABI for a source build. The installed
+CLI accepts only the same major.minor ABI for `r2x config set python-version`;
+a patch version such as `3.12.1` is allowed for a binary built against `3.12`.
 
-When `R2X_PYTHON_VERSION` is set for a just task, an interpreter with the same
-major.minor ABI must exist; install it first with `uv python install <version>`
-(or for patch requests, `uv python install <patch> || uv python install <major.minor>`).
-This avoids accidentally building PyO3 against a different Python ABI than the
-one requested.
+When `R2X_PYTHON_VERSION` is set for a just task, install that version first
+with `uv python install <version>`. This avoids accidentally building PyO3
+against a different Python ABI than the one requested.
 If you also set `PYO3_PYTHON` manually, it must point to an interpreter with the
 same major.minor ABI as `R2X_PYTHON_VERSION`.
 
@@ -554,9 +560,8 @@ just all       # fmt + clippy + test
 
 - If the build fails with a Python error, verify
   `R2X_PYTHON_VERSION` is set to a supported version (for example `3.12`,
-  `3.13`, or `3.13.1`) and `uv python find <version>` returns a valid path.
-  You may need `uv python install <version>` first, or for patch requests,
-  `uv python install <patch> || uv python install <major.minor>`.
+  `3.13`, or `3.13.1`) and `uv python find --managed-python <version>`
+  returns a valid path. You may need `uv python install <version>` first.
 - If `r2x` is not found after install, check that `~/.cargo/bin`
   is in your `$PATH`.
 - On HPC systems with older glibc, building from source is

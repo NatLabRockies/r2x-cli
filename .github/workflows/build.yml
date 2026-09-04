@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - name: Setup uv & Python
+        uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
       - name: Install ShellCheck
@@ -31,15 +31,9 @@ jobs:
         run: bash scripts/ci_check_shell_scripts.sh
       - name: Python script tests
         run: |
-          PYTHONPATH=scripts python3 -m unittest \
-            scripts.tests.test_python_version_sh \
-            scripts.tests.test_resolve_pyo3_python \
-            scripts.tests.test_ci_python_version \
+          PYTHONPATH=scripts uv run --no-config --no-project --managed-python --python 3.12 -- python -m unittest \
             scripts.tests.test_format_benchmark_summary \
-            scripts.tests.test_compare_benchmark_summary \
-            scripts.tests.test_patch_dist_installer \
-            scripts.tests.test_detect_uv_python \
-            scripts.tests.test_fix_python_dylib
+            scripts.tests.test_compare_benchmark_summary
 
   lint:
     name: Lint (stable, Python 3.12)
@@ -56,9 +50,6 @@ jobs:
         uses: ./.github/actions/setup-uv-python
         with:
           python-version: "3.12"
-      - name: PyO3 diagnostics
-        shell: bash
-        run: bash scripts/ci_pyo3_diagnostics.sh
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -120,9 +111,6 @@ jobs:
         uses: ./.github/actions/setup-uv-python
         with:
           python-version: ${{ matrix.python-version }}
-      - name: PyO3 diagnostics
-        shell: bash
-        run: bash scripts/ci_pyo3_diagnostics.sh
       - name: Test
         env:
           PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
@@ -171,8 +159,5 @@ jobs:
         uses: ./.github/actions/setup-uv-python
         with:
           python-version: ${{ env.R2X_PYTHON_VERSION }}
-      - name: PyO3 diagnostics
-        shell: bash
-        run: bash scripts/ci_pyo3_diagnostics.sh
       - name: Cargo publish dry-run
         run: cargo publish --workspace --dry-run

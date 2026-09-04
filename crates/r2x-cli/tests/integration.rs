@@ -45,13 +45,13 @@ fn isolated_fixture_config_path() -> PathBuf {
 }
 
 fn r2x_cmd() -> Command {
-    let mut cmd = cargo_bin_cmd!("r2x");
+    let mut cmd = cargo_bin_cmd!("r2x-runtime");
     cmd.env("R2X_CONFIG", isolated_fixture_config_path());
     cmd
 }
 
 fn r2x_cmd_with_config(config_path: &Path) -> Command {
-    let mut cmd = cargo_bin_cmd!("r2x");
+    let mut cmd = cargo_bin_cmd!("r2x-runtime");
     cmd.env("R2X_CONFIG", config_path);
     cmd
 }
@@ -108,7 +108,7 @@ fn test_list_plugins_setup_failure_exits_nonzero() {
         .arg("list")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Failed to resolve site-packages"));
+        .stderr(predicate::str::contains("Failed to setup venv"));
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn test_venv_create_creates_missing_default_venv_without_prompt_hint() {
     }
 
     let venv_path = config_dir.join(".venv");
-    let mut cmd = cargo_bin_cmd!("r2x");
+    let mut cmd = cargo_bin_cmd!("r2x-runtime");
     cmd.env("HOME", home)
         // Isolate XDG dirs so migrate_legacy_venv() cannot escape to the real
         // runner home (e.g. via XDG_CONFIG_HOME set by the CI environment).
@@ -641,15 +641,16 @@ fn test_config_set_python_version_normalizes_value() {
     };
     let config_path = temp_dir.path().join("config.toml");
 
+    let version = format!("{}.1", test_python_version());
     r2x_cmd_with_config(&config_path)
-        .args(["config", "set", "python-version", " 3.14.1 "])
+        .args(["config", "set", "python-version", &format!(" {version} ")])
         .assert()
         .success();
 
     let Ok(contents) = fs::read_to_string(config_path) else {
         return;
     };
-    assert!(contents.contains("python_version = \"3.14.1\""));
+    assert!(contents.contains(&format!("python_version = \"{version}\"")));
 }
 
 #[test]
@@ -1277,6 +1278,7 @@ struct PipelineHarness {
     _home: TempDir,
     config_path: PathBuf,
     site_packages: PathBuf,
+    venv_path: PathBuf,
     reeds_pipeline: PathBuf,
     s2p_pipeline: PathBuf,
 }
@@ -1350,15 +1352,17 @@ impl PipelineHarness {
             _home: home,
             config_path,
             site_packages,
+            venv_path,
             reeds_pipeline,
             s2p_pipeline,
         })
     }
 
     fn command(&self) -> Command {
-        let mut cmd = cargo_bin_cmd!("r2x");
+        let mut cmd = cargo_bin_cmd!("r2x-runtime");
         cmd.env("HOME", self.home_path());
         cmd.env("R2X_CONFIG", &self.config_path);
+        cmd.env("VIRTUAL_ENV", &self.venv_path);
         cmd.env(
             "PYTHONPATH",
             self.site_packages.to_string_lossy().to_string(),
@@ -1367,9 +1371,10 @@ impl PipelineHarness {
     }
 
     fn std_command(&self) -> StdCommand {
-        let mut cmd = StdCommand::new(cargo_bin("r2x"));
+        let mut cmd = StdCommand::new(cargo_bin("r2x-runtime"));
         cmd.env("HOME", self.home_path());
         cmd.env("R2X_CONFIG", &self.config_path);
+        cmd.env("VIRTUAL_ENV", &self.venv_path);
         cmd.env(
             "PYTHONPATH",
             self.site_packages.to_string_lossy().to_string(),
@@ -1394,32 +1399,32 @@ fn create_real_venv(venv_path: &Path) -> io::Result<()> {
     if venv_path.exists() {
         fs::remove_dir_all(venv_path)?;
     }
-    if let Some(uv) = find_tool(&["uv"]) {
-        let status = StdCommand::new(uv)
-            .arg("venv")
-            .arg(venv_path)
-            .arg("--python")
-            .arg(test_python_version())
-            .status()?;
-        if status.success() {
-            return Ok(());
-        }
-    }
 
-    if let Some(py) = find_tool(&["python3", "python"]) {
-        let status = StdCommand::new(py)
-            .arg("-m")
-            .arg("venv")
-            .arg(venv_path)
-            .status()?;
-        if status.success() {
-            return Ok(());
-        }
+    let Some(uv) = find_tool(&["uv"]) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "failed to create test venv: uv is not available",
+        ));
+    };
+    let python_version = test_python_version();
+    let status = StdCommand::new(uv)
+        .args([
+            "venv",
+            "--no-config",
+            "--no-project",
+            "--managed-python",
+            "--python",
+            &python_version,
+        ])
+        .arg(venv_path)
+        .status()?;
+    if status.success() {
+        return Ok(());
     }
 
     Err(io::Error::new(
         io::ErrorKind::Other,
-        "failed to create test venv (uv/python not available)",
+        "failed to create test venv with uv",
     ))
 }
 
@@ -1435,7 +1440,7 @@ fn find_tool(candidates: &[&str]) -> Option<String> {
 #[cfg(not(target_os = "windows"))]
 fn uv_can_find_python(uv_path: &str, python_version: &str) -> bool {
     StdCommand::new(uv_path)
-        .args(["python", "find", python_version])
+        .args(["python", "find", python_version, "--managed-python"])
         .output()
         .is_ok_and(|output| output.status.success())
 }
@@ -1454,19 +1459,11 @@ fn default_site_packages_path(venv_path: &Path) -> PathBuf {
 }
 
 fn test_python_version() -> String {
-    if let Ok(python) = std::env::var("PYO3_PYTHON") {
-        if let Some(version) = python_minor_version(&python) {
-            return version;
-        }
-    }
+    let Ok(python) = std::env::var("PYO3_PYTHON") else {
+        return "3.12".to_string();
+    };
 
-    for python in ["python3", "python"] {
-        if let Some(version) = python_minor_version(python) {
-            return version;
-        }
-    }
-
-    "3.12".to_string()
+    python_minor_version(&python).unwrap_or_else(|| "3.12".to_string())
 }
 
 fn python_minor_version(python: &str) -> Option<String> {

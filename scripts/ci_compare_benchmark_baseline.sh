@@ -13,7 +13,9 @@ main() {
         threshold_args+=(--fail-on-regression-pct "${R2X_BENCHMARK_REGRESSION_PCT}")
     fi
 
-    python3 scripts/compare_benchmark_summary.py \
+    uv run --no-config --no-project --managed-python \
+        --python "${R2X_PYTHON_VERSION:-3.12}" -- \
+        python scripts/compare_benchmark_summary.py \
         --baseline "${baseline_path}" \
         --current "${current_path}" \
         --baseline-run-id "${baseline_run_id}" \
