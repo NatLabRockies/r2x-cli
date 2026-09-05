@@ -9,6 +9,7 @@ homepage = { workspace = true }
 documentation = { workspace = true }
 rust-version = { workspace = true }
 build = "build.rs"
+autobins = false
 description = "A framework plugin manager for the r2x power systems modeling ecosystem."
 readme = { workspace = true }
 keywords = ["power-systems", "r2x", "cli", "plugin-manager", "uv"]
@@ -19,6 +20,14 @@ upgrade-guid = "AB0643AB-0F2C-4FDC-ACFB-E7886B50614F"
 path-guid = "B2C9C3FE-FD0C-4209-910C-A07D1A71C539"
 license = false
 eula = false
+
+[[bin]]
+name = "r2x"
+path = "src/bin/r2x.rs"
+
+[[bin]]
+name = "r2x-runtime"
+path = "src/main.rs"
 
 [features]
 default = ["self-update"]

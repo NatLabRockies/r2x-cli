@@ -10,7 +10,21 @@ main() {
         return 1
     fi
 
-    export LD_LIBRARY_PATH="${python_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    # Rust test binaries embed Python rather than starting it through uv.
+    export PYTHONHOME="${python_prefix}"
+
+    case "$(uname -s)" in
+        Darwin)
+            export DYLD_LIBRARY_PATH="${python_prefix}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+            ;;
+        Linux)
+            export LD_LIBRARY_PATH="${python_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+            ;;
+        MINGW* | MSYS* | CYGWIN*)
+            export PATH="${python_prefix}${PATH:+:${PATH}}"
+            ;;
+    esac
+
     "$@"
 }
 

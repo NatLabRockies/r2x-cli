@@ -147,12 +147,6 @@ jobs:
         with:
           python-version: ${{ env.R2X_PYTHON_VERSION }}
 
-      - name: PyO3 diagnostics
-        shell: bash
-        env:
-          CARGO_BUILD_TARGET: ${{ join(matrix.targets, ' ') }}
-        run: bash scripts/ci_pyo3_diagnostics.sh
-
       - name: Install Rust toolchain
         if: ${{ matrix.container }}
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -176,7 +170,7 @@ jobs:
         run: |
           ${{ matrix.packages_install }}
 
-      - name: Build and fix Python library paths (container)
+      - name: Build runtime binaries (container)
         if: ${{ matrix.container }}
         shell: bash
         env:
@@ -188,28 +182,18 @@ jobs:
           echo "Building dist-profile binaries first..."
           TARGETS="${{ join(matrix.targets, ' ') }}"
           for target in $TARGETS; do
-            cargo build --profile dist -p r2x --target "$target"
+            cargo build --profile dist -p r2x --bins --target "$target"
           done
 
-          echo "Fixing Python library paths..."
-          while IFS= read -r -d '' bin; do
-            ./scripts/fix_python_dylib.sh "$bin"
-          done < <(find target -path "*/dist/r2x" -type f -print0)
-
-      - name: Build and fix Python library paths (host)
+      - name: Build runtime binaries (host)
         if: ${{ !matrix.container && runner.os != 'Windows' }}
         shell: bash
         run: |
           echo "Building dist-profile binaries first..."
           TARGETS="${{ join(matrix.targets, ' ') }}"
           for target in $TARGETS; do
-            cargo build --profile dist -p r2x --target "$target"
+            cargo build --profile dist -p r2x --bins --target "$target"
           done
-
-          echo "Fixing Python library paths..."
-          while IFS= read -r -d '' bin; do
-            ./scripts/fix_python_dylib.sh "$bin"
-          done < <(find target -path "*/dist/r2x" -type f -print0)
 
       - name: Build artifacts (container)
         if: ${{ matrix.container }}
@@ -350,21 +334,6 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
-
-      - name: Patch shell installer for Python runtime bootstrap
-        shell: bash
-        run: |
-          shopt -s nullglob
-          installers=(target/distrib/*-installer.sh)
-
-          if [ ${#installers[@]} -eq 0 ]; then
-            echo "No shell installer artifacts found in target/distrib"
-            exit 1
-          fi
-
-          for installer in "${installers[@]}"; do
-            ./scripts/patch_dist_installer.sh "$installer"
-          done
 
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v7

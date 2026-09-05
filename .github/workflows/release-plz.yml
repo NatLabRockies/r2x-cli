@@ -31,8 +31,7 @@ jobs:
       group: release-plz-pr-${{ github.ref }}
       cancel-in-progress: true
     steps:
-      - &checkout
-        name: Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -51,11 +50,6 @@ jobs:
         uses: ./.github/actions/setup-uv-python
         with:
           python-version: ${{ env.R2X_PYTHON_VERSION }}
-
-      - &pyo3_diagnostics
-        name: PyO3 diagnostics
-        shell: bash
-        run: bash scripts/ci_pyo3_diagnostics.sh
 
       - name: Run release-plz (release-pr)
         uses: release-plz/action@v0.5
@@ -89,7 +83,6 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.ref_name }}
       - *setup_rust
       - *setup_python
-      - *pyo3_diagnostics
       - name: Run release-plz (release)
         uses: release-plz/action@v0.5
         with:

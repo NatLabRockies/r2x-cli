@@ -206,7 +206,11 @@ fn main() {
         colored::control::set_override(false);
     }
 
-    let cli = Cli::parse_from(normalize_run_global_args(std::env::args_os().collect()));
+    let mut args = std::env::args_os().collect::<Vec<_>>();
+    if let Some(program) = args.first_mut() {
+        *program = OsString::from("r2x");
+    }
+    let cli = Cli::parse_from(normalize_run_global_args(args));
 
     let mut startup_config = match config_manager::Config::load() {
         Ok(cfg) => Some(cfg),

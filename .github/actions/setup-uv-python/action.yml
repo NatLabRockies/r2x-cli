@@ -1,33 +1,31 @@
 name: "Setup uv & Python"
-description: "Installs uv, sets up Python via uv, and configures PYO3_PYTHON environment variable"
+description: "Installs a UV-managed Python for PyO3 builds"
 inputs:
   python-version:
     description: 'Python version to install (e.g., "3.12")'
     required: true
     default: "3.12"
 outputs:
-  python-path:
-    description: "Path to the uv-managed Python interpreter used for PyO3"
-    value: ${{ steps.python.outputs.python-path }}
-  resolved-version:
-    description: "Full Python version reported by the selected interpreter"
-    value: ${{ steps.python.outputs.resolved-version }}
-  python-abi-version:
-    description: "Major.minor Python ABI version used in libpython names"
-    value: ${{ steps.python.outputs.python-abi-version }}
   python-prefix:
-    description: "Prefix of the uv-managed Python installation"
+    description: "Prefix of the UV-managed Python installation"
     value: ${{ steps.python.outputs.python-prefix }}
 runs:
   using: "composite"
   steps:
     - name: Install uv
       uses: astral-sh/setup-uv@v3
-    - name: Install Python via uv and set PYO3_PYTHON
+    - name: Install managed Python
       id: python
       shell: bash
-      run: bash scripts/ci_setup_uv_python.sh "${{ inputs.python-version }}"
-    - name: Fix libpython install name for portable builds
-      if: runner.os == 'macOS'
-      shell: bash
-      run: bash scripts/ci_fix_libpython_install_name.sh "${{ steps.python.outputs.python-prefix }}" "${{ steps.python.outputs.python-abi-version }}"
+      env:
+        REQUESTED_PYTHON: ${{ inputs.python-version }}
+      run: |
+        set -euo pipefail
+        uv python install --no-config --managed-python "${REQUESTED_PYTHON}"
+        python="$(uv python find --no-config --no-project --managed-python "${REQUESTED_PYTHON}")"
+        prefix="$(dirname "$(dirname "${python}")")"
+        {
+          printf 'PYO3_PYTHON=%s\n' "${python}"
+          printf 'R2X_PYTHON_VERSION=%s\n' "${REQUESTED_PYTHON}"
+        } >> "${GITHUB_ENV}"
+        printf 'python-prefix=%s\n' "${prefix}" >> "${GITHUB_OUTPUT}"

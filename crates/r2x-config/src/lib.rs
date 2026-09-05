@@ -38,7 +38,7 @@ pub enum ConfigError {
     NoConfigDir,
 }
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use which::which;
 
@@ -146,7 +146,11 @@ impl Config {
         match key {
             "cache-path" => self.cache_path = Some(value),
             "uv-path" => self.uv_path = Some(value),
-            "python-version" => self.python_version = Some(normalize_python_version(&value)?),
+            "python-version" => {
+                let version = PythonRuntimeVersion::parse(&value)?;
+                ensure_build_python_abi(&version)?;
+                self.python_version = Some(version.requested().to_string());
+            }
             "venv-path" => self.venv_path = Some(value),
             "r2x-core-version" => self.r2x_core_version = Some(value),
             "log-python" => {
@@ -469,6 +473,22 @@ impl Config {
     }
 
     pub fn ensure_venv_path(&mut self) -> Result<String, ConfigError> {
+        let venv_path = self.get_venv_path();
+        let active_venv = std::env::var_os("VIRTUAL_ENV");
+        if active_venv
+            .as_deref()
+            .is_some_and(|active| Path::new(active) == Path::new(&venv_path))
+            && Path::new(&venv_path).is_dir()
+        {
+            // The launcher has already asked UV to reconcile this venv.
+            return Ok(venv_path);
+        }
+
+        self.reconcile_venv_path()
+    }
+
+    /// Create or repair the configured virtual environment through UV.
+    pub fn reconcile_venv_path(&mut self) -> Result<String, ConfigError> {
         use std::process::Command;
 
         // Attempt one-time migration from legacy venv location
@@ -476,45 +496,42 @@ impl Config {
 
         let venv_path = self.get_venv_path();
 
-        // Check if venv already exists
-        if std::path::Path::new(&venv_path).exists() {
-            return Ok(venv_path);
-        }
-
         // Ensure uv is installed first (this will auto-install if needed)
         let uv_path = self.ensure_uv_path()?;
 
         // Use the Python version from config, or the build-selected default.
         let python_version = self.runtime_python_version()?;
 
-        // Create the venv using uv, with patch->ABI fallback for patch requests.
-        let mut last_stderr: Option<String> = None;
-        for python_query in python_version.query_candidates() {
-            let output = Command::new(&uv_path)
-                .args(["venv", &venv_path, "--python", python_query])
-                .output()?;
+        // UV owns interpreter selection and creates the venv when needed.
+        let status = Command::new(&uv_path)
+            .args([
+                "venv",
+                "--no-config",
+                "--no-project",
+                "--allow-existing",
+                "--managed-python",
+                "--python",
+                python_version.requested(),
+                &venv_path,
+            ])
+            .status()?;
 
-            if output.status.success() {
-                return Ok(venv_path);
-            }
-
-            last_stderr = Some(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        if status.success() {
+            return Ok(venv_path);
         }
 
-        let details = last_stderr
-            .filter(|stderr| !stderr.is_empty())
-            .unwrap_or_else(|| "uv venv command failed".to_string());
         Err(ConfigError::VenvCreation(format!(
-            "Failed to create venv for Python {} (ABI {}): {}\nTry: {}",
+            "Failed to create venv for Python {} (ABI {}): uv venv exited with {status}\nTry: uv python install {}",
             python_version.requested(),
             python_version.abi(),
-            details,
-            python_version.install_hint()
+            python_version.requested(),
         )))
     }
 
-    pub fn runtime_python_version(&self) -> Result<PythonRuntimeVersion, ConfigError> {
-        runtime_python_version(self.python_version.as_deref())
+    fn runtime_python_version(&self) -> Result<PythonRuntimeVersion, ConfigError> {
+        let version = runtime_python_version(self.python_version.as_deref())?;
+        ensure_build_python_abi(&version)?;
+        Ok(version)
     }
 }
 
@@ -523,57 +540,25 @@ pub fn default_python_version() -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PythonRuntimeVersion {
+struct PythonRuntimeVersion {
     requested: String,
     abi: String,
 }
 
 impl PythonRuntimeVersion {
-    pub fn parse(value: &str) -> Result<Self, ConfigError> {
+    fn parse(value: &str) -> Result<Self, ConfigError> {
         let requested = normalize_python_version(value)?;
         let abi = python_abi_version(&requested);
 
         Ok(Self { requested, abi })
     }
 
-    pub fn requested(&self) -> &str {
+    fn requested(&self) -> &str {
         &self.requested
     }
 
-    pub fn abi(&self) -> &str {
+    fn abi(&self) -> &str {
         &self.abi
-    }
-
-    pub fn query_candidates(&self) -> Vec<&str> {
-        let mut candidates = vec![self.requested()];
-        if self.abi() != self.requested() {
-            candidates.push(self.abi());
-        }
-        candidates
-    }
-
-    pub fn install_hint(&self) -> String {
-        if self.requested() == self.abi() {
-            format!("uv python install {}", self.requested())
-        } else {
-            format!(
-                "uv python install {} || uv python install {}",
-                self.requested(),
-                self.abi()
-            )
-        }
-    }
-
-    pub fn find_hint(&self) -> String {
-        if self.requested() == self.abi() {
-            format!("uv python find {}", self.requested())
-        } else {
-            format!(
-                "uv python find {} || uv python find {}",
-                self.requested(),
-                self.abi()
-            )
-        }
     }
 }
 
@@ -586,6 +571,22 @@ fn runtime_python_version(
     };
 
     PythonRuntimeVersion::parse(requested)
+}
+
+fn ensure_build_python_abi(version: &PythonRuntimeVersion) -> Result<(), ConfigError> {
+    let build_version = PythonRuntimeVersion::parse(default_python_version())?;
+    if version.abi() == build_version.abi() {
+        return Ok(());
+    }
+
+    Err(ConfigError::InvalidValue {
+        key: "python-version".to_string(),
+        message: format!(
+            "Python ABI {} is incompatible with this r2x binary, which was built against Python {}",
+            version.abi(),
+            build_version.abi()
+        ),
+    })
 }
 
 pub fn normalize_python_version(value: &str) -> Result<String, ConfigError> {
@@ -684,30 +685,14 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn detect_requested_python_via_uv_with_retry(
-        uv: &std::path::Path,
-        requested: &str,
-    ) -> Result<String, String> {
-        let uv = uv.to_string_lossy();
-        match r2x_build_support::detect_requested_python_via_uv(&uv, requested) {
-            Ok(version) => Ok(version),
-            Err(error) if error.contains("Text file busy") => {
-                thread::sleep(Duration::from_millis(20));
-                r2x_build_support::detect_requested_python_via_uv(&uv, requested)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    #[cfg(unix)]
-    fn ensure_venv_path_with_retry(config: &mut Config) -> Result<String, ConfigError> {
-        match config.ensure_venv_path() {
+    fn reconcile_venv_path_with_retry(config: &mut Config) -> Result<String, ConfigError> {
+        match config.reconcile_venv_path() {
             Ok(path) => Ok(path),
             Err(ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::ExecutableFileBusy =>
             {
                 thread::sleep(Duration::from_millis(20));
-                config.ensure_venv_path()
+                config.reconcile_venv_path()
             }
             Err(error) => Err(error),
         }
@@ -812,39 +797,17 @@ mod tests {
     }
 
     #[test]
-    fn test_python_runtime_version_query_candidates_include_patch_then_abi() {
-        let Ok(patch) = PythonRuntimeVersion::parse("3.13.1") else {
-            return;
-        };
-        assert_eq!(patch.query_candidates(), vec!["3.13.1", "3.13"]);
-        assert_eq!(
-            patch.install_hint(),
-            "uv python install 3.13.1 || uv python install 3.13"
-        );
-        assert_eq!(
-            patch.find_hint(),
-            "uv python find 3.13.1 || uv python find 3.13"
-        );
-
-        let Ok(abi) = PythonRuntimeVersion::parse("3.13") else {
-            return;
-        };
-        assert_eq!(abi.query_candidates(), vec!["3.13"]);
-        assert_eq!(abi.install_hint(), "uv python install 3.13");
-        assert_eq!(abi.find_hint(), "uv python find 3.13");
-    }
-
-    #[test]
     fn test_config_runtime_python_version_uses_config_or_default() {
+        let configured_version = format!("{}.2", default_python_version());
         let configured = Config {
-            python_version: Some("3.14.2".to_string()),
+            python_version: Some(configured_version.clone()),
             ..Config::default()
         };
         assert_eq!(
             configured.runtime_python_version().ok(),
             Some(PythonRuntimeVersion {
-                requested: "3.14.2".to_string(),
-                abi: "3.14".to_string(),
+                requested: configured_version,
+                abi: default_python_version().to_string(),
             })
         );
 
@@ -869,9 +832,46 @@ mod tests {
     #[test]
     fn test_config_set_python_version_normalizes_before_storing() {
         let mut config = Config::default();
-        assert!(config.set("python-version", " 3.14.1 ".to_string()).is_ok());
+        let version = format!("{}.1", default_python_version());
+        assert!(config.set("python-version", format!(" {version} ")).is_ok());
 
-        assert_eq!(config.python_version.as_deref(), Some("3.14.1"));
+        assert_eq!(config.python_version.as_deref(), Some(version.as_str()));
+    }
+
+    #[test]
+    fn test_config_rejects_python_abi_other_than_the_build() {
+        let incompatible = if default_python_version() == "3.12" {
+            "3.13"
+        } else {
+            "3.12"
+        };
+        let mut config = Config::default();
+
+        let result = config.set("python-version", incompatible.to_string());
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidValue { key, .. }) if key == "python-version"
+        ));
+        assert!(config.python_version.is_none());
+    }
+
+    #[test]
+    fn test_runtime_rejects_a_saved_python_abi_other_than_the_build() {
+        let incompatible = if default_python_version() == "3.12" {
+            "3.13"
+        } else {
+            "3.12"
+        };
+        let config = Config {
+            python_version: Some(incompatible.to_string()),
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.runtime_python_version(),
+            Err(ConfigError::InvalidValue { key, .. }) if key == "python-version"
+        ));
     }
 
     #[test]
@@ -976,180 +976,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn test_build_python_version_uses_uv_for_requested_python_version() {
-        let Ok(temp_dir) = tempfile::tempdir() else {
-            return;
-        };
-        let python = temp_dir.path().join("python");
-        assert!(fs::write(&python, "#!/usr/bin/env sh\nprintf '3.13\\n'\n").is_ok());
-        let uv = temp_dir.path().join("uv");
-        assert!(
-            fs::write(
-                &uv,
-                format!(
-                    "#!/usr/bin/env sh\nif [ \"$1\" = python ] && [ \"$2\" = find ] && [ \"$3\" = 3.13.1 ]; then\n  printf '{}\\n'\n  exit 0\nfi\nexit 1\n",
-                    python.display()
-                )
-            )
-            .is_ok()
-        );
-        for executable in [&python, &uv] {
-            let Ok(metadata) = fs::metadata(executable) else {
-                return;
-            };
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(0o755);
-            assert!(fs::set_permissions(executable, permissions).is_ok());
-        }
-
-        assert_eq!(
-            detect_requested_python_via_uv_with_retry(&uv, "3.13.1")
-                .ok()
-                .as_deref(),
-            Some("3.13")
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_build_python_version_falls_back_to_requested_abi_when_patch_missing() {
-        let Ok(temp_dir) = tempfile::tempdir() else {
-            return;
-        };
-        let python = temp_dir.path().join("python");
-        assert!(fs::write(&python, "#!/usr/bin/env sh\nprintf '3.13\\n'\n").is_ok());
-        let uv = temp_dir.path().join("uv");
-        assert!(
-            fs::write(
-                &uv,
-                format!(
-                    "#!/usr/bin/env sh\nif [ \"$1\" = python ] && [ \"$2\" = find ] && [ \"$3\" = 3.13.1 ]; then\n  exit 1\nfi\nif [ \"$1\" = python ] && [ \"$2\" = find ] && [ \"$3\" = 3.13 ]; then\n  printf '{}\\n'\n  exit 0\nfi\nexit 1\n",
-                    python.display()
-                )
-            )
-            .is_ok()
-        );
-        for executable in [&python, &uv] {
-            let Ok(metadata) = fs::metadata(executable) else {
-                return;
-            };
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(0o755);
-            assert!(fs::set_permissions(executable, permissions).is_ok());
-        }
-
-        assert_eq!(
-            detect_requested_python_via_uv_with_retry(&uv, "3.13.1")
-                .ok()
-                .as_deref(),
-            Some("3.13")
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_build_python_version_rejects_uv_requested_python_mismatch() {
-        let Ok(temp_dir) = tempfile::tempdir() else {
-            return;
-        };
-        let python = temp_dir.path().join("python");
-        assert!(fs::write(&python, "#!/usr/bin/env sh\nprintf '3.12\\n'\n").is_ok());
-        let uv = temp_dir.path().join("uv");
-        assert!(
-            fs::write(
-                &uv,
-                format!(
-                    "#!/usr/bin/env sh\nif [ \"$1\" = python ] && [ \"$2\" = find ]; then\n  printf '{}\\n'\n  exit 0\nfi\nexit 1\n",
-                    python.display()
-                )
-            )
-            .is_ok()
-        );
-        for executable in [&python, &uv] {
-            let Ok(metadata) = fs::metadata(executable) else {
-                return;
-            };
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(0o755);
-            assert!(fs::set_permissions(executable, permissions).is_ok());
-        }
-
-        let result = detect_requested_python_via_uv_with_retry(&uv, "3.13");
-
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(
-                error.contains("uv python find resolves to Python 3.12"),
-                "unexpected error: {error}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_build_python_version_reports_missing_requested_uv_python() {
-        let result = r2x_build_support::detect_requested_python_via_uv("false", "3.13");
-
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(
-                error.contains("uv python install 3.13"),
-                "unexpected error: {error}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_build_python_version_reports_missing_requested_patch_and_abi() {
-        let result = r2x_build_support::detect_requested_python_via_uv("false", "3.13.1");
-
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(
-                error.contains("Requested R2X_PYTHON_VERSION=3.13.1 was not found."),
-                "unexpected error: {error}"
-            );
-            assert!(
-                error.contains("uv python install 3.13.1"),
-                "unexpected error: {error}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_build_python_version_reports_missing_uv_binary_for_requested_python() {
-        let result =
-            r2x_build_support::detect_requested_python_via_uv("/definitely/missing/uv", "3.13");
-
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(
-                error.contains("Install uv, then run: uv python install 3.13"),
-                "unexpected error: {error}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_build_python_version_reports_patch_install_fallback_when_uv_is_missing() {
-        let result =
-            r2x_build_support::detect_requested_python_via_uv("/definitely/missing/uv", "3.13.1");
-
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(
-                error.contains("uv python install 3.13.1 || uv python install 3.13"),
-                "unexpected error: {error}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_ensure_venv_path_falls_back_to_abi_when_patch_query_fails() {
+    fn test_reconcile_venv_path_uses_managed_uv() {
         let Ok(temp_dir) = tempfile::tempdir() else {
             return;
         };
@@ -1157,12 +984,12 @@ mod tests {
         let uv = temp_dir.path().join("uv");
         let calls_path = temp_dir.path().join("uv-calls.log");
         let venv_path = temp_dir.path().join(".venv");
-
+        let python_version = format!("{}.1", default_python_version());
         assert!(
             write_test_executable(
                 &uv,
                 &format!(
-                    "#!/usr/bin/env sh\necho \"$@\" >> \"{}\"\nif [ \"$1\" != \"venv\" ]; then\n  echo \"unexpected command: $@\" >&2\n  exit 1\nfi\nvenv_path=\"\"\npython_query=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    venv)\n      shift\n      venv_path=\"${{1:-}}\"\n      ;;\n    --python)\n      shift\n      python_query=\"${{1:-}}\"\n      ;;\n  esac\n  shift || break\ndone\ncase \"$python_query\" in\n  3.13.1)\n    echo \"patch unavailable\" >&2\n    exit 1\n    ;;\n  3.13)\n    mkdir -p \"$venv_path\"\n    exit 0\n    ;;\nesac\necho \"unexpected python query: $python_query\" >&2\nexit 1\n",
+                    "#!/usr/bin/env sh\necho \"$@\" >> \"{}\"\nvenv_path=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --python) shift ;;\n    venv|--no-config|--no-project|--allow-existing|--managed-python) ;;\n    *) venv_path=\"$1\" ;;\n  esac\n  shift || break\ndone\nmkdir -p \"$venv_path\"\n",
                     calls_path.display()
                 )
             )
@@ -1171,61 +998,66 @@ mod tests {
 
         let mut config = Config {
             uv_path: Some(uv.to_string_lossy().to_string()),
-            python_version: Some("3.13.1".to_string()),
+            python_version: Some(python_version.clone()),
             venv_path: Some(venv_path.to_string_lossy().to_string()),
             ..Config::default()
         };
 
-        let result = ensure_venv_path_with_retry(&mut config);
+        let result = reconcile_venv_path_with_retry(&mut config);
         let calls = fs::read_to_string(&calls_path).unwrap_or_default();
         assert!(
             matches!(result.as_deref(), Ok(path) if path == venv_path.to_string_lossy()),
             "ensure_venv_path failed: {result:?}\nuv calls:\n{calls}"
         );
-
         assert!(
-            calls.contains("--python 3.13.1"),
-            "missing patch query: {calls}"
+            calls.contains(&format!("--python {python_version}")),
+            "missing requested Python query: {calls}"
         );
-        assert!(
-            calls.contains("--python 3.13"),
-            "missing abi fallback query: {calls}"
+        assert_eq!(
+            calls.matches("--python").count(),
+            1,
+            "unexpected fallback: {calls}"
         );
+        assert!(calls.contains("--allow-existing"));
+        assert!(calls.contains("--managed-python"));
+        assert!(calls.contains("--no-config --no-project"));
     }
 
     #[test]
     #[cfg(unix)]
-    fn test_ensure_venv_path_error_includes_patch_fallback_hint() {
+    fn test_reconcile_venv_path_error_includes_native_uv_hint() {
         let Ok(temp_dir) = tempfile::tempdir() else {
             return;
         };
 
         let uv = temp_dir.path().join("uv");
-        assert!(
-            write_test_executable(
-                &uv,
-                "#!/usr/bin/env sh\nif [ \"$1\" = \"venv\" ]; then\n  echo 'no interpreter found' >&2\n  exit 1\nfi\nexit 1\n"
-            )
-            .is_ok()
-        );
+        let python_abi = default_python_version();
+        let python_version = format!("{python_abi}.1");
+        assert!(write_test_executable(
+            &uv,
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"venv\" ]; then\n  exit 1\nfi\nexit 1\n"
+        )
+        .is_ok());
 
         let mut config = Config {
             uv_path: Some(uv.to_string_lossy().to_string()),
-            python_version: Some("3.13.1".to_string()),
+            python_version: Some(python_version.clone()),
             venv_path: Some(temp_dir.path().join(".venv").to_string_lossy().to_string()),
             ..Config::default()
         };
 
-        let result = ensure_venv_path_with_retry(&mut config);
+        let result = reconcile_venv_path_with_retry(&mut config);
         assert!(result.is_err());
         if let Err(error) = result {
             let message = error.to_string();
             assert!(
-                message.contains("Failed to create venv for Python 3.13.1 (ABI 3.13)"),
+                message.contains(&format!(
+                    "Failed to create venv for Python {python_version} (ABI {python_abi})"
+                )),
                 "unexpected error: {message}"
             );
             assert!(
-                message.contains("uv python install 3.13.1 || uv python install 3.13"),
+                message.contains(&format!("uv python install {python_version}")),
                 "unexpected error: {message}"
             );
         }

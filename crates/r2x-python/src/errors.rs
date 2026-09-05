@@ -23,9 +23,6 @@ pub enum BridgeError {
     #[error("Failed to initialize Python interpreter: {0}")]
     Initialization(String),
 
-    #[error("Python library not found: {0}")]
-    PythonLibraryNotFound(String),
-
     #[error("Plugin '{0}' not found")]
     PluginNotFound(String),
 
