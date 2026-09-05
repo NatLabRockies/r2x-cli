@@ -528,7 +528,7 @@ impl Config {
         )))
     }
 
-    pub fn runtime_python_version(&self) -> Result<PythonRuntimeVersion, ConfigError> {
+    fn runtime_python_version(&self) -> Result<PythonRuntimeVersion, ConfigError> {
         let version = runtime_python_version(self.python_version.as_deref())?;
         ensure_build_python_abi(&version)?;
         Ok(version)
@@ -540,24 +540,24 @@ pub fn default_python_version() -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PythonRuntimeVersion {
+struct PythonRuntimeVersion {
     requested: String,
     abi: String,
 }
 
 impl PythonRuntimeVersion {
-    pub fn parse(value: &str) -> Result<Self, ConfigError> {
+    fn parse(value: &str) -> Result<Self, ConfigError> {
         let requested = normalize_python_version(value)?;
         let abi = python_abi_version(&requested);
 
         Ok(Self { requested, abi })
     }
 
-    pub fn requested(&self) -> &str {
+    fn requested(&self) -> &str {
         &self.requested
     }
 
-    pub fn abi(&self) -> &str {
+    fn abi(&self) -> &str {
         &self.abi
     }
 }
