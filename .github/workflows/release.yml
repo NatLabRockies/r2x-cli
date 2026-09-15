@@ -194,14 +194,6 @@ jobs:
           for target in $TARGETS; do
             cargo build --profile dist -p r2x --bins --target "$target"
           done
-          for binary in target/*/dist/r2x-runtime; do
-            python_library="$(otool -L "$binary" | awk '/libpython/ {print $1; exit}')"
-            if [[ -z "$python_library" ]]; then
-              echo "No libpython dependency found in $binary"
-              exit 1
-            fi
-            install_name_tool -change "$python_library" "@rpath/$(basename "$python_library")" "$binary"
-          done
 
       - name: Build artifacts (container)
         if: ${{ matrix.container }}

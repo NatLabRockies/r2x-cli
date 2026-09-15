@@ -34,9 +34,8 @@ compression = "xz"
 
 # The launcher resolves the UV-managed Python library at runtime.
 
-# The PyO3 payload must find libpython after installation. The platform-specific
-# release jobs rewrite its build-machine reference to an executable-relative
-# lookup before cargo-dist packages the binaries.
+# The macOS linker wrapper makes the PyO3 payload's libpython dependency
+# relocatable before cargo-dist packages the binaries.
 
 
 [dist.target."x86_64-pc-windows-msvc"]

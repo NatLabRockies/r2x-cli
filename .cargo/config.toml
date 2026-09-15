@@ -1,3 +1,11 @@
 # Do not set PYO3_PYTHON here. The justfile, CI setup action, and
 # scripts/resolve_pyo3_python.sh choose the build interpreter so
 # R2X_PYTHON_VERSION can select different supported Python versions.
+# macOS's linker records PyO3's absolute libpython path, so use the project
+# linker wrapper to make the runtime dependency relocatable at link time.
+
+[target.aarch64-apple-darwin]
+linker = "scripts/macos-linker.sh"
+
+[target.x86_64-apple-darwin]
+linker = "scripts/macos-linker.sh"
