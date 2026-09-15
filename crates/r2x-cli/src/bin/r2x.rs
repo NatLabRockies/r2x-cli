@@ -1,7 +1,7 @@
 //! Launch the PyO3 runtime through R2X's UV-managed virtual environment.
 
 use anyhow::{bail, ensure, Context, Result};
-use r2x_config::Config;
+use r2x_config::{default_python_version, Config};
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -12,24 +12,36 @@ const PYTHON_RUNTIME_PATHS: &str =
 
 struct Runtime {
     uv: PathBuf,
-    venv: PathBuf,
+    venv: Option<PathBuf>,
+    python_version: String,
 }
 
 impl Runtime {
-    fn load() -> Result<Self> {
+    fn load(requires_python_environment: bool) -> Result<Self> {
         let mut config = Config::load().context("failed to load R2X configuration")?;
         let uv = PathBuf::from(
             config
                 .ensure_uv_path()
                 .context("failed to find the UV executable")?,
         );
-        let venv = PathBuf::from(
-            config
-                .reconcile_venv_path()
-                .context("failed to create the UV-managed R2X virtual environment")?,
-        );
+        let python_version = config
+            .python_version
+            .clone()
+            .unwrap_or_else(|| default_python_version().to_string());
+        let venv = requires_python_environment
+            .then(|| {
+                config
+                    .reconcile_venv_path()
+                    .map(PathBuf::from)
+                    .context("failed to create the UV-managed R2X virtual environment")
+            })
+            .transpose()?;
 
-        Ok(Self { uv, venv })
+        Ok(Self {
+            uv,
+            venv,
+            python_version,
+        })
     }
 }
 
@@ -45,29 +57,22 @@ fn launch(args: &[OsString]) -> Result<()> {
     }
 
     let payload = payload_path()?;
-    if !requires_python_environment(args) {
-        return run_payload_directly(&payload, args);
-    }
-
-    let runtime = Runtime::load()?;
+    // The PyO3 payload links libpython, so every launch needs its loader path.
+    let use_venv = requires_python_environment(args);
+    let runtime = Runtime::load(use_venv)?;
     let library_dir = python_library_dir(&runtime)?;
 
-    let mut command = uv_run_in_venv(&runtime);
-    command.arg(&payload).args(args);
+    let mut command = if use_venv {
+        let mut command = uv_run_in_venv(&runtime)?;
+        command.arg(&payload);
+        command
+    } else {
+        Command::new(&payload)
+    };
+    command.args(args);
     configure_python_loader(&mut command, &library_dir)?;
 
-    let status = command.status().context("failed to start R2X through uv")?;
-    match status.code() {
-        Some(code) => std::process::exit(code),
-        None => bail!("R2X terminated without an exit code"),
-    }
-}
-
-fn run_payload_directly(payload: &Path, args: &[OsString]) -> Result<()> {
-    let status = Command::new(payload)
-        .args(args)
-        .status()
-        .context("failed to start R2X runtime")?;
+    let status = command.status().context("failed to start R2X runtime")?;
     match status.code() {
         Some(code) => std::process::exit(code),
         None => bail!("R2X terminated without an exit code"),
@@ -120,26 +125,60 @@ const fn payload_name() -> &'static str {
     "r2x-runtime"
 }
 
-fn uv_run_in_venv(runtime: &Runtime) -> Command {
+fn uv_run_in_venv(runtime: &Runtime) -> Result<Command> {
+    let venv = runtime
+        .venv
+        .as_ref()
+        .context("R2X virtual environment was not initialized")?;
     let mut command = Command::new(&runtime.uv);
     command
         .args(["run", "--no-config", "--no-project", "--active", "--"])
-        .env("VIRTUAL_ENV", &runtime.venv)
+        .env("VIRTUAL_ENV", venv)
         .env_remove("PYTHONHOME")
         .env_remove("PYTHONPATH");
-    command
+    Ok(command)
+}
+
+fn managed_python(runtime: &Runtime) -> Result<PathBuf> {
+    let output = Command::new(&runtime.uv)
+        .args([
+            "python",
+            "find",
+            "--no-config",
+            "--no-project",
+            "--managed-python",
+            &runtime.python_version,
+        ])
+        .output()
+        .context("failed to find the UV-managed Python")?;
+    ensure!(
+        output.status.success(),
+        "Python lookup failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    let python = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    ensure!(
+        python.is_file(),
+        "UV-managed Python does not exist: {}",
+        python.display()
+    );
+    Ok(python)
 }
 
 fn python_library_dir(runtime: &Runtime) -> Result<PathBuf> {
-    let output = uv_run_in_venv(runtime)
-        .args(["python", "-I", "-S", "-c", PYTHON_RUNTIME_PATHS])
+    let mut command = if runtime.venv.is_some() {
+        uv_run_in_venv(runtime)?
+    } else {
+        Command::new(managed_python(runtime)?)
+    };
+    if runtime.venv.is_some() {
+        command.arg("python");
+    }
+    let output = command
+        .args(["-I", "-S", "-c", PYTHON_RUNTIME_PATHS])
         .output()
-        .with_context(|| {
-            format!(
-                "failed to probe the UV-managed Python in {}",
-                runtime.venv.display()
-            )
-        })?;
+        .with_context(|| "failed to probe the UV-managed Python")?;
     ensure!(
         output.status.success(),
         "Python probe failed: {}",
