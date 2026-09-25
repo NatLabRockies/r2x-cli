@@ -76,7 +76,7 @@ a plugin so stdin remains available for debugger commands.
 
 ## Read
 
-`r2x read` opens an interactive IPython session for a system artifact:
+In interactive mode, `r2x read` prints a system overview before opening IPython for the system artifact:
 
 ```bash
 r2x read <file.json>
@@ -85,11 +85,20 @@ r2x read --exec <script.py> <file.json>
 r2x read --exec <script.py> --interactive <file.json>
 ```
 
+Use `sys.info()` in the session to print the overview again.
 When no file is provided, JSON can be read from stdin:
 
 ```bash
 cat system.json | r2x read
 ```
+
+To pipe plugin output into `r2x read`, replace `PLUGIN_REF` with an installed plugin reference and omit `-o` so JSON is written to stdout:
+
+```bash
+r2x run PLUGIN_REF | r2x read
+```
+
+Use `-o <file>` to save output to a file, then pass that file to `r2x read`.
 
 Use `--no-banner` to suppress the interactive startup banner.
 
