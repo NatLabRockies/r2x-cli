@@ -20,7 +20,7 @@ pub struct RemovedPackage {
 
 impl Manifest {
     /// Get the default path to the manifest file
-    fn path() -> PathBuf {
+    pub fn path() -> PathBuf {
         // On Unix/macOS: use ~/.cache/r2x/manifest.toml
         // On Windows: use AppData/Local/r2x/manifest.toml
         #[cfg(not(target_os = "windows"))]

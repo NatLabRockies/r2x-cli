@@ -15,7 +15,7 @@ on:
 jobs:
   release-pr:
     name: Release PR
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: >-
       ${{
         github.event_name == 'push' &&
@@ -61,7 +61,7 @@ jobs:
 
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' ||

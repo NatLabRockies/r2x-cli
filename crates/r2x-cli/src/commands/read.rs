@@ -84,6 +84,13 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
             .read_to_string(&mut json_data)
             .map_err(|e| format!("Failed to read from stdin: {}", e))?;
 
+        if json_data.trim().is_empty() {
+            return Err(
+                "No JSON data received from stdin. Read the `-o` output file directly or remove `-o` to pipe JSON."
+                    .into(),
+            );
+        }
+
         let cache_dir = config.ensure_cache_path()?;
         let cache_root = PathBuf::from(&cache_dir);
         if let Some(envelope) = parse_handoff_envelope(&json_data)? {
@@ -124,7 +131,6 @@ pub fn handle_read(cmd: ReadCommand, opts: GlobalOpts) -> Result<(), Box<dyn std
 
     let display_source_str = display_source.replace('\\', "\\\\").replace('\'', "\\'");
     let source_is_stdin = if source_is_stdin { "True" } else { "False" };
-
     let python_code = format!(
         r#"
 import json
@@ -232,10 +238,10 @@ class PluginProxy:
             import importlib
             module = importlib.import_module(self._module_path)
             if self._plugin_type == "function":
-                func_name = self._info.get("function_name", self._name)
-                self._loaded = getattr(module, func_name)
+                attr_name = self._info.get("function_name", self._name)
             else:
-                self._loaded = getattr(module, self._name)
+                attr_name = self._info.get("class_name", self._name)
+            self._loaded = getattr(module, attr_name)
             return self._loaded
         except Exception as e:
             self._error = e
@@ -271,6 +277,29 @@ class PackageProxy:
         self._package_name = package_name
         self._plugins_info = plugins_info  # dict of plugin_name -> (module_path, plugin_type, info)
         self._proxies = {{}}
+
+    def _get_proxy(self, name):
+        """Get or create a PluginProxy for the given plugin name."""
+        if name not in self._proxies:
+            if name not in self._plugins_info:
+                raise AttributeError(f"Plugin '{{name}}' not found in package '{{self._package_name}}'")
+            module_path, plugin_type, info = self._plugins_info[name]
+            self._proxies[name] = PluginProxy(name, module_path, plugin_type, info)
+        return self._proxies[name]
+
+    def __getattr__(self, name):
+        """Return PluginProxy for the requested plugin."""
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self._get_proxy(name)
+
+    def __dir__(self):
+        """Return plugin names for tab completion."""
+        return list(self._plugins_info.keys())
+
+    def __repr__(self):
+        count = len(self._plugins_info)
+        return f"<PackageProxy: {{self._package_name}} ({{count}} plugins)>"
 
 
 # Global registry to track lazy imports
@@ -360,30 +389,6 @@ class LazyModuleProxy:
     def __dir__(self):
         """Return module attributes for tab completion."""
         return dir(self._load())
-
-    def _get_proxy(self, name):
-        """Get or create a PluginProxy for the given plugin name."""
-        if name not in self._proxies:
-            if name not in self._plugins_info:
-                raise AttributeError(f"Plugin '{{name}}' not found in package '{{self._package_name}}'")
-            module_path, plugin_type, info = self._plugins_info[name]
-            self._proxies[name] = PluginProxy(name, module_path, plugin_type, info)
-        return self._proxies[name]
-
-    def __getattr__(self, name):
-        """Return PluginProxy for the requested plugin."""
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return self._get_proxy(name)
-
-    def __dir__(self):
-        """Return plugin names for tab completion."""
-        return list(self._plugins_info.keys())
-
-    def __repr__(self):
-        count = len(self._plugins_info)
-        return f"<PackageProxy: {{self._package_name}} ({{count}} plugins)>"
-
 
 class R2XMagics:
     """r2x custom magic commands for IPython."""
@@ -873,7 +878,7 @@ class R2XMagics:
         try:
             import importlib
             module = importlib.import_module(module_path)
-            attr_name = info.get("function_name", plugin_name) if plugin_type == "function" else plugin_name
+            attr_name = info.get("function_name", plugin_name) if plugin_type == "function" else info.get("class_name", plugin_name)
             plugin = getattr(module, attr_name)
         except Exception:
             print(f"  Error importing plugin '{{plugin_ref}}':")
@@ -974,8 +979,8 @@ class R2XPlugins:
         self._load_manifest()
 
     def _load_manifest(self):
-        """Load plugin manifest from ~/.r2x/manifest.toml."""
-        manifest_path = Path.home() / ".r2x" / "manifest.toml"
+        """Load the current plugin manifest and build the interactive namespace."""
+        manifest_path = Path(os.environ["R2X_MANIFEST_PATH"])
         if not manifest_path.exists():
             return
 
@@ -993,37 +998,32 @@ class R2XPlugins:
             with open(manifest_path, "rb") as f:
                 self._manifest = tomllib.load(f)
 
-            # Build package -> plugins mapping
             packages = {{}}
             plugin_count = 0
 
-            # Process function plugins
-            functions = self._manifest.get("functions", {{}})
-            for name, info in functions.items():
-                module = info.get("module", "")
-                if module:
-                    pkg = module.split(".")[0]
-                    if pkg not in packages:
-                        packages[pkg] = {{}}
-                    packages[pkg][name] = (module, "function", info)
-                    plugin_count += 1
+            for package_info in self._manifest.get("packages", []):
+                for info in package_info.get("plugins", []):
+                    module = info.get("module", "")
+                    plugin_type = info.get("type", "")
+                    if not module or plugin_type not in ("class", "function"):
+                        continue
 
-            # Process class plugins
-            classes = self._manifest.get("classes", {{}})
-            for name, info in classes.items():
-                module = info.get("module", "")
-                if module:
-                    pkg = module.split(".")[0]
-                    if pkg not in packages:
-                        packages[pkg] = {{}}
-                    packages[pkg][name] = (module, "class", info)
+                    plugin_name = info.get(
+                        "class_name" if plugin_type == "class" else "function_name"
+                    )
+                    if not plugin_name:
+                        continue
+
+                    package_name = module.split(".")[0]
+                    package_plugins = packages.setdefault(package_name, {{}})
+                    package_plugins[plugin_name] = (module, plugin_type, info)
                     plugin_count += 1
 
             self._packages = packages
             self._plugin_count = plugin_count
 
         except Exception:
-            # Handle any errors gracefully - just leave empty
+            # Handle invalid or unreadable manifests without blocking system access.
             pass
 
     def __getattr__(self, name):
@@ -1145,13 +1145,13 @@ def print_startup_banner(display_source, plugins):
     package_count = len(plugins._packages)
 
     print()
-    print(f"  Source: {{display_source}}")
+    print(f"Source: {{display_source}}")
     if plugin_count > 0:
-        print(f"  Plugins: {{plugin_count}} loaded from {{package_count}} packages")
+        print(f"Plugins: {{plugin_count}} loaded from {{package_count}} packages")
     else:
-        print("  Plugins: none (run r2x install to add)")
+        print("Plugins: none (run r2x install to add)")
     print()
-    print("  Type 'sys.info()' for system details, %r2x_help for commands")
+    print("System loaded as `sys`; use `sys.info()` for an overview and `%r2x_help` for commands")
     print()
 
 
@@ -1332,8 +1332,7 @@ cfg.TerminalInteractiveShell.confirm_exit = False
 cfg.TerminalInteractiveShell.display_banner = False
 cfg.TerminalInteractiveShell.banner1 = ""
 cfg.TerminalInteractiveShell.banner2 = ""
-cfg.TerminalInteractiveShell.highlighting_style = "monokai"
-cfg.TerminalInteractiveShell.colors = "Linux"
+cfg.TerminalInteractiveShell.enable_tip = False
 
 # Configure persistent history isolated to r2x
 r2x_ipython_dir = Path.home() / ".r2x" / "ipython"
@@ -1409,9 +1408,12 @@ if exec_script:
     if not interactive_after_exec:
         py_sys.exit(0)
 
-    # Update system reference in case script modified it
-    if "sys" in exec_namespace and exec_namespace["sys"] is not system:
+    # Keep the loaded system if the script imported Python's standard-library `sys`.
+    if isinstance(exec_namespace.get("sys"), System):
         system = exec_namespace["sys"]
+
+if os.environ.get("R2X_READ_QUIET") != "1":
+    system.info()
 
 context = {{"sys": system, "plugins": plugins, "pd": pd, "np": np, "plt": plt}}
 shell = InteractiveShellEmbed(config=cfg, banner1="", exit_msg="")
@@ -1455,7 +1457,10 @@ shell(
     // A pipeline gives stdin to the JSON payload, but `r2x read` must still
     // attach its interactive session to the caller's terminal. Keep inherited
     // streams when stdout is captured so tests and sidecar errors remain visible.
-    let (tty_attached, stdin_stdio, stdout_stdio, stderr_stdio) = if stdout_is_tty {
+    let (tty_attached, stdin_stdio, stdout_stdio, stderr_stdio) = if stdout_is_tty && stdin_is_tty {
+        // prompt_toolkit cannot monitor a reopened /dev/tty descriptor on macOS.
+        (true, Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
+    } else if stdout_is_tty {
         acquire_tty_stdio()
     } else {
         (false, Stdio::inherit(), Stdio::inherit(), Stdio::inherit())
@@ -1468,7 +1473,8 @@ shell(
     command
         .stdin(stdin_stdio)
         .stdout(stdout_stdio)
-        .stderr(stderr_stdio);
+        .stderr(stderr_stdio)
+        .env("R2X_MANIFEST_PATH", r2x_manifest::types::Manifest::path());
 
     // Pass quiet and no-banner flags as environment variables
     if opts.quiet > 0 {
@@ -1611,7 +1617,7 @@ fn ensure_module_installed(
     package_spec: &str,
     display_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if module_exists(python_exe, module_name) {
+    if module_spec_exists(python_exe, module_name) {
         logger::debug(&format!("{} already available in venv", display_name));
         return Ok(());
     }
@@ -1625,10 +1631,12 @@ fn ensure_module_installed(
     Ok(())
 }
 
-fn module_exists(python_exe: &str, module_name: &str) -> bool {
+// The bootstrap imports these modules for real, so only probe their specs here.
+fn module_spec_exists(python_exe: &str, module_name: &str) -> bool {
     Command::new(python_exe)
         .arg("-c")
-        .arg(format!("import {}", module_name))
+        .arg("import importlib.util, sys; sys.exit(importlib.util.find_spec(sys.argv[1]) is None)")
+        .arg(module_name)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -16,7 +16,7 @@ env:
 jobs:
   script-tests:
     name: Script tests (Python 3.12)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Setup uv & Python
@@ -37,7 +37,7 @@ jobs:
 
   lint:
     name: Lint (stable, Python 3.12)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
@@ -57,7 +57,7 @@ jobs:
 
   hawk:
     name: Hawk visibility analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -86,7 +86,7 @@ jobs:
 
   test:
     name: Tests (${{ matrix.toolchain }}, Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -145,7 +145,7 @@ jobs:
 
   release-readiness:
     name: Release readiness (publish dry-run)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       R2X_PYTHON_VERSION: "3.12"
     steps:

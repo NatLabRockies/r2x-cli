@@ -252,6 +252,61 @@ fn test_direct_plugin_output_writes_utf8_json_and_read_accepts_it(
 }
 
 #[test]
+fn test_read_interactive_shows_system_summary_and_installed_plugins(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let system_path = env.home_path().join("read-ui-system.json");
+    fs::write(&system_path, r#"{"name":"read-ui-test","components":[]}"#)?;
+
+    env.command()
+        .args(["read", system_path.to_string_lossy().as_ref()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("System summary: read-ui-test"))
+        .stdout(predicate::str::contains("\nSource: "))
+        .stdout(predicate::str::contains("\nPlugins: "))
+        .stdout(predicate::str::contains("\nSystem loaded as `sys`;"))
+        .stdout(predicate::str::contains(
+            "Plugins: 11 loaded from 2 packages",
+        ));
+
+    let script_path = env.home_path().join("inspect-plugin.py");
+    fs::write(
+        &script_path,
+        "import sys\nprint(type(plugins.r2x_reeds.ReEDSParser()).__name__)\n",
+    )?;
+    env.command()
+        .args([
+            "read",
+            "--exec",
+            script_path.to_string_lossy().as_ref(),
+            system_path.to_string_lossy().as_ref(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ReEDSParser"))
+        .stdout(predicate::str::contains("System summary:").not());
+
+    env.command()
+        .args([
+            "read",
+            "--exec",
+            script_path.to_string_lossy().as_ref(),
+            "--interactive",
+            system_path.to_string_lossy().as_ref(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ReEDSParser"))
+        .stdout(predicate::str::contains("System summary: read-ui-test"));
+
+    Ok(())
+}
+
+#[test]
 fn test_direct_plugin_receives_system_from_stdin() -> Result<(), Box<dyn std::error::Error>> {
     let Ok(env) = PipelineHarness::new() else {
         return Ok(());
@@ -1161,6 +1216,21 @@ fn test_read_file_resolves_time_series_sidecar_relative_to_json_parent() {
         ])
         .assert()
         .success();
+}
+
+#[test]
+fn test_read_empty_stdin_explains_file_and_pipeline_output() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    env.command()
+        .args(["read", "--no-banner"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No JSON data received from stdin"))
+        .stderr(predicate::str::contains("remove `-o` to pipe JSON"));
 }
 
 #[test]

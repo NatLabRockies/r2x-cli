@@ -18,6 +18,9 @@ class System:
     def __init__(self, data: dict[str, Any]) -> None:
         self.data = data
 
+    def info(self) -> None:
+        print(f"System summary: {self.data.get('name', 'unnamed')}")
+
     @classmethod
     def from_dict(cls, data: dict[str, Any], time_series_parent_dir: str | Path) -> "System":
         time_series = data.get("time_series")
