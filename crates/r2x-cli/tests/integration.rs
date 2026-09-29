@@ -806,7 +806,6 @@ fn test_direct_plugin_accepts_flag_forms() {
     env.command()
         .args([
             "run",
-            "plugin",
             "r2x_reeds.parser",
             "--path",
             &reeds_path,
@@ -834,7 +833,6 @@ fn test_direct_plugin_accepts_flag_forms() {
     env.command()
         .args([
             "run",
-            "plugin",
             "r2x_reeds.parser",
             "--set",
             &path_key_value,
@@ -846,6 +844,20 @@ fn test_direct_plugin_accepts_flag_forms() {
         .assert()
         .success()
         .stdout(predicate::str::contains("reeds"));
+}
+
+#[test]
+fn test_run_package_selector_suggests_plugin_commands() {
+    let Ok(env) = PipelineHarness::new() else {
+        return;
+    };
+
+    env.command()
+        .args(["run", "r2x-reeds", "--help"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is a package, not a plugin"))
+        .stderr(predicate::str::contains("r2x run r2x_reeds.parser --help"));
 }
 
 #[test]
@@ -879,22 +891,41 @@ fn test_direct_plugin_unknown_option_suggests_known_flag() {
 }
 
 #[test]
-fn test_direct_plugin_help_prefers_copy_pasteable_kebab_flags() {
+fn test_direct_plugin_help_groups_plugin_and_global_options() {
     let Ok(env) = PipelineHarness::new() else {
         return;
     };
 
     env.command()
-        .args(["run", "r2x_reeds.parser", "--show-help"])
+        .args(["run", "r2x_reeds.parser", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "r2x run r2x_reeds.parser --path <value> --solve-year <value> --weather-year <value>",
+            "Run the r2x_reeds.parser plugin\n\nUsage: r2x run r2x_reeds.parser [OPTIONS]\n\nPlugin Options:",
         ))
-        .stdout(predicate::str::contains("--weather-year"))
-        .stdout(predicate::str::contains("Alias: --weather_year"))
-        .stdout(predicate::str::contains("Compatibility:"))
-        .stdout(predicate::str::contains("weather_year=<value>"));
+        .stdout(predicate::str::contains("--path <PATH> [required]"))
+        .stdout(predicate::str::contains("--solve-year <YEAR> [required]"))
+        .stdout(predicate::str::contains("--weather-year <YEAR> [required]"))
+        .stdout(predicate::str::contains("Global Options:"))
+        .stdout(predicate::str::contains("-i, --input <FILE>"))
+        .stdout(predicate::str::contains("-o, --output <FILE>"))
+        .stdout(predicate::str::contains(
+            "Plugin option names accept kebab-case and snake_case spellings.",
+        ));
+
+    env.command()
+        .args([
+            "run",
+            "r2x_reeds.parser",
+            "--weather-year",
+            "2030",
+            "--input",
+            "input.json",
+            "--help",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plugin Options:"));
 }
 
 #[test]

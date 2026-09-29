@@ -3,6 +3,7 @@ use crate::common::GlobalOpts;
 use crate::help::show_plugin_help;
 use crate::manifest_lookup::resolve_plugin_ref;
 use crate::package_verification;
+use clap::CommandFactory;
 use colored::Colorize;
 use r2x_logger as logger;
 use r2x_manifest::runtime::build_runtime_bindings;
@@ -21,7 +22,7 @@ pub(super) fn handle_plugin_command(
     mut cmd: PluginCommand,
     opts: &GlobalOpts,
 ) -> Result<(), RunError> {
-    cmd.promote_pdb_arg();
+    cmd.extract_trailing_options()?;
 
     match cmd.plugin_name {
         Some(plugin_name) => {
@@ -43,10 +44,22 @@ pub(super) fn handle_plugin_command(
                 )?;
             }
         }
+        None if cmd.show_help => {
+            show_plugin_command_help()?;
+        }
         None => {
             list_available_plugins()?;
         }
     }
+    Ok(())
+}
+
+fn show_plugin_command_help() -> Result<(), RunError> {
+    let mut command = PluginCommand::command().bin_name("r2x run plugin");
+    command
+        .print_help()
+        .map_err(|error| RunError::InvalidArgs(error.to_string()))?;
+    println!();
     Ok(())
 }
 
@@ -56,8 +69,8 @@ fn list_available_plugins() -> Result<(), RunError> {
         "  Use {} to list installed plugins, then:",
         "r2x list".bold()
     );
-    println!("  r2x run <plugin-name> [args...]");
-    println!("  r2x run plugin <plugin-name> --show-help");
+    println!("  r2x run <plugin-name> --help");
+    println!("  r2x run <plugin-name> --<option> <value>");
     println!();
     Ok(())
 }
@@ -102,8 +115,9 @@ fn run_plugin(
                 crate::manifest_lookup::PluginRefError::NotFound(_) => {
                     RunError::PluginNotFound(plugin_name.to_string())
                 }
-                crate::manifest_lookup::PluginRefError::Ambiguous { .. } => {
-                    RunError::Config(err.to_string())
+                crate::manifest_lookup::PluginRefError::Ambiguous { .. }
+                | crate::manifest_lookup::PluginRefError::PackageNotPlugin { .. } => {
+                    RunError::InvalidArgs(err.to_string())
                 }
             })
         }
@@ -626,18 +640,34 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parses_pdb_after_plugin_arguments() -> Result<(), Box<dyn std::error::Error>> {
+    fn parses_command_options_after_plugin_arguments() -> Result<(), Box<dyn std::error::Error>> {
         let mut command = PluginCommand::try_parse_from([
             "r2x run plugin",
             "plugin-name",
             "--solve-year",
             "2030",
+            "--input",
+            "input.json",
+            "-ooutput.json",
+            "--repeat=2",
+            "--benchmark",
             "--pdb",
         ])?;
 
-        assert!(!command.pdb);
-        command.promote_pdb_arg();
+        command.extract_trailing_options()?;
+
+        assert!(!command.show_help);
         assert!(command.pdb);
+        assert!(command.benchmark);
+        assert_eq!(command.repeat.get(), 2);
+        assert_eq!(
+            command.input.as_deref(),
+            Some(std::path::Path::new("input.json"))
+        );
+        assert_eq!(
+            command.output.as_deref(),
+            Some(std::path::Path::new("output.json"))
+        );
         assert_eq!(command.args, ["--solve-year", "2030"]);
 
         let command = PluginCommand::try_parse_from([
@@ -653,6 +683,42 @@ mod tests {
             Some(std::path::Path::new("input.json"))
         );
         assert!(command.args.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn parses_help_after_plugin_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let mut command = PluginCommand::try_parse_from([
+            "r2x run plugin",
+            "plugin-name",
+            "--solve-year",
+            "2030",
+            "--help",
+        ])?;
+
+        command.extract_trailing_options()?;
+
+        assert!(command.show_help);
+        assert!(command.args.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn parses_stdin_input_sentinel_after_plugin_arguments() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut command = PluginCommand::try_parse_from([
+            "r2x run plugin",
+            "plugin-name",
+            "--solve-year",
+            "2030",
+            "--input",
+            "-",
+        ])?;
+
+        command.extract_trailing_options()?;
+
+        assert_eq!(command.input.as_deref(), Some(std::path::Path::new("-")));
+        assert_eq!(command.args, ["--solve-year", "2030"]);
         Ok(())
     }
 

@@ -6,9 +6,12 @@ use std::fmt;
 #[derive(Debug)]
 pub enum PluginRefError {
     NotFound(String),
+    PackageNotPlugin {
+        package: String,
+        plugins: Vec<String>,
+    },
     Ambiguous {
         plugin_ref: String,
-        package: String,
         matches: Vec<String>,
     },
 }
@@ -19,17 +22,35 @@ impl fmt::Display for PluginRefError {
             PluginRefError::NotFound(name) => {
                 write!(f, "Plugin '{}' not found in manifest", name)
             }
+            PluginRefError::PackageNotPlugin { package, plugins } => {
+                if plugins.is_empty() {
+                    write!(f, "Package '{}' contains no runnable plugins", package)
+                } else {
+                    let suggestions = plugins
+                        .iter()
+                        .map(|plugin| format!("r2x run {plugin} --help"))
+                        .collect::<Vec<_>>()
+                        .join("\n  ");
+                    write!(
+                        f,
+                        "'{}' is a package, not a plugin. Choose a plugin:\n  {}",
+                        package, suggestions
+                    )
+                }
+            }
             PluginRefError::Ambiguous {
                 plugin_ref,
-                package,
                 matches,
             } => {
+                let suggestions = matches
+                    .iter()
+                    .map(|candidate| format!("r2x run {candidate}"))
+                    .collect::<Vec<_>>()
+                    .join("\n  ");
                 write!(
                     f,
-                    "Plugin reference '{}' is ambiguous in package '{}': {}",
-                    plugin_ref,
-                    package,
-                    matches.join(", ")
+                    "Plugin reference '{}' is ambiguous. Use a package-qualified name:\n  {}",
+                    plugin_ref, suggestions
                 )
             }
         }
@@ -43,102 +64,166 @@ pub(crate) struct ResolvedPlugin<'a> {
     pub(crate) plugin: &'a Plugin,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum PluginSelector<'a> {
+    Name(&'a str),
+    Qualified { package: &'a str, plugin: &'a str },
+}
+
 pub(crate) fn resolve_plugin_ref<'a>(
     manifest: &'a Manifest,
     plugin_ref: &str,
 ) -> Result<ResolvedPlugin<'a>, PluginRefError> {
-    if let Some(resolved) = find_plugin_by_name(manifest, plugin_ref) {
-        return Ok(resolved);
-    }
-
-    if let Some((package_part, plugin_part)) = plugin_ref.split_once('.') {
-        for package_name in name_variants(package_part) {
-            let Some(package) = manifest.get_package(&package_name) else {
-                continue;
-            };
-
-            if let Some(plugin) = find_plugin_in_package(package, plugin_part) {
-                return Ok(ResolvedPlugin { package, plugin });
+    match parse_plugin_selector(plugin_ref) {
+        PluginSelector::Name(plugin_name) => {
+            if let Some(resolved) =
+                unique_match(plugin_ref, find_plugins_by_name(manifest, plugin_name))?
+            {
+                return Ok(resolved);
             }
 
-            if let Some(role) = alias_role(plugin_part) {
-                let matches: Vec<&Plugin> = package
-                    .plugins
-                    .iter()
-                    .filter(|plugin| plugin_role(plugin) == role)
-                    .collect();
+            let packages = find_packages_by_name(manifest, plugin_name);
+            if !packages.is_empty() {
+                return Err(package_not_plugin_error(manifest, plugin_ref, packages));
+            }
+            Err(PluginRefError::NotFound(plugin_ref.to_string()))
+        }
+        PluginSelector::Qualified { package, plugin } => {
+            if let Some(resolved) =
+                unique_match(plugin_ref, find_plugins_by_name(manifest, plugin_ref))?
+            {
+                return Ok(resolved);
+            }
 
-                match matches.len() {
-                    0 => {}
-                    1 => {
-                        return Ok(ResolvedPlugin {
+            let plugin_names = name_variants(plugin);
+            let packages = find_packages_by_name(manifest, package);
+
+            let mut matches = Vec::new();
+            for package in &packages {
+                for candidate in &package.plugins {
+                    if plugin_names.contains(candidate.name.as_ref()) {
+                        matches.push(ResolvedPlugin {
                             package,
-                            plugin: matches[0],
-                        });
-                    }
-                    _ => {
-                        let names = matches
-                            .iter()
-                            .map(|plugin| plugin.name.to_string())
-                            .collect();
-                        return Err(PluginRefError::Ambiguous {
-                            plugin_ref: plugin_ref.to_string(),
-                            package: package.name.to_string(),
-                            matches: names,
+                            plugin: candidate,
                         });
                     }
                 }
             }
+            if let Some(resolved) = unique_match(plugin_ref, matches)? {
+                return Ok(resolved);
+            }
+
+            if let Some(role) = alias_role(plugin) {
+                let matches = packages
+                    .into_iter()
+                    .flat_map(|package| {
+                        package
+                            .plugins
+                            .iter()
+                            .filter(move |candidate| plugin_role(candidate) == role)
+                            .map(move |candidate| ResolvedPlugin {
+                                package,
+                                plugin: candidate,
+                            })
+                    })
+                    .collect();
+                if let Some(resolved) = unique_match(plugin_ref, matches)? {
+                    return Ok(resolved);
+                }
+            }
+
+            Err(PluginRefError::NotFound(plugin_ref.to_string()))
         }
     }
-
-    Err(PluginRefError::NotFound(plugin_ref.to_string()))
 }
 
-fn find_plugin_by_name<'a>(
-    manifest: &'a Manifest,
-    plugin_name: &str,
-) -> Option<ResolvedPlugin<'a>> {
-    for candidate in name_variants(plugin_name) {
-        if let Some((package, plugin)) = manifest.packages.iter().find_map(|package| {
-            package
-                .plugins
+fn parse_plugin_selector(plugin_ref: &str) -> PluginSelector<'_> {
+    match plugin_ref.split_once('.') {
+        Some((package, plugin)) => PluginSelector::Qualified { package, plugin },
+        None => PluginSelector::Name(plugin_ref),
+    }
+}
+
+fn find_plugins_by_name<'a>(manifest: &'a Manifest, plugin_name: &str) -> Vec<ResolvedPlugin<'a>> {
+    let names = name_variants(plugin_name);
+    let mut matches = Vec::new();
+    for package in &manifest.packages {
+        for plugin in &package.plugins {
+            if names.contains(plugin.name.as_ref()) {
+                matches.push(ResolvedPlugin { package, plugin });
+            }
+        }
+    }
+    matches
+}
+
+fn find_packages_by_name<'a>(manifest: &'a Manifest, package_name: &str) -> Vec<&'a Package> {
+    let names = name_variants(package_name);
+    manifest
+        .packages
+        .iter()
+        .filter(|package| names.contains(package.name.as_ref()))
+        .collect()
+}
+
+fn package_not_plugin_error(
+    manifest: &Manifest,
+    package_ref: &str,
+    packages: Vec<&Package>,
+) -> PluginRefError {
+    let mut plugins: Vec<String> = packages
+        .iter()
+        .flat_map(|package| {
+            package.plugins.iter().map(|plugin| {
+                if find_plugins_by_name(manifest, plugin.name.as_ref()).len() == 1 {
+                    plugin.name.to_string()
+                } else {
+                    format!("{}.{}", package.name, plugin.name)
+                }
+            })
+        })
+        .collect();
+    plugins.sort();
+    plugins.dedup();
+
+    PluginRefError::PackageNotPlugin {
+        package: package_ref.to_string(),
+        plugins,
+    }
+}
+
+fn unique_match<'a>(
+    plugin_ref: &str,
+    candidates: Vec<ResolvedPlugin<'a>>,
+) -> Result<Option<ResolvedPlugin<'a>>, PluginRefError> {
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [candidate] => Ok(Some(ResolvedPlugin {
+            package: candidate.package,
+            plugin: candidate.plugin,
+        })),
+        _ => {
+            let mut matches: Vec<String> = candidates
                 .iter()
-                .find(|plugin| plugin.name.as_ref() == candidate)
-                .map(|plugin| (package, plugin))
-        }) {
-            return Some(ResolvedPlugin { package, plugin });
+                .map(|candidate| format!("{}.{}", candidate.package.name, candidate.plugin.name))
+                .collect();
+            matches.sort();
+            Err(PluginRefError::Ambiguous {
+                plugin_ref: plugin_ref.to_string(),
+                matches,
+            })
         }
     }
-    None
 }
 
-fn find_plugin_in_package<'a>(package: &'a Package, plugin_name: &str) -> Option<&'a Plugin> {
-    for candidate in name_variants(plugin_name) {
-        if let Some(plugin) = package
-            .plugins
-            .iter()
-            .find(|plugin| plugin.name.as_ref() == candidate)
-        {
-            return Some(plugin);
-        }
-    }
-    None
-}
-
-fn name_variants(name: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut variants = Vec::new();
-    for candidate in [
+fn name_variants(name: &str) -> HashSet<String> {
+    [
         name.to_string(),
         name.replace('_', "-"),
         name.replace('-', "_"),
-    ] {
-        if seen.insert(candidate.clone()) {
-            variants.push(candidate);
-        }
-    }
-    variants
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn alias_role(name: &str) -> Option<PluginRole> {
@@ -218,5 +303,74 @@ mod tests {
         let manifest = sample_manifest();
         let resolved = resolve_plugin_ref(&manifest, "r2x-reeds.parser");
         assert!(resolved.is_ok_and(|r| r.plugin.name.as_ref() == "reeds-parser"));
+    }
+
+    fn manifest_with_duplicate_plugin_names() -> Manifest {
+        let mut manifest = sample_manifest();
+        let mut package = Package {
+            name: Arc::from("r2x-plexos"),
+            ..Default::default()
+        };
+        package.plugins.push(Plugin {
+            name: Arc::from("reeds-parser"),
+            plugin_type: PluginType::Class,
+            module: Arc::from("r2x_plexos"),
+            class_name: Some(Arc::from("ReEDSParser")),
+            ..Default::default()
+        });
+        manifest.packages.push(package);
+        manifest.rebuild_indexes();
+        manifest
+    }
+
+    #[test]
+    fn rejects_unqualified_plugin_names_provided_by_multiple_packages(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = manifest_with_duplicate_plugin_names();
+
+        let Err(PluginRefError::Ambiguous { matches, .. }) =
+            resolve_plugin_ref(&manifest, "reeds-parser")
+        else {
+            return Err("duplicate plugin names must require package qualification".into());
+        };
+        assert_eq!(
+            matches,
+            ["r2x-plexos.reeds-parser", "r2x-reeds.reeds-parser"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_selector_suggests_short_names_unless_a_name_collides(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = manifest_with_duplicate_plugin_names();
+
+        let Err(PluginRefError::PackageNotPlugin { package, plugins }) =
+            resolve_plugin_ref(&manifest, "r2x-reeds")
+        else {
+            return Err("a package name must not resolve as a plugin".into());
+        };
+        assert_eq!(package, "r2x-reeds");
+        assert_eq!(plugins, ["break-gens", "r2x-reeds.reeds-parser"]);
+        Ok(())
+    }
+
+    #[test]
+    fn package_qualified_name_selects_one_of_the_colliding_plugins() {
+        let manifest = manifest_with_duplicate_plugin_names();
+
+        let resolved = resolve_plugin_ref(&manifest, "r2x-plexos.reeds-parser");
+        assert!(resolved.is_ok_and(|plugin| plugin.package.name.as_ref() == "r2x-plexos"));
+    }
+
+    #[test]
+    fn hyphen_and_underscore_name_variants_are_also_collision_checked() {
+        let mut manifest = manifest_with_duplicate_plugin_names();
+        manifest.packages[1].plugins[0].name = Arc::from("reeds_parser");
+
+        assert!(matches!(
+            resolve_plugin_ref(&manifest, "reeds-parser"),
+            Err(PluginRefError::Ambiguous { .. })
+        ));
     }
 }

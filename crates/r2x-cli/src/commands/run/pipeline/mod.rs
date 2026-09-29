@@ -147,7 +147,9 @@ fn show_pipeline_flow(config: &PipelineConfig, pipeline_name: &str) -> Result<()
     for (index, plugin_name) in pipeline.iter().enumerate() {
         let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
             PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.clone()),
-            PluginRefError::Ambiguous { .. } => RunError::Config(err.to_string()),
+            PluginRefError::Ambiguous { .. } | PluginRefError::PackageNotPlugin { .. } => {
+                RunError::Config(err.to_string())
+            }
         })?;
         let plugin = resolved.plugin;
 
@@ -253,7 +255,9 @@ fn execute_pipeline(
 
         let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|err| match err {
             PluginRefError::NotFound(_) => RunError::PluginNotFound(plugin_name.clone()),
-            PluginRefError::Ambiguous { .. } => RunError::Config(err.to_string()),
+            PluginRefError::Ambiguous { .. } | PluginRefError::PackageNotPlugin { .. } => {
+                RunError::Config(err.to_string())
+            }
         })?;
         let pkg = resolved.package;
         let plugin = resolved.plugin;

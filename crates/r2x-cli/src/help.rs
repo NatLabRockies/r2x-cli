@@ -1,8 +1,7 @@
 use crate::manifest_lookup::resolve_plugin_ref;
 use colored::Colorize;
-use r2x_logger as logger;
-use r2x_manifest::types::Manifest;
-use std::collections::BTreeSet;
+use r2x_manifest::types::{Manifest, Plugin};
+use std::collections::HashMap;
 
 /// Show help for the run command when invoked with no arguments
 pub(crate) fn show_run_help() -> Result<(), String> {
@@ -45,7 +44,7 @@ pub(crate) fn show_run_help() -> Result<(), String> {
     println!("      (use `r2x run plugin <plugin-name>` for the legacy explicit form)");
     println!();
     println!("  Get plugin help:");
-    println!("    r2x run <plugin-name> --show-help");
+    println!("    r2x run <plugin-name> --help");
     println!();
     println!("  Debug a failing pipeline step:");
     println!("    r2x run <pipeline.yaml> <pipeline-name> --pdb");
@@ -60,190 +59,189 @@ pub(crate) fn show_run_help() -> Result<(), String> {
     Ok(())
 }
 
-/// Show detailed help for a specific plugin
+/// Show help for a specific plugin using the direct-run CLI syntax.
 pub(crate) fn show_plugin_help(plugin_name: &str) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| format!("Failed to load manifest: {}", e))?;
-
     let resolved = resolve_plugin_ref(&manifest, plugin_name).map_err(|e| e.to_string())?;
-    let plugin = resolved.plugin;
 
-    logger::step(&format!("Plugin: {}", plugin_name));
-
-    println!("\nType: {:?}", plugin.plugin_type);
-    println!("Module: {}", plugin.module);
-
-    // Show description if available
-    if let Some(ref desc) = plugin.description {
-        println!("Description: {}", desc);
-    }
-
-    // Show class or function name
-    if let Some(ref class_name) = plugin.class_name {
-        println!("Class: {}", class_name);
-    }
-    if let Some(ref function_name) = plugin.function_name {
-        println!("Function: {}", function_name);
-    }
-
-    // Show config if available
-    if let Some(ref config_class) = plugin.config_class {
-        print!("\nConfiguration Class: {}", config_class);
-        if let Some(ref config_module) = plugin.config_module {
-            print!(" ({})", config_module);
-        }
-        println!();
-    }
-
-    let required_options = required_plugin_options(plugin);
-    let usage_options = if required_options.is_empty() {
-        " [OPTIONS]".to_string()
-    } else {
-        format_option_usage(&required_options)
-    };
-    let example_options = if required_options.is_empty() {
-        plugin_option_names(plugin)
-            .iter()
-            .next()
-            .map(|name| format!(" --{} <value>", name))
-            .unwrap_or_default()
-    } else {
-        format_option_usage(&required_options)
-    };
-
-    println!("\nUsage:");
-    println!("  r2x run {}{}", plugin_name, usage_options);
-    println!("    (add -i <FILE> to load a System or -o <FILE> to persist one)");
-
-    // Show parameters
-    if !plugin.parameters.is_empty() {
-        println!("\nPlugin options:");
-        for param in &plugin.parameters {
-            let module_str = param
-                .module
-                .as_ref()
-                .map(|m| format!(" ({})", m))
-                .unwrap_or_default();
-            let req_marker = if required_param_is_user_supplied(
-                plugin,
-                param.name.as_ref(),
-                param.required && param.default.is_none(),
-            ) {
-                " (required)"
-            } else {
-                ""
-            };
-            println!(
-                "  --{:<20} {}{}{}",
-                cli_flag_name(param.name.as_ref()),
-                param.format_types(),
-                module_str,
-                req_marker
-            );
-            if param.name.contains('_') {
-                println!("      Alias: --{}", param.name);
-            }
-            if let Some(ref desc) = param.description {
-                println!("      {}", desc);
-            }
-        }
-    }
-
-    // Show config schema
-    if !plugin.config_schema.is_empty() {
-        println!("\nConfiguration options:");
-        for (field_name, field) in plugin.config_schema.iter() {
-            let req_marker = if field.required && field.default.is_none() {
-                " (required)"
-            } else {
-                ""
-            };
-            println!(
-                "  --{:<20} {:?}{}",
-                cli_flag_name(field_name.as_ref()),
-                field.field_type,
-                req_marker
-            );
-            if field_name.contains('_') {
-                println!("      Alias: --{}", field_name);
-            }
-        }
-    }
-
-    println!("\nCompatibility:");
-    println!("  key=value arguments are also supported:");
-    println!("    {}", compatibility_example(plugin));
-    println!("  --set key=value is accepted as an explicit key/value form.");
-
-    println!("\nExamples:");
-    println!("  r2x run {} --show-help", plugin_name);
-    println!("  r2x run {}{}", plugin_name, example_options);
-
+    print!("{}", render_plugin_help(plugin_name, resolved.plugin));
     Ok(())
 }
 
-fn required_plugin_options(plugin: &r2x_manifest::types::Plugin) -> BTreeSet<String> {
-    let mut options = BTreeSet::new();
+struct PluginHelpOption {
+    key: String,
+    value_name: &'static str,
+    required: bool,
+    description: Option<String>,
+}
+
+fn render_plugin_help(plugin_name: &str, plugin: &Plugin) -> String {
+    let options = plugin_help_options(plugin);
+    let mut output = format!(
+        "Run the {plugin_name} plugin\n\nUsage: r2x run {plugin_name} [OPTIONS]\n\nPlugin Options:\n"
+    );
+
+    if options.is_empty() {
+        output.push_str("      (none)\n");
+    }
+    for option in &options {
+        let required = if option.required { " [required]" } else { "" };
+        output.push_str(&format!(
+            "      --{} <{}>{required}\n",
+            cli_flag_name(&option.key),
+            option.value_name
+        ));
+        if let Some(description) = option.description.as_deref() {
+            let description = description.trim();
+            if !description.is_empty() {
+                output.push_str(&format!("          {description}\n"));
+            }
+        }
+    }
+
+    if options.iter().any(|option| option.key.contains('_')) {
+        output.push_str("\nPlugin option names accept kebab-case and snake_case spellings.\n");
+    }
+
+    output.push_str("\nGlobal Options:\n");
+    for (name, description) in [
+        (
+            "-q, --quiet...",
+            "Decrease verbosity. Repeat to suppress plugin stdout.",
+        ),
+        (
+            "-v, --verbose...",
+            "Increase verbosity. Repeat for trace output.",
+        ),
+        ("--log-python", "Show Python logs on the console."),
+        ("--no-stdout", "Disable logging plugin stdout to file."),
+        (
+            "-i, --input <FILE>",
+            "Read plugin input from FILE instead of stdin.",
+        ),
+        (
+            "-o, --output <FILE>",
+            "Write plugin output to FILE instead of stdout.",
+        ),
+        ("--repeat <N>", "Invoke the plugin N times. [default: 1]"),
+        ("--benchmark", "Print a benchmark summary."),
+        (
+            "--pdb",
+            "Enter Python post-mortem debugging after a plugin failure.",
+        ),
+        ("-h, --help", "Display help for this command."),
+    ] {
+        output.push_str(&format!("  {name}\n          {description}\n"));
+    }
+
+    output
+}
+
+fn plugin_help_options(plugin: &Plugin) -> Vec<PluginHelpOption> {
+    let mut options = Vec::new();
+    let mut indexes = HashMap::new();
 
     for param in &plugin.parameters {
-        if required_param_is_user_supplied(
+        let key = canonical_option_key(param.name.as_ref());
+        let type_name = param.format_types();
+        let value_name = option_value_name(&key, &type_name);
+        let required = required_param_is_user_supplied(
             plugin,
-            param.name.as_ref(),
+            &key,
             param.required && param.default.is_none(),
-        ) {
-            options.insert(cli_flag_name(param.name.as_ref()));
-        }
+        );
+        add_plugin_help_option(
+            &mut options,
+            &mut indexes,
+            key,
+            value_name,
+            required,
+            param.description.as_deref().map(str::to_owned),
+        );
     }
 
-    for (field_name, field) in plugin.config_schema.iter() {
-        if field.required && field.default.is_none() {
-            options.insert(cli_flag_name(field_name.as_ref()));
-        }
+    let mut fields: Vec<_> = plugin.config_schema.iter().collect();
+    fields.sort_by_key(|(left, _)| *left);
+    for (field_name, field) in fields {
+        let key = canonical_option_key(field_name.as_ref());
+        let type_name = format!("{:?}", field.field_type);
+        let value_name = option_value_name(&key, &type_name);
+        add_plugin_help_option(
+            &mut options,
+            &mut indexes,
+            key,
+            value_name,
+            field.required && field.default.is_none(),
+            None,
+        );
     }
 
     options
 }
 
-fn plugin_option_names(plugin: &r2x_manifest::types::Plugin) -> BTreeSet<String> {
-    let mut options = BTreeSet::new();
-    for param in &plugin.parameters {
-        options.insert(cli_flag_name(param.name.as_ref()));
+fn add_plugin_help_option(
+    options: &mut Vec<PluginHelpOption>,
+    indexes: &mut HashMap<String, usize>,
+    key: String,
+    value_name: &'static str,
+    required: bool,
+    description: Option<String>,
+) {
+    if let Some(index) = indexes.get(&key).copied() {
+        if let Some(option) = options.get_mut(index) {
+            option.required |= required;
+            if option.description.is_none() {
+                option.description = description;
+            }
+        }
+        return;
     }
-    for (field_name, _) in plugin.config_schema.iter() {
-        options.insert(cli_flag_name(field_name.as_ref()));
-    }
-    options
+
+    indexes.insert(key.clone(), options.len());
+    options.push(PluginHelpOption {
+        key,
+        value_name,
+        required,
+        description,
+    });
 }
 
-fn compatibility_example(plugin: &r2x_manifest::types::Plugin) -> String {
-    let mut keys: BTreeSet<String> = BTreeSet::new();
-    for param in &plugin.parameters {
-        keys.insert(param.name.to_string());
+fn option_value_name(name: &str, type_name: &str) -> &'static str {
+    let name = canonical_option_key(name).to_ascii_lowercase();
+    if name.contains("directory") || name.ends_with("_dir") {
+        return "DIR";
     }
-    for (field_name, _) in plugin.config_schema.iter() {
-        keys.insert(field_name.to_string());
+    if name.contains("path") {
+        return "PATH";
+    }
+    if name.ends_with("_year") {
+        return "YEAR";
+    }
+    if name.ends_with("_name") || name == "template" {
+        return "NAME";
+    }
+    if name.ends_with("_config") {
+        return "CONFIG";
     }
 
-    if keys.is_empty() {
-        return "key=value".to_string();
+    let type_name = type_name.to_ascii_lowercase();
+    if type_name.contains("directory") {
+        "DIR"
+    } else if type_name.contains("path") {
+        "PATH"
+    } else if type_name.contains("bool") {
+        "BOOL"
+    } else if type_name.contains("int") {
+        "INT"
+    } else if type_name.contains("float") {
+        "NUMBER"
+    } else {
+        "VALUE"
     }
-
-    keys.iter()
-        .map(|key| format!("{}=<value>", key))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn format_option_usage(options: &BTreeSet<String>) -> String {
-    options.iter().fold(String::new(), |mut usage, name| {
-        usage.push_str(" --");
-        usage.push_str(name);
-        usage.push_str(" <value>");
-        usage
-    })
 }
 
 fn required_param_is_user_supplied(
-    plugin: &r2x_manifest::types::Plugin,
+    plugin: &Plugin,
     param_name: &str,
     has_no_default: bool,
 ) -> bool {
@@ -256,6 +254,10 @@ fn required_param_is_user_supplied(
     !matches!(param_name, "store" | "data_store")
 }
 
+fn canonical_option_key(key: &str) -> String {
+    key.trim_start_matches('-').replace('-', "_")
+}
+
 fn cli_flag_name(key: &str) -> String {
-    key.replace('_', "-")
+    canonical_option_key(key).replace('_', "-")
 }
