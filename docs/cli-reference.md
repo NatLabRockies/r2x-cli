@@ -64,12 +64,18 @@ Common file and named-target options:
 Direct plugin options include:
 
 ```bash
-r2x run plugin <plugin-ref> --show-help
-r2x run plugin <plugin-ref> --input <file>
-r2x run plugin <plugin-ref> --output <file>
-r2x run plugin <plugin-ref> --repeat <N> --benchmark
-r2x run plugin <plugin-ref> --pdb --input <file>
+r2x run <plugin-ref> --help
+r2x run <plugin-ref> --<option> <value>
+r2x run <plugin-ref> --input <file>
+r2x run <plugin-ref> --output <file>
+r2x run <plugin-ref> --repeat <N> --benchmark
+r2x run <plugin-ref> --pdb --input <file>
 ```
+
+Plugin help marks mandatory options as `[required]` and separates them from shared run options.
+
+Pass plugin option values as separate arguments.
+Option names accept both kebab-case and snake_case spellings.
 
 `--pdb` requires an interactive terminal. Use `--input <file>` when debugging
 a plugin so stdin remains available for debugger commands.
