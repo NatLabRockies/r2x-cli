@@ -2,7 +2,8 @@
 title: r2x-cli documentation
 ---
 
-`r2x-cli` installs Python plugins and runs pipelines through the `r2x` executable.
+`r2x-cli` is a Rust-based CLI. Its `r2x` executable installs Python plugins and runs pipelines.
+Invoke the CLI as `r2x`; Python code in these guides implements plugins or inspects system data.
 Start with [Installation](installation.md), [Python environment setup](environment.md), and [Verify the CLI](verify-installation.md), then follow the tutorial.
 
 ## Tutorials

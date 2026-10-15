@@ -23,7 +23,7 @@ The shared-library limitation is tracked in [issue #68](https://github.com/NatLa
 Install the matching configured runtime with `r2x python install`, then repeat all three checks.
 Do not select the newest Python as a generic fix for an ABI mismatch.
 For source builds, match `R2X_PYTHON_VERSION` and `PYO3_PYTHON` as described in [Development](development.md).
-If the error specifically says “Python executable not found at …”, confirm the reported path really is absent before using the source-recommended `r2x python venv create`; reinstall the required plugins afterward and verify with `r2x list`.
+If the error specifically says “Python executable not found at …”, confirm the reported path really is absent before using the supported `r2x venv create --yes`; reinstall the required plugins afterward and verify with `r2x list`.
 Do not recreate a working environment before diagnosing which path or ABI failed.
 
 <a id="the-tutorial-plugin-is-not-found"></a>
@@ -103,7 +103,7 @@ Do not assume every successful plugin writes JSON to stdout.
 ## A file cannot be parsed, or a plugin raises a model validation error
 
 First identify the input boundary. `r2x read` loads system artifacts; it is not a generic CSV, PLEXOS or Sienna parser.
-For the tutorial's input artifact, check JSON syntax without changing it:
+For the tutorial's input artifact, this Python standard-library check inspects JSON syntax only; it does not invoke the CLI:
 
 ```bash
 uv run python -m json.tool output/system.json > /dev/null
