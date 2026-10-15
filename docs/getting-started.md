@@ -1,3 +1,7 @@
+---
+title: r2x-cli Getting Started
+---
+
 # r2x-cli Getting Started
 
 This guide installs `r2x-cli`, initializes a workspace, and gets a plugin ready for
@@ -74,13 +78,16 @@ List the pipelines in a configuration file:
 r2x run pipeline.yaml --list
 ```
 
-Preview a named pipeline without executing its plugins:
+Replace `my-pipeline` below with a name returned by `--list`.
+Inspect its resolved configuration, then preview the execution plan without running plugins:
 
 ```bash
+r2x run pipeline.yaml my-pipeline --print
 r2x run pipeline.yaml my-pipeline --dry-run
 ```
 
-Run it:
+A successful preview verifies the plan, not the availability or correctness of model input data.
+Supply the input files and settings required by the selected plugins before running it:
 
 ```bash
 r2x run pipeline.yaml my-pipeline
@@ -111,12 +118,14 @@ Show the configured Python version and managed environment:
 r2x python show
 ```
 
-Install the configured Python version, or select another supported version:
+Install the configured Python version matching your binary:
 
 ```bash
 r2x python install
-r2x python install 3.13
 ```
+
+An explicit version such as `r2x python install 3.13` requires a CLI binary built for the same Python major.minor ABI.
+See [source builds](development.md#source-build-with-another-python-version) before changing it.
 
 Show the Python executable used by the managed environment:
 

@@ -1,3 +1,7 @@
+---
+title: r2x-cli Architecture
+---
+
 # r2x-cli Architecture
 
 `r2x-cli` is a Rust CLI product for model interoperability. It keeps plugin discovery,
@@ -6,20 +10,11 @@ command-line interface.
 
 ## Runtime flow
 
-```mermaid
-flowchart LR
-    Launcher[r2x-cli launcher] --> Runtime[r2x-runtime]
-    Runtime --> UV[uv-managed Python environment]
-    UV --> Plugins[Installed Python plugins]
-    Runtime --> Config[r2x-config]
-    Runtime --> Manifest[r2x-manifest]
-    Runtime --> AST[r2x-ast]
-    Runtime --> Artifacts[r2x-artifacts]
-    Runtime --> Logger[r2x-logger]
-    AST --> Discovery[Static plugin discovery]
-    Discovery --> Manifest
-    Plugins --> Pipeline[Pipeline execution]
-    Pipeline --> Artifacts
+```text
+r2x launcher -> r2x-runtime -> uv-managed Python -> installed plugins
+                     |                                 |
+                     +-> discovery -> manifest         +-> pipeline -> artifacts
+                     +-> configuration and logging
 ```
 
 The installed `r2x` command is the r2x-cli launcher. The adjacent

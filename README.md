@@ -46,6 +46,9 @@ Use the guide that matches your task:
 - [Architecture](docs/architecture.md): Rust crates, runtime boundaries, discovery, and artifacts.
 - [Development](docs/development.md): source builds, checks, Python ABIs, and troubleshooting.
 
+- [Troubleshooting](docs/troubleshooting.md): diagnose runtime, discovery, and pipeline failures.
+- [Changelog and versions](docs/changelog.md): canonical releases and tagged source docs.
+
 See the [documentation index](docs/README.md) for the complete guide map.
 
 ## Development

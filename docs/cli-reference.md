@@ -1,3 +1,7 @@
+---
+title: r2x-cli CLI Reference
+---
+
 # r2x-cli CLI Reference
 
 This page is a compact overview of the `r2x-cli` command surface. Run
@@ -163,3 +167,13 @@ logging commands that are intentionally outside this compact reference:
 r2x --help
 r2x <command> --help
 ```
+
+## Source contracts
+
+The command contracts in this guide were checked against current main.
+Inspect the pinned [root commands](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-cli/src/main.rs) and [run argument definitions](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-cli/src/commands/run/mod.rs) for exact parser types and defaults.
+Use the installed binary's help when working with a different release.
+`--repeat` accepts a positive integer and defaults to `1`.
+Direct plugin execution reads JSON from stdin unless `--input` is supplied and writes its result to stdout unless `--output` is supplied.
+Plugin-specific required values, types, and defaults come from the discovered plugin contract.
+Invalid arguments, discovery failures, and plugin failures report diagnostics and exit unsuccessfully.

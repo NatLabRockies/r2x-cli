@@ -46,3 +46,7 @@ venv: prepare-r2x
 	{{R2X_BIN}} config venv create --yes
 
 all: fmt clippy test
+
+# Build the searchable documentation site (run npm ci in docs first).
+docs:
+	cd docs && npm run build
