@@ -1512,6 +1512,6 @@ my_transform = r2x_transforms.transform:MyTransform
             return;
         };
 
-        assert!(locator.read_dependencies("nonexistent").is_empty());
+        assert_eq!(locator.read_dependencies("nonexistent"), Vec::<String>::new());
     }
 }
