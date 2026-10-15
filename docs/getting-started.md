@@ -1,148 +1,212 @@
 ---
-title: r2x-cli Getting Started
+title: Run and inspect your first two-step pipeline
+description: Install a small real plugin package, preview a named pipeline, save its result, and check it with r2x read.
 ---
 
-# r2x-cli Getting Started
+Run two installed plugins: one creates a system containing values 10 and 20; the next doubles them.
+Save the resulting system and verify values 20 and 40 through `r2x read`.
+The [complete fixture package](https://github.com/NatLabRockies/r2x-cli/tree/main/docs/examples/first-pipeline) is included in this repository and needs no model dataset or licensed software.
+This example teaches the generic CLI contract; native ReEDS, PLEXOS, and Sienna workflows belong in their [model packages](https://natlabrockies.github.io/R2X/explanation/architecture/) and [R2X tutorials](https://natlabrockies.github.io/R2X/tutorials/getting-started/).
 
-This guide installs `r2x-cli`, initializes a workspace, and gets a plugin ready for
-a pipeline. For exact command and flag behavior, see the [CLI
-reference](cli-reference.md).
+```mermaid
+flowchart TD
+  Install[Install the local r2x-tutorial package] --> Discover[Discover create and scale entry points]
+  Discover --> Create[create builds Item values 10 and 20]
+  Create --> Scale[scale returns Item values 20 and 40]
+  Scale --> Save[Save system.json with companion storage]
+  Save --> Inspect[r2x read reloads and asserts total 60]
+```
 
-## Install
+## Install the CLI and runtime
 
-### macOS and Linux
+You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and a supported Python runtime.
+The commands below use a macOS or Linux shell.
+Install the latest CLI release on macOS/Linux:
 
 ```bash
 curl -fsSL https://github.com/NatLabRockies/r2x-cli/releases/latest/download/r2x-installer.sh | sh
 ```
 
-The installer places the `r2x` command and its adjacent runtime payload in
-`~/.local/bin` by default. Restart your shell, or source the environment file
-shown by the installer, if `r2x` is not immediately available.
-
-### Windows
+Windows users can use the official PowerShell installer:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/NatLabRockies/r2x-cli/releases/latest/download/r2x-installer.ps1 | iex"
 ```
 
-### Verify
+Restart your shell if the installer added a directory to `PATH`.
+Verify the launcher, then install and inspect its configured Python runtime:
 
 ```bash
 r2x --version
 ```
 
-`r2x --version` only checks the launcher. Commands that install or run Python
-plugins also need `uv` and a managed Python environment. On first use,
-`r2x-cli` will offer to install `uv` with its official installer when `uv` is
-not found.
-The default managed Python version is selected when the binary is built,
-usually Python 3.12 for release builds.
-
-## Initialize a workspace
-
-Create a pipeline template in a new or existing working directory:
-
 ```bash
-mkdir my-r2x-workspace
-cd my-r2x-workspace
-r2x init
+r2x python install
+r2x python show
 ```
 
-This creates `pipeline.yaml`. Replace its example plugin names and settings
-with the plugins and input files for your workflow.
+This tutorial was exercised with CLI 0.1.15, Python 3.12, and r2x-core 0.9.0.
+Use a Python major.minor ABI supported by your binary; installing an arbitrary newer Python is not an ABI upgrade for that binary.
+The CLI maintains its own Python environment, separate from a project's uv environment.
 
-## Install and inspect plugins
+## Obtain and inspect the fixture
 
-Install a plugin from PyPI:
-
-```bash
-r2x install r2x-reeds
-r2x list
-```
-
-Install a plugin from GitHub with a branch, tag, or commit:
+Use a fresh directory so you do not overwrite another checkout:
 
 ```bash
-r2x install --branch main gh:NatLabRockies/r2x-reeds
+git clone --depth 1 https://github.com/NatLabRockies/r2x-cli.git
 ```
 
-See [Plugin management](plugin-management.md) for editable installs, Git
-URLs, subdirectories, cache behavior, and upgrades.
+Enter the shipped example:
 
-## Validate and run a pipeline
+```bash
+cd r2x-cli/docs/examples/first-pipeline
+```
 
-List the pipelines in a configuration file:
+The example contains `pyproject.toml`, its `src/r2x_tutorial/` module, `pipeline.yaml`, and `inspect_system.py`.
+No Rust build is required: you are installing a small Python package with the released CLI.
+Read `pyproject.toml` to see the actual entry-point names:
+
+```toml
+[project.entry-points."r2x.parsers"]
+create = "r2x_tutorial.plugin:CreateDemo"
+
+[project.entry-points."r2x.transforms"]
+scale = "r2x_tutorial.plugin:scale_values"
+```
+
+The group declares the runtime role; `create` and `scale` are the CLI references.
+The parser is a `r2x_core.Plugin` class; the transform is an `@expose_plugin` function accepting a `System` and typed configuration.
+See [core's lifecycle contracts](https://natlabrockies.github.io/r2x-core/references/plugins/) when writing your own implementations.
+
+## Install and verify discovery
+
+From this example directory, install the local package in editable mode:
+
+```bash
+r2x install -e .
+```
+
+This changes the CLI's managed environment and discovers the package's entry points.
+Confirm the package and both plugins:
+
+```bash
+r2x list r2x-tutorial
+```
+
+Expect `create` as a class plugin and `scale` as a function plugin.
+Inspect each plugin's generated help rather than guessing its options:
+
+```bash
+r2x run create --help
+r2x run scale --help
+```
+
+`create` accepts `--name`; `scale` accepts `--factor`.
+The implementation defaults are `name="demo"` and `factor=2`, with `factor > 0` enforced by its typed configuration.
+If these names are missing, stop and use [discovery troubleshooting](troubleshooting.md#the-tutorial-plugin-is-not-found).
+
+## Read the real pipeline
+
+The supplied `pipeline.yaml` contains:
+
+```yaml
+pipelines:
+  double-values:
+    - create
+    - scale
+config:
+  create:
+    name: cli-tutorial
+  scale:
+    factor: 2
+```
+
+The ordered list selects installed plugins; `config` maps those same references to their settings.
+`create` builds a system named `cli-tutorial` with two `Item` components.
+`scale` receives that system and multiplies each value by two.
+See the [command/configuration reference](cli-reference.md#pipeline-configuration) for the contract boundaries.
+
+List the named pipeline:
 
 ```bash
 r2x run pipeline.yaml --list
 ```
 
-Replace `my-pipeline` below with a name returned by `--list`.
-Inspect its resolved configuration, then preview the execution plan without running plugins:
+Expect `double-values (2 steps)` and the `create`, `scale` order.
+Print the resolved settings:
 
 ```bash
-r2x run pipeline.yaml my-pipeline --print
-r2x run pipeline.yaml my-pipeline --dry-run
+r2x run pipeline.yaml double-values --print
 ```
 
-A successful preview verifies the plan, not the availability or correctness of model input data.
-Supply the input files and settings required by the selected plugins before running it:
+Confirm `name: cli-tutorial` and `factor: 2` before executing.
+Then preview the flow:
 
 ```bash
-r2x run pipeline.yaml my-pipeline
+r2x run pipeline.yaml double-values --dry-run
 ```
 
-## Update
+Expect `create → stdout`, followed by `scale ← stdin → stdout` in the displayed plan.
+These are flow labels; the named pipeline manages the handoff internally.
+`--list`, `--print`, and `--dry-run` inspect configuration/flow without executing plugins.
+They do not prove package availability, validate every plugin config, or load model data.
+Actual execution verifies installed packages and typed configuration before running the steps.
 
-For a standalone installer installation, update to the latest release with:
+## Save the result
+
+Choose a durable output path:
 
 ```bash
-r2x self update
+r2x run pipeline.yaml double-values --output output/system.json
 ```
 
-The `upgrade` alias is also available:
+Expect successful `create [1/2]` and `scale [2/2]` messages and `Output bundle saved to: output/system.json`.
+Timings and log-file paths vary by machine.
+Inspect the generated files:
 
 ```bash
-r2x self upgrade
+ls output
 ```
 
-If `r2x-cli` was installed with Cargo, Homebrew, or another package manager, use
-that package manager's update command instead.
+Expect `system.json` and `system_time_series/`.
+The companion directory is part of the system artifact even when this simple fixture has no attached time-series values.
+Keep the two together when copying a JSON bundle.
 
-## Manage the runtime
+## Reload and check the saved result
 
-Show the configured Python version and managed environment:
+The supplied inspection script imports the fixture's model class and queries the loaded system:
+
+```python
+from r2x_core import System
+from r2x_tutorial.plugin import Item
+
+system: System = globals()["sys"]
+items = sorted(system.get_components(Item), key=lambda item: item.name)
+assert [item.value for item in items] == [20, 40]
+print(f"{len(items)} items; total={sum(item.value for item in items):.1f}")
+```
+
+Here `sys` is the loaded system supplied by `r2x read`, not Python's `sys` module.
+Run the check:
 
 ```bash
-r2x python show
+r2x read --exec inspect_system.py output/system.json
 ```
 
-Install the configured Python version matching your binary:
+Among the overview messages, expect:
 
-```bash
-r2x python install
+```text
+2 items; total=60.0
 ```
 
-An explicit version such as `r2x python install 3.13` requires a CLI binary built for the same Python major.minor ABI.
-See [source builds](development.md#source-build-with-another-python-version) before changing it.
+The script asserts the component values, so a wrong transformation exits unsuccessfully rather than merely printing a plausible-looking artifact.
+The first `read` can install its inspection dependencies into the managed environment and therefore needs network access.
+The model module must still be importable when an artifact is loaded.
 
-Show the Python executable used by the managed environment:
+## Continue
 
-```bash
-r2x python path
-```
-
-Create or recreate the managed virtual environment after changing its Python
-ABI:
-
-```bash
-r2x venv create --yes
-```
-
-Set or inspect the virtual environment path:
-
-```bash
-r2x venv path
-r2x venv path /path/to/r2x-venv
-```
+Use [artifact inspection and transfer](inspect-artifacts.md) for direct-plugin file boundaries, ZIP archives, and repeatable checks in another environment.
+Use [plugin management](plugin-management.md) when moving from this editable fixture to published model packages.
+Run `r2x init new-workflow.yaml` to create a starter file for your own pipeline; replace its example plugin names before executing it.
+For real model inputs, follow the [R2X workflow tutorials](https://natlabrockies.github.io/R2X/tutorials/getting-started/) and the relevant parser package's input requirements.

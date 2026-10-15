@@ -10,11 +10,22 @@ command-line interface.
 
 ## Runtime flow
 
-```text
-r2x launcher -> r2x-runtime -> uv-managed Python -> installed plugins
-                     |                                 |
-                     +-> discovery -> manifest         +-> pipeline -> artifacts
-                     +-> configuration and logging
+```mermaid
+sequenceDiagram
+  participant User as User
+  participant CLI as r2x-runtime
+  participant Manifest as Discovery manifest
+  participant Python as Managed Python
+  participant Files as Artifact storage
+  User->>CLI: r2x install package
+  CLI->>Manifest: Record entry points and static metadata
+  User->>CLI: r2x run pipeline.yaml name
+  CLI->>Manifest: Resolve roles, callables, and config classes
+  CLI->>Python: Verify typed configuration and invoke first step
+  Python->>Files: Persist system artifact for handoff
+  CLI->>Python: Invoke next step with prior artifact
+  Python->>Files: Persist final system and storage
+  CLI-->>User: Durable output path
 ```
 
 The installed `r2x` command is the r2x-cli launcher. The adjacent
@@ -58,3 +69,26 @@ cache-backed location, and diagnostics are written to stderr.
 Use `-o` and `-i` when the boundary must survive across jobs or be tracked by a
 workflow manager. A durable JSON entrypoint is stored beside its
 `<stem>_time_series/` directory. Keep the entrypoint and sidecars together.
+
+## Why discovery, execution, and inspection are separate
+
+Discovery reads entry points and Python source metadata without importing every plugin.
+It can report available names and configuration fields, but it does not prove that a callable will import or that its data is valid.
+The [first tutorial](getting-started.md) therefore checks discovery, prints configuration, executes the pipeline, and independently reloads its artifact.
+Those checks answer different questions.
+
+The preview flags also have different limits.
+A flow can be printed for a YAML plugin name that is not installed; actual execution is where package and typed-configuration validation occurs.
+A successfully executed plugin can still create a semantically incorrect model, so component/value assertions remain the workflow author's responsibility.
+
+A pipeline uses the artifact layer to preserve component and time-series storage between steps.
+A durable output path makes that boundary usable by another job; a ZIP packages it for transport.
+Neither representation installs Python component classes in the next environment.
+See [artifact inspection](inspect-artifacts.md) for the concrete file and module boundaries.
+
+## Ecosystem responsibilities
+
+[r2x-core](https://github.com/NatLabRockies/r2x-core) supplies the System, PluginContext, configuration, and lifecycle APIs.
+Model packages such as [r2x-reeds](https://github.com/NatLabRockies/r2x-reeds), [r2x-plexos](https://github.com/NatLabRockies/r2x-plexos), and [r2x-sienna](https://github.com/NatLabRockies/r2x-sienna) own native schemas, parsers, and exporters.
+[R2X](https://github.com/NatLabRockies/R2X) supplies mappings between model schemas.
+The CLI orchestrates installed contracts; it does not own those model-specific rules or input datasets.

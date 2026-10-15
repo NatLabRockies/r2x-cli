@@ -7,10 +7,11 @@ Start with the tutorial, then use the reference to inspect the installed command
 
 ## Tutorials
 
-[Getting started](getting-started.md) walks through installation, workspace creation, and pipeline validation.
+[Getting started](getting-started.md) installs a real two-step fixture, executes it, and checks the saved values with `r2x read`.
 
 ## How-to guides
 
+- [Inspect and transfer artifacts](inspect-artifacts.md): direct file boundaries, ZIP archives, and repeatable component checks.
 - [Manage plugins](plugin-management.md): install, inspect, refresh, and remove packages.
 - [Development](development.md): build the launcher and runtime and run repository checks.
 
@@ -46,5 +47,7 @@ npm run build
 ```
 
 The build writes `dist/`, including the Pagefind search index.
+Mermaid diagrams describe the actual tutorial, invocation, and artifact flow.
+The `examples/first-pipeline/` package supplies the executable tutorial fixture.
 Use `npm run preview` to inspect the production output locally.
 The original Markdown filenames stay available in GitHub; the site supplies redirects for their `.md` links.
