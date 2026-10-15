@@ -34,7 +34,7 @@ export default defineConfig({
     },
     customCss: ['./src/styles/brand.css'],
     description: 'Install Python plugins and run model interoperability pipelines.',
-    social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/NatLabRockies/r2x-cli' }],
+    social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/NatLabRockies/r2x-cli' }, { icon: 'code-branch', label: 'Browse source versions', href: 'https://github.com/NatLabRockies/r2x-cli/tags' }],
     editLink: { baseUrl: 'https://github.com/NatLabRockies/r2x-cli/edit/main/' },
     sidebar: [
       { label: 'Getting started', items: [{ label: 'Installation', link: '/installation/' }, { label: 'Python environment setup', link: '/environment/' }, { label: 'Verify the CLI and first use', link: '/verify-installation/' }] },
@@ -43,7 +43,7 @@ export default defineConfig({
       { label: 'Reference/API', items: [{ label: 'CLI reference', link: '/cli-reference/' }] },
       { label: 'Explanation', items: [{ label: 'Architecture', link: '/architecture/' }] },
       { label: 'Troubleshooting', items: [{ label: 'Diagnose failures', link: '/troubleshooting/' }] },
-      { label: 'Changelog', items: [{ label: 'Release history and versions', link: '/changelog/' }] },
+      { label: 'Changelog', link: 'https://github.com/NatLabRockies/r2x-cli/blob/main/CHANGELOG.md' },
       { label: 'Contributors', items: [{ label: 'Development', link: '/development/' }] },
     ],
   })],
