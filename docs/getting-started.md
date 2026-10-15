@@ -17,37 +17,12 @@ flowchart TD
   Save --> Inspect[r2x read reloads and asserts total 60]
 ```
 
-## Install the CLI and runtime
+## Before you begin
 
-You need Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and a supported Python runtime.
-The commands below use a macOS or Linux shell.
-Install the latest CLI release on macOS/Linux:
-
-```bash
-curl -fsSL https://github.com/NatLabRockies/r2x-cli/releases/latest/download/r2x-installer.sh | sh
-```
-
-Windows users can use the official PowerShell installer:
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/NatLabRockies/r2x-cli/releases/latest/download/r2x-installer.ps1 | iex"
-```
-
-Restart your shell if the installer added a directory to `PATH`.
-Verify the launcher, then install and inspect its configured Python runtime:
-
-```bash
-r2x --version
-```
-
-```bash
-r2x python install
-r2x python show
-```
-
-This tutorial was exercised with CLI 0.1.15, Python 3.12, and r2x-core 0.9.0.
-Use a Python major.minor ABI supported by your binary; installing an arbitrary newer Python is not an ABI upgrade for that binary.
-The CLI maintains its own Python environment, separate from a project's uv environment.
+Complete [Installation](installation.md), [Python environment setup](environment.md), and [Verify the CLI](verify-installation.md).
+This tutorial additionally needs Git to obtain the shipped example package.
+The commands use a macOS or Linux shell; the example needs no external model dataset.
+It was exercised with CLI 0.1.15, Python 3.12, and r2x-core 0.9.0.
 
 ## Obtain and inspect the fixture
 

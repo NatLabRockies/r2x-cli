@@ -18,7 +18,7 @@ function siteLinks() {
   };
 }
 
-const pages = ['README', 'getting-started', 'plugin-management', 'cli-reference', 'architecture', 'development', 'troubleshooting', 'changelog', 'inspect-artifacts'];
+const pages = ['README', 'getting-started', 'plugin-management', 'cli-reference', 'architecture', 'development', 'troubleshooting', 'changelog', 'inspect-artifacts', 'installation', 'environment', 'verify-installation'];
 export default defineConfig({
   site: 'https://natlabrockies.github.io',
   base: '/r2x-cli/',
@@ -37,7 +37,8 @@ export default defineConfig({
     social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/NatLabRockies/r2x-cli' }],
     editLink: { baseUrl: 'https://github.com/NatLabRockies/r2x-cli/edit/main/' },
     sidebar: [
-      { label: 'Tutorials', items: [{ label: 'Getting started', link: '/getting-started/' }] },
+      { label: 'Getting started', items: [{ label: 'Installation', link: '/installation/' }, { label: 'Python environment setup', link: '/environment/' }, { label: 'Verify the CLI and first use', link: '/verify-installation/' }] },
+      { label: 'Tutorials', items: [{ label: 'Run your first pipeline', link: '/getting-started/' }] },
       { label: 'How-to guides', items: [{ label: 'Manage plugins', link: '/plugin-management/' }, { label: 'Inspect and transfer artifacts', link: '/inspect-artifacts/' }, { label: 'Validate a workspace', link: '/getting-started/#read-the-real-pipeline' }] },
       { label: 'Reference/API', items: [{ label: 'CLI reference', link: '/cli-reference/' }] },
       { label: 'Explanation', items: [{ label: 'Architecture', link: '/architecture/' }] },

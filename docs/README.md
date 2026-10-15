@@ -3,11 +3,11 @@ title: r2x-cli documentation
 ---
 
 `r2x-cli` installs Python plugins and runs pipelines through the `r2x` executable.
-Start with the tutorial, then use the reference to inspect the installed command surface.
+Start with [Installation](installation.md), [Python environment setup](environment.md), and [Verify the CLI](verify-installation.md), then follow the tutorial.
 
 ## Tutorials
 
-[Getting started](getting-started.md) installs a real two-step fixture, executes it, and checks the saved values with `r2x read`.
+[Run your first pipeline](getting-started.md) installs a real two-step fixture, executes it, and checks the saved values with `r2x read`.
 
 ## How-to guides
 
