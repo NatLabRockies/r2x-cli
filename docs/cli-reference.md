@@ -199,6 +199,8 @@ See [the source dispatcher](https://github.com/NatLabRockies/r2x-cli/blob/c3fada
 
 These are real APIs in the shipped `r2x-tutorial` fixture, not application-specific model APIs:
 
+These lines are signature notation, not executable calls.
+
 ```python
 CreateDemo.from_context(ctx: PluginContext[CreateConfig]) -> Plugin[CreateConfig]
 scale_values(system: System, config: ScaleConfig) -> Result[System, str]

@@ -67,12 +67,20 @@ r2x read output/system.json --exec inspect_system.py --interactive
 ```
 
 The loaded system is `sys`; `sys.info()` prints its overview.
-Query its public component API:
+The same public component query can be reproduced in a fresh session after installing the tutorial fixture:
 
-```python
-from r2x_tutorial.plugin import Item
-
-[(item.name, item.value) for item in sys.get_components(Item)]
+```python doctest
+>>> from r2x_core import PluginContext
+>>> from r2x_tutorial.plugin import CreateConfig, CreateDemo, ScaleConfig, Item, scale_values
+>>> context = PluginContext(config=CreateConfig(name="cli-tutorial"))
+>>> system = CreateDemo.from_context(context).run().system
+>>> system = scale_values(system, ScaleConfig(factor=2)).unwrap()
+>>> items = sorted(system.get_components(Item), key=lambda item: item.name)
+>>> # Expected: the two original values, 10 and 20, were doubled.
+>>> [item.value for item in items]
+[20.0, 40.0]
+>>> # Expected: the same invariant checked by inspect_system.py after r2x read.
+>>> assert len(items) == 2 and sum(item.value for item in items) == 60
 ```
 
 Exit with `exit()`.

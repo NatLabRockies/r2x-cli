@@ -63,7 +63,7 @@ runs inside the managed environment.
 ## Pipeline boundaries
 
 A pipeline can pass a System through a Unix pipe when all steps belong to one
-job. The producer writes JSON to stdout, sidecars are kept in r2x-cli's
+job. The producer writes JSON to stdout, sidecars are kept in the r2x-cli
 cache-backed location, and diagnostics are written to stderr.
 
 Use `-o` and `-i` when the boundary must survive across jobs or be tracked by a

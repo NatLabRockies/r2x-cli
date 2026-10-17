@@ -150,19 +150,24 @@ Keep the two together when copying a JSON bundle.
 
 ## Reload and check the saved result
 
-The supplied inspection script imports the fixture's model class and queries the loaded system:
+After installing the fixture, reproduce the inspection invariants directly with its public APIs:
 
-```python
-from r2x_core import System
-from r2x_tutorial.plugin import Item
-
-system: System = globals()["sys"]
-items = sorted(system.get_components(Item), key=lambda item: item.name)
-assert [item.value for item in items] == [20, 40]
-print(f"{len(items)} items; total={sum(item.value for item in items):.1f}")
+```python doctest
+>>> from r2x_core import PluginContext
+>>> from r2x_tutorial.plugin import CreateConfig, CreateDemo, ScaleConfig, Item, scale_values
+>>> context = PluginContext(config=CreateConfig(name="cli-tutorial"))
+>>> system = CreateDemo.from_context(context).run().system
+>>> system = scale_values(system, ScaleConfig(factor=2)).unwrap()
+>>> items = sorted(system.get_components(Item), key=lambda item: item.name)
+>>> # Expected: the two original values, 10 and 20, were doubled.
+>>> [item.value for item in items]
+[20.0, 40.0]
+>>> # Expected: the same invariant checked by inspect_system.py after r2x read.
+>>> assert len(items) == 2 and sum(item.value for item in items) == 60
 ```
 
-Here `sys` is the loaded system supplied by `r2x read`, not Python's `sys` module.
+The shipped `inspect_system.py` applies the same checks to `sys`, the loaded system supplied by `r2x read`.
+It does not construct a replacement for the saved artifact.
 Run the check:
 
 ```bash
