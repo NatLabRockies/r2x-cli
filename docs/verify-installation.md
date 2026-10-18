@@ -32,6 +32,7 @@ These are role groups recognized by the [runtime mapper](https://github.com/NatL
 | `r2x.modifiers` | Modifier | Inspect the settings used to change an existing system. |
 | `r2x.upgraders` | Upgrader | Check supported data versions before changing an input. |
 | `r2x.transforms` or `r2x.translations` | Translation | Check the input and resulting system contracts. |
+| Other `r2x.*` groups | Utility | Inspect the discovered reference's help and return contract. |
 
 The shipped tutorial registers only `create` in `r2x.parsers` and `scale` in `r2x.transforms`.
 There is no built-in `sysmod` command: modifiers are installed plugin references, run through `r2x run`.
