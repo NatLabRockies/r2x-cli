@@ -99,14 +99,17 @@ r2x run scale --help
 ```
 
 For the tutorial, `factor` must be positive. `factor: 0` can pass dry-run yet fail typed configuration validation during execution.
-Restore `factor: 2` in the tutorial YAML, then verify execution and independent reload:
+Restore `factor: 2` in the tutorial YAML, then run this from `docs/examples/first-pipeline`:
 
 ```bash
-r2x run pipeline.yaml double-values --output output/system.json
-r2x read output/system.json --exec inspect_system.py
+recovery_dir=$(mktemp -d) &&
+r2x run pipeline.yaml double-values --output "$recovery_dir/system.json" &&
+r2x read "$recovery_dir/system.json" --exec inspect_system.py
 ```
 
-Both commands must succeed; the inspection prints `2 items; total=60.0`.
+Each attempt uses a fresh directory because publication refuses to overwrite an existing artifact or its sidecars.
+The `&&` chain reads the new artifact only after execution succeeds.
+The inspection must print `2 items; total=60.0`.
 For another plugin, follow its own schema and supported values rather than borrowing tutorial settings.
 If execution fails, do not inspect a stale output and call the run successful.
 See [pipeline configuration](getting-started.md#read-the-real-pipeline).
@@ -114,13 +117,14 @@ See [pipeline configuration](getting-started.md#read-the-real-pipeline).
 ## “No JSON data received from stdin” or conflicting input sources
 
 This happens when a producer writes a file and its empty stdout is piped to a reader, or when no producer supplied JSON.
-Read a file explicitly instead:
+If the producer succeeded and saved `output/system.json`, read that exact file without rerunning the producer:
 
 ```bash
-r2x run pipeline.yaml double-values --output output/system.json
 r2x read output/system.json --exec inspect_system.py
 ```
 
+Use the actual output path if the successful producer saved it elsewhere.
+If production failed or no artifact was created, use the fresh-directory recovery commands above instead of inspecting an older file.
 Expect the tutorial's 60 total. For a ZIP, use `r2x read --zip ARCHIVE_PATH` with an actual saved archive.
 “--zip requires a ZIP file path; it cannot be used with stdin” means the reader needs the archive path, not piped ZIP bytes.
 
