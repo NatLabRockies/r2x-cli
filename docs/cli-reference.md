@@ -65,6 +65,8 @@ Common file and named-target options:
 | `--zip` | Save file-mode output as an infrasys ZIP archive. |
 | `--pdb` | Open Python post-mortem debugging after an uncaught plugin failure. |
 
+Dry-run still resolves each step against the discovery manifest; unknown or ambiguous references fail before execution.
+
 Direct plugin options include:
 
 ```bash

@@ -122,7 +122,8 @@ Then preview the flow:
 r2x run pipeline.yaml double-values --dry-run
 ```
 
-Expect `create → stdout`, followed by `scale ← stdin → stdout` in the displayed plan.
+Expect `create → stdout`, followed by `scale ← stdin` in the displayed plan.
+The display adds an output marker for class plugins; `scale` is a function plugin and its row has no stdout marker.
 These are flow labels; the named pipeline manages the handoff internally.
 `--list`, `--print`, and `--dry-run` inspect configuration/flow without executing plugins.
 They do not prove package availability, validate every plugin config, or load model data.

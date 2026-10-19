@@ -78,7 +78,8 @@ The [first tutorial](getting-started.md) therefore checks discovery, prints conf
 Those checks answer different questions.
 
 The preview flags also have different limits.
-A flow can be printed for a YAML plugin name that is not installed; actual execution is where package and typed-configuration validation occurs.
+Dry-run resolves every step against the discovery manifest and rejects unknown or ambiguous references.
+A resolved manifest entry still does not prove that its Python package can import; package and typed-configuration validation occur during actual execution.
 A successfully executed plugin can still create a semantically incorrect model, so component/value assertions remain the workflow author's responsibility.
 
 A pipeline uses the artifact layer to preserve component and time-series storage between steps.
