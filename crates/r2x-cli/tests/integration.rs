@@ -509,7 +509,7 @@ fn test_direct_exporter_consumes_system_without_emitting_json(
         "exporter stderr: {}",
         String::from_utf8_lossy(&consumer.stderr)
     );
-    assert!(consumer.stdout.is_empty());
+    assert_eq!(consumer.stdout, Vec::<u8>::new());
 
     Ok(())
 }
@@ -544,7 +544,7 @@ fn test_direct_context_exporter_uses_plugin_context_system(
         "context exporter stderr: {}",
         String::from_utf8_lossy(&consumer.stderr)
     );
-    assert!(consumer.stdout.is_empty());
+    assert_eq!(consumer.stdout, Vec::<u8>::new());
 
     Ok(())
 }

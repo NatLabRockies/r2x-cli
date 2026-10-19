@@ -753,7 +753,7 @@ mod tests {
     fn test_config_default_cache_path() {
         let config = Config::default();
         let cache_path = config.get_cache_path();
-        assert!(!cache_path.is_empty());
+        assert_ne!(cache_path, "");
         assert!(cache_path.contains("r2x"));
     }
 

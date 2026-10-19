@@ -1,24 +1,71 @@
-# r2x-cli documentation
+---
+title: r2x-cli documentation
+---
 
-This directory contains the user and developer documentation for the `r2x-cli`
-product. The executable command is `r2x`. Start with the page that matches
-your goal.
+`r2x-cli` is a Rust-based CLI. Its `r2x` executable installs Python plugins and runs pipelines.
+Invoke the CLI as `r2x`; Python code in these guides implements plugins or inspects system data.
+Start with [Installation](installation.md), [Python environment setup](environment.md), and [Verify the CLI](verify-installation.md), then follow the tutorial.
 
-## User guides
+## Getting Started
 
-- [Getting started](getting-started.md): install `r2x-cli`, initialize a workspace,
-  install plugins, and run a pipeline.
-- [Plugin management](plugin-management.md): install plugins from PyPI, Git, or
-  local paths; inspect discovery; and refresh or remove plugins.
+Follow [Installation](installation.md), [Python environment setup](environment.md), and [Verify the CLI and plugin roles](verify-installation.md).
+The launcher is distributed as a binary; pip installs Python model packages, not this Rust executable.
 
-## Reference
+## Tutorials
 
-- [CLI reference](cli-reference.md): common commands, shared flags, runtime
-  commands, and interactive system inspection.
+[Run your first pipeline](getting-started.md) installs a real two-step fixture, executes it, and checks the saved values with `r2x read`.
 
-## Explanations
+## How-to guides
 
-- [Architecture](architecture.md): workspace crates, runtime boundaries, and
-  plugin discovery.
-- [Development](development.md): source builds, checks, tests, and common
-  development failures.
+- [Inspect and transfer artifacts](inspect-artifacts.md): direct file boundaries, ZIP archives, and repeatable component checks.
+- [Manage plugins](plugin-management.md): install, inspect, refresh, and remove packages.
+- [Development](development.md): build the launcher and runtime and run repository checks.
+
+## Reference/API
+
+[CLI reference](cli-reference.md) covers commands, shared flags, and artifact inspection.
+Plugin arguments belong to each installed plugin; inspect them with `r2x run PLUGIN_REF --help`.
+
+## Explanation
+
+[Architecture](architecture.md) explains discovery, managed Python, and artifact boundaries.
+
+## Troubleshooting
+
+[Diagnose failures](troubleshooting.md) separates launcher, runtime, discovery, and pipeline errors.
+
+## Changelog
+
+[Release history and versions](changelog.md) links to canonical releases and tagged source documentation.
+
+## Contributors
+
+[Development](development.md) covers source builds and repository checks.
+
+## Build this site
+
+From the repository root, use Node.js 22.22 or newer and npm:
+
+```bash
+cd docs
+npm ci
+npm run build
+```
+
+The build writes `dist/`, including the Pagefind search index.
+Mermaid diagrams describe the actual tutorial, invocation, and artifact flow.
+The `examples/first-pipeline/` package supplies the executable tutorial fixture.
+Use `npm run preview` to inspect the production output locally.
+The original Markdown filenames stay available in GitHub; the site supplies redirects for their `.md` links.
+
+## Check Python fixture examples
+
+CLI commands remain shell examples; the few Python blocks exercise the shipped plugin fixture.
+Run their discovered checks with that fixture's declared dependencies:
+
+```bash
+uv run --project docs/examples/first-pipeline python -m unittest discover -s docs -p 'test_examples.py' -v
+```
+
+Each marked Python block starts with fresh globals and checks actual output or assertions.
+The reference signature notation is labeled separately and is not counted as executable code.

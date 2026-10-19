@@ -1,3 +1,7 @@
+---
+title: r2x-cli CLI Reference
+---
+
 # r2x-cli CLI Reference
 
 This page is a compact overview of the `r2x-cli` command surface. Run
@@ -56,10 +60,12 @@ Common file and named-target options:
 | --- | --- |
 | `--list` | List available targets in the file. |
 | `--print` | Print the resolved target without executing it. |
-| `-n`, `--dry-run` | Validate without executing. |
+| `-n`, `--dry-run` | Print the named pipeline flow without executing or validating plugin packages/configs. |
 | `-o`, `--output <file>` | Write output to a file instead of stdout. |
 | `--zip` | Save file-mode output as an infrasys ZIP archive. |
 | `--pdb` | Open Python post-mortem debugging after an uncaught plugin failure. |
+
+Dry-run still resolves each step against the discovery manifest; unknown or ambiguous references fail before execution.
 
 Direct plugin options include:
 
@@ -163,3 +169,52 @@ logging commands that are intentionally outside this compact reference:
 r2x --help
 r2x <command> --help
 ```
+
+## Source contracts
+
+The command contracts in this guide were checked against current main.
+Inspect the pinned [root commands](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-cli/src/main.rs) and [run argument definitions](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-cli/src/commands/run/mod.rs) for exact parser types and defaults.
+Use the installed binary's help when working with a different release.
+`--repeat` accepts a positive integer and defaults to `1`.
+Direct plugin execution reads JSON from stdin unless `--input` is supplied and writes its result to stdout unless `--output` is supplied.
+Plugin-specific required values, types, and defaults come from the discovered plugin contract.
+Invalid arguments, discovery failures, and plugin failures report diagnostics and exit unsuccessfully.
+
+## Pipeline configuration
+
+The [tested fixture](https://github.com/NatLabRockies/r2x-cli/blob/main/docs/examples/first-pipeline/pipeline.yaml) uses these top-level fields:
+
+| Field | Meaning |
+| --- | --- |
+| `pipelines` | Map of pipeline names to ordered plugin-reference lists. |
+| `config` | Map from plugin references to per-plugin configuration values. |
+| `variables` | Optional substitutions resolved in configuration values. |
+| `output_folder` | Optional default output folder passed into plugin configuration handling. |
+
+`--list` reads names and ordered steps from the YAML.
+`--print` resolves and displays the selected pipeline's settings.
+`--dry-run` displays flow only; it does not run the package/configuration validation used by actual execution.
+The executing path verifies plugins, validates their configurations, and then invokes steps in order.
+See [the source dispatcher](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-cli/src/commands/run/pipeline/mod.rs) and [configuration schema](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-cli/src/commands/run/pipeline/config.rs).
+
+## Tutorial plugin contracts
+
+These are real APIs in the shipped `r2x-tutorial` fixture, not application-specific model APIs:
+
+These lines are signature notation, not executable calls.
+
+```python
+CreateDemo.from_context(ctx: PluginContext[CreateConfig]) -> Plugin[CreateConfig]
+scale_values(system: System, config: ScaleConfig) -> Result[System, str]
+```
+
+| Configuration | Field | Type/default | Behavior |
+| --- | --- | --- | --- |
+| `CreateConfig` | `name` | `str = "demo"` | Name of the newly built system. |
+| `ScaleConfig` | `factor` | `float = 2`, strictly positive | Multiplies the values of existing `Item` components. |
+
+`create` returns a context containing a new system with two components, initially valued 10 and 20.
+`scale_values` mutates that system and returns it in `Ok`; its configuration rejects zero or negative factors.
+The transform does not perform a model-schema translation and does not add electrical meaning to the fixture's numeric values.
+The entry-point group determines the runtime role; explicit `r2x.parsers` and `r2x.transforms` groups avoid legacy name-based role inference.
+See [the fixture implementation](https://github.com/NatLabRockies/r2x-cli/blob/main/docs/examples/first-pipeline/src/r2x_tutorial/plugin.py) and [runtime role mapping](https://github.com/NatLabRockies/r2x-cli/blob/c3fada787247ff671f3366e72fdf51b867c41ed3/crates/r2x-manifest/src/runtime.rs).

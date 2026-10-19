@@ -682,7 +682,7 @@ mod tests {
             command.input.as_deref(),
             Some(std::path::Path::new("input.json"))
         );
-        assert!(command.args.is_empty());
+        assert_eq!(command.args, Vec::<String>::new());
         Ok(())
     }
 
@@ -699,7 +699,7 @@ mod tests {
         command.extract_trailing_options()?;
 
         assert!(command.show_help);
-        assert!(command.args.is_empty());
+        assert_eq!(command.args, Vec::<String>::new());
         Ok(())
     }
 
