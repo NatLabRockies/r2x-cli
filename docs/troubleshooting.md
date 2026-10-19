@@ -20,11 +20,40 @@ If Python fails, compare the configured interpreter and paths reported by `show`
 Published binaries currently target Python 3.12; core's broader Python support does not make a CLI binary compatible with every interpreter.
 The shared-library limitation is tracked in [issue #68](https://github.com/NatLabRockies/r2x-cli/issues/68).
 
-Install the matching configured runtime with `r2x python install`, then repeat all three checks.
-Do not select the newest Python as a generic fix for an ABI mismatch.
+Do not select the newest Python or recreate a working environment as a generic fix for an ABI mismatch.
 For source builds, match `R2X_PYTHON_VERSION` and `PYO3_PYTHON` as described in [Development](development.md).
-If the error specifically says “Python executable not found at …”, confirm the reported path really is absent before using the supported `r2x venv create --yes`; reinstall the required plugins afterward and verify with `r2x list`.
-Do not recreate a working environment before diagnosing which path or ABI failed.
+Only recreate the managed environment after confirming that it is missing or unusable, or that its configured Python version must change to match the binary.
+
+Before rebuilding, record the installed plugins if the CLI can still run:
+
+```bash
+r2x list > r2x-plugins-before-rebuild.txt
+```
+
+Keep the original package installation specifications as well, including version pins, Git revisions and editable source paths.
+The listing is an inventory, not a backup or an automatically reinstallable requirements file.
+If the CLI cannot start, recover those specifications from your project's setup files before proceeding.
+
+`r2x python install` deletes and recreates the configured managed environment, including installed plugins, even when the Python version is unchanged.
+Use it only for the diagnosed rebuild after checking that the configured version matches the binary's ABI:
+
+```bash
+r2x python install
+```
+
+If the error specifically says “Python executable not found at …”, confirm the reported path really is absent before considering `r2x venv create --yes`.
+Treat environment recreation as requiring plugin reinstallation.
+Reinstall packages from the recorded specifications with `r2x install`, then repeat the version/path checks and verify discovery with `r2x list`.
+For the tutorial package, run these commands from `docs/examples/first-pipeline`:
+
+```bash
+r2x install -e .
+r2x list r2x-tutorial
+r2x run create --help
+r2x run scale --help
+```
+
+Confirm that `create` and `scale` are available before retrying the tutorial pipeline.
 
 <a id="the-tutorial-plugin-is-not-found"></a>
 

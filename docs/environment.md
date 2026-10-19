@@ -4,6 +4,9 @@ title: Python environment setup
 
 After [Installation](installation.md), install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 The CLI uses uv to manage its own Python environment and installed plugin packages.
+Check `r2x python show` first if this installation may already have a working environment.
+The following install command is for initial setup: it deletes and recreates an existing managed environment, including installed plugins, even if the Python version is unchanged.
+For an existing installation, use the diagnosis and package-recording steps in [Troubleshooting](troubleshooting.md) before considering a rebuild.
 
 ```bash
 r2x python install

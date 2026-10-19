@@ -35,7 +35,7 @@ export default defineConfig({
     customCss: ['./src/styles/brand.css'],
     description: 'Install Python plugins and run model interoperability pipelines.',
     social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/NatLabRockies/r2x-cli' }, { icon: 'code-branch', label: 'Browse source versions', href: 'https://github.com/NatLabRockies/r2x-cli/tags' }],
-    editLink: { baseUrl: 'https://github.com/NatLabRockies/r2x-cli/edit/main/' },
+    editLink: { baseUrl: 'https://github.com/NatLabRockies/r2x-cli/edit/main/docs/' },
     sidebar: [
       { label: 'Getting started', items: [{ label: 'Installation', link: '/installation/' }, { label: 'Python environment setup', link: '/environment/' }, { label: 'Verify the CLI and first use', link: '/verify-installation/' }] },
       { label: 'Tutorials', items: [{ label: 'Run your first pipeline', link: '/getting-started/' }] },
