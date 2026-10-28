@@ -6,6 +6,7 @@ use assert_cmd::{
 };
 use predicates::prelude::*;
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -433,6 +434,105 @@ fn test_direct_plugin_json_output_creates_parent_directories(
 
     let output: serde_json::Value = serde_json::from_slice(&fs::read(output_path)?)?;
     assert_eq!(output, serde_json::json!({"status": "ok"}));
+    Ok(())
+}
+
+#[test]
+fn test_installed_r2x_core_system_supports_stdout_and_file_output(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(env) = real_core_harness()? else {
+        return Ok(());
+    };
+
+    let data_dir = env.home_path().join("real-core-data");
+    fs::create_dir_all(&data_dir)?;
+    fs::write(data_dir.join("input.csv"), "value\n1\n")?;
+    let config_dir = env.home_path().join("real-core-config");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("file_mapping.json"),
+        r#"[{"name":"input","relative_fpath":"input.csv"}]"#,
+    )?;
+    let store_arg = format!(
+        "store={}",
+        serde_json::json!({"path": data_dir.to_string_lossy().to_string()})
+    );
+    let config_path_arg = format!(
+        "config_path_override={}",
+        serde_json::to_string(&config_dir.to_string_lossy().to_string())?
+    );
+
+    let mut stdout_command = env.command();
+    let stdout = stdout_command
+        .args(["run", "plugin", "r2x_core_integration.parser"])
+        .arg(&store_arg)
+        .arg(&config_path_arg)
+        .output()?;
+    assert!(
+        stdout.status.success(),
+        "r2x-core stdout invocation failed: {}",
+        String::from_utf8_lossy(&stdout.stderr)
+    );
+    let stdout_system: serde_json::Value = serde_json::from_slice(&stdout.stdout)?;
+    assert_eq!(
+        stdout_system["name"],
+        "cli-r2x-core-integration",
+        "stdout: {}",
+        String::from_utf8_lossy(&stdout.stdout)
+    );
+    let sidecar = stdout_system["time_series"]["directory"]
+        .as_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing core sidecar path"))?;
+    assert!(Path::new(sidecar).is_dir());
+
+    let output_path = env.home_path().join("real-core-output.json");
+    let mut file_command = env.command();
+    let file_output = file_command
+        .args(["run", "plugin", "r2x_core_integration.parser"])
+        .arg(&store_arg)
+        .arg(&config_path_arg)
+        .args(["--output", output_path.to_string_lossy().as_ref()])
+        .output()?;
+    assert!(
+        file_output.status.success(),
+        "r2x-core file invocation failed: {}",
+        String::from_utf8_lossy(&file_output.stderr)
+    );
+    let file_system: serde_json::Value = serde_json::from_slice(&fs::read(output_path)?)?;
+    assert_eq!(file_system["name"], "cli-r2x-core-integration");
+
+    Ok(())
+}
+
+#[test]
+fn test_installed_r2x_core_public_upgrade_step_fallback() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(env) = real_core_harness()? else {
+        return Ok(());
+    };
+
+    let system_path = env.home_path().join("upgrade-system.json");
+    fs::write(&system_path, r#"{"status":"before"}"#)?;
+    let output = env
+        .command()
+        .args([
+            "run",
+            "plugin",
+            "r2x_core_integration.upgrader",
+            "--path",
+            system_path.to_string_lossy().as_ref(),
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "r2x-core upgrader fallback failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let upgraded: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(upgraded["status"], "upgraded-by-r2x-core");
+    let persisted: serde_json::Value = serde_json::from_slice(&fs::read(system_path)?)?;
+    assert_eq!(persisted["status"], "upgraded-by-r2x-core");
+
     Ok(())
 }
 
@@ -1380,14 +1480,40 @@ fn system_json(sidecar_directory: impl AsRef<str>) -> String {
 struct PipelineHarness {
     _home: TempDir,
     config_path: PathBuf,
-    site_packages: PathBuf,
     venv_path: PathBuf,
     reeds_pipeline: PathBuf,
     s2p_pipeline: PathBuf,
+    python_path: OsString,
 }
 
 impl PipelineHarness {
     fn new() -> io::Result<Self> {
+        Self::new_with_core_site_packages(None)
+    }
+
+    fn with_real_core(core_site_packages: &Path) -> io::Result<Self> {
+        Self::new_with_core_site_packages(Some(core_site_packages))
+    }
+
+    fn new_with_core_site_packages(core_site_packages: Option<&Path>) -> io::Result<Self> {
+        let core_source_path = if let Some(site_packages) = core_site_packages {
+            if site_packages.join("r2x_core").is_dir() {
+                None
+            } else {
+                let editable_path = site_packages.join("r2x_core.pth");
+                let source_path = fs::read_to_string(&editable_path)?.trim().to_owned();
+                let source_path = PathBuf::from(source_path);
+                if !source_path.join("r2x_core").is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("r2x_core package not found via {}", editable_path.display()),
+                    ));
+                }
+                Some(source_path)
+            }
+        } else {
+            None
+        };
         let home = TempDir::new()?;
         let home_path = home.path();
 
@@ -1413,13 +1539,22 @@ impl PipelineHarness {
         )?;
 
         let manifest_path = cache_dir.join("manifest.toml");
-        fs::write(&manifest_path, stub_manifest_toml())?;
+        let manifest = if core_site_packages.is_some() {
+            real_core_manifest_toml()
+        } else {
+            stub_manifest_toml()
+        };
+        fs::write(&manifest_path, manifest)?;
 
         copy_python_stub("IPython", &site_packages)?;
         copy_python_stub("traitlets", &site_packages)?;
         copy_python_stub("r2x_reeds", &site_packages)?;
         copy_python_stub("r2x_sienna", &site_packages)?;
-        copy_python_stub("r2x_core", &site_packages)?;
+        if core_site_packages.is_none() {
+            copy_python_stub("r2x_core", &site_packages)?;
+        } else {
+            copy_python_stub("r2x_core_integration", &site_packages)?;
+        }
         fs::create_dir_all(site_packages.join("r2x_reeds-0.0.1.dist-info"))?;
         fs::create_dir_all(site_packages.join("r2x_sienna-0.0.1.dist-info"))?;
 
@@ -1451,13 +1586,23 @@ impl PipelineHarness {
             build_s2p_pipeline(&sienna_system, &s2p_output),
         )?;
 
+        let mut python_paths = vec![site_packages.as_os_str()];
+        if let Some(core_site_packages) = core_site_packages {
+            python_paths.push(core_site_packages.as_os_str());
+        }
+        if let Some(core_source_path) = core_source_path.as_deref() {
+            python_paths.push(core_source_path.as_os_str());
+        }
+        let python_path = std::env::join_paths(python_paths)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+
         Ok(Self {
             _home: home,
             config_path,
-            site_packages,
             venv_path,
             reeds_pipeline,
             s2p_pipeline,
+            python_path,
         })
     }
 
@@ -1466,10 +1611,10 @@ impl PipelineHarness {
         cmd.env("HOME", self.home_path());
         cmd.env("R2X_CONFIG", &self.config_path);
         cmd.env("VIRTUAL_ENV", &self.venv_path);
-        cmd.env(
-            "PYTHONPATH",
-            self.site_packages.to_string_lossy().to_string(),
-        );
+        cmd.env("PYTHONPATH", &self.python_path);
+        if let Some((name, path)) = python_library_search_path() {
+            cmd.env(name, path);
+        }
         cmd
     }
 
@@ -1478,10 +1623,10 @@ impl PipelineHarness {
         cmd.env("HOME", self.home_path());
         cmd.env("R2X_CONFIG", &self.config_path);
         cmd.env("VIRTUAL_ENV", &self.venv_path);
-        cmd.env(
-            "PYTHONPATH",
-            self.site_packages.to_string_lossy().to_string(),
-        );
+        cmd.env("PYTHONPATH", &self.python_path);
+        if let Some((name, path)) = python_library_search_path() {
+            cmd.env(name, path);
+        }
         cmd
     }
 
@@ -1496,6 +1641,46 @@ impl PipelineHarness {
     fn s2p_pipeline(&self) -> String {
         self.s2p_pipeline.to_string_lossy().to_string()
     }
+}
+
+fn real_core_harness() -> io::Result<Option<PipelineHarness>> {
+    let Some(core_site_packages) = std::env::var_os("R2X_CORE_SITE_PACKAGES") else {
+        eprintln!(
+            "Skipping installed-core integration test. Set R2X_CORE_SITE_PACKAGES to an installed r2x_core site-packages directory."
+        );
+        return Ok(None);
+    };
+    let core_site_packages = PathBuf::from(core_site_packages);
+    PipelineHarness::with_real_core(&core_site_packages).map(Some)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn python_library_search_path() -> Option<(&'static str, OsString)> {
+    let python = PathBuf::from(std::env::var_os("PYO3_PYTHON")?);
+    let prefix = python.parent()?.parent()?;
+    #[cfg(target_os = "windows")]
+    let library_dir = prefix.to_path_buf();
+    #[cfg(not(target_os = "windows"))]
+    let library_dir = prefix.join("lib");
+    #[cfg(target_os = "macos")]
+    let variable = "DYLD_LIBRARY_PATH";
+    #[cfg(target_os = "linux")]
+    let variable = "LD_LIBRARY_PATH";
+    #[cfg(target_os = "windows")]
+    let variable = "PATH";
+
+    let mut paths = vec![library_dir];
+    if let Some(existing) = std::env::var_os(variable) {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths)
+        .ok()
+        .map(|paths| (variable, paths))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn python_library_search_path() -> Option<(&'static str, OsString)> {
+    None
 }
 
 fn create_real_venv(venv_path: &Path) -> io::Result<()> {
@@ -1612,6 +1797,42 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn real_core_manifest_toml() -> String {
+    r#"version = "3.0"
+generated_at = "2024-01-01T00:00:00Z"
+
+[[packages]]
+name = "r2x-core-integration"
+version = "0.1.0"
+editable_install = false
+install_type = "explicit"
+
+[[packages.plugins]]
+name = "r2x_core_integration.parser"
+type = "class"
+module = "r2x_core_integration.plugin"
+class_name = "CoreSystemPlugin"
+config_class = "CoreConfig"
+config_module = "r2x_core_integration.plugin"
+
+[[packages.plugins.parameters]]
+name = "store"
+type = ["r2x_core.DataStore"]
+required = false
+
+[packages.plugins.config_schema.config_path_override]
+type = "str"
+required = true
+
+[[packages.plugins]]
+name = "r2x_core_integration.upgrader"
+type = "class"
+module = "r2x_core_integration.plugin"
+class_name = "CoreUpgrader"
+"#
+    .to_string()
 }
 
 fn stub_manifest_toml() -> String {
