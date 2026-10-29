@@ -500,7 +500,7 @@ mod tests {
         let result = publish_staged_entry(&source, &destination, &mut published);
 
         assert!(result.is_err());
-        assert!(published.is_empty());
+        assert_eq!(published, Vec::<std::path::PathBuf>::new());
         assert_eq!(fs::read_to_string(&destination)?, "existing");
         assert_eq!(fs::read_to_string(&source)?, "staged");
         Ok(())

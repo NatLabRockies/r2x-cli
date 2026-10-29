@@ -801,7 +801,7 @@ mod tests {
     fn test_expand_tilde_home_only() {
         let expanded = expand_tilde("~");
         assert!(!expanded.starts_with('~'));
-        assert!(!expanded.is_empty());
+        assert_ne!(expanded, "");
     }
 
     #[test]

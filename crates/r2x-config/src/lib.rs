@@ -50,6 +50,9 @@ use std::process::Command;
 use which::which;
 
 const FALLBACK_PYTHON_VERSION: &str = "3.12";
+// Pin the temporary DataStore API dependency to the validated feat/csv-2 commit.
+const DEFAULT_R2X_CORE_PACKAGE_SPEC: &str =
+    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9";
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -335,7 +338,9 @@ impl Config {
     }
 
     pub fn get_r2x_core_package_spec(&self) -> String {
-        let version = self.r2x_core_version.as_deref().unwrap_or("0.1.0rc1");
+        let Some(version) = self.r2x_core_version.as_deref() else {
+            return DEFAULT_R2X_CORE_PACKAGE_SPEC.to_string();
+        };
         // If version contains operators (>=, <=, ~=, !=, ==, <, >), use it as-is
         // Otherwise, prefix with == for exact version matching
         if version.contains(">=")
@@ -721,6 +726,14 @@ mod tests {
     }
 
     #[test]
+    fn test_r2x_core_package_spec_defaults_to_pinned_remote_branch_commit() {
+        assert_eq!(
+            Config::default().get_r2x_core_package_spec(),
+            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"
+        );
+    }
+
+    #[test]
     fn test_config_set_get() {
         let mut config = Config::default();
         assert!(config.set("cache-path", "test-value".to_string()).is_ok());
@@ -753,7 +766,7 @@ mod tests {
     fn test_config_default_cache_path() {
         let config = Config::default();
         let cache_path = config.get_cache_path();
-        assert!(!cache_path.is_empty());
+        assert_ne!(cache_path, "");
         assert!(cache_path.contains("r2x"));
     }
 
