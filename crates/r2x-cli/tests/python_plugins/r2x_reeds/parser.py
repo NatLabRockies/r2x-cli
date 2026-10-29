@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -21,6 +22,10 @@ class ReEDSConfig:
         self.weather_year = weather_year
         self.solve_year = solve_year
         self.extra = kwargs
+
+    @property
+    def fmap_path(self) -> Path:
+        return Path(__file__).parent / "config" / "file_mapping.json"
 
 
 class ReEDSParser:

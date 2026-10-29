@@ -50,6 +50,8 @@ use std::process::Command;
 use which::which;
 
 const FALLBACK_PYTHON_VERSION: &str = "3.12";
+const DEFAULT_R2X_CORE_PACKAGE_SPEC: &str =
+    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@feat/csv-2";
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -335,7 +337,9 @@ impl Config {
     }
 
     pub fn get_r2x_core_package_spec(&self) -> String {
-        let version = self.r2x_core_version.as_deref().unwrap_or("0.1.0rc1");
+        let Some(version) = self.r2x_core_version.as_deref() else {
+            return DEFAULT_R2X_CORE_PACKAGE_SPEC.to_string();
+        };
         // If version contains operators (>=, <=, ~=, !=, ==, <, >), use it as-is
         // Otherwise, prefix with == for exact version matching
         if version.contains(">=")
@@ -718,6 +722,14 @@ mod tests {
     fn test_config_new() {
         let config = Config::default();
         assert!(config.is_empty());
+    }
+
+    #[test]
+    fn test_r2x_core_package_spec_defaults_to_remote_feature_branch() {
+        assert_eq!(
+            Config::default().get_r2x_core_package_spec(),
+            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@feat/csv-2"
+        );
     }
 
     #[test]

@@ -3,13 +3,11 @@
 use crate::errors::BridgeError;
 use crate::plugin_regular::format_python_error;
 use crate::python_bridge::Bridge;
-use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyModule};
+use pyo3::types::{PyDict, PyModule};
 use r2x_logger as logger;
 use r2x_manifest::runtime::{PluginRole, RuntimeBindings, RuntimeConfig};
 use std::collections::HashSet;
-use std::path::Path;
 
 impl Bridge {
     pub(crate) fn build_kwargs<'py>(
@@ -192,14 +190,9 @@ impl Bridge {
                 if let Some(value) = value {
                     let config_binding = config_instance.as_ref().map(|obj| obj.bind(py));
                     let store_instance = if let Some(binding) = config_binding.as_ref() {
-                        Self::instantiate_data_store(
-                            py,
-                            &value,
-                            Some(binding),
-                            runtime.config.as_ref(),
-                        )?
+                        Self::instantiate_data_store(py, &value, Some(binding))?
                     } else {
-                        Self::instantiate_data_store(py, &value, None, runtime.config.as_ref())?
+                        Self::instantiate_data_store(py, &value, None)?
                     };
                     kwargs.set_item(param.name.as_ref(), store_instance)?;
                     if collect_debug_details {
@@ -380,7 +373,6 @@ impl Bridge {
         py: pyo3::Python<'py>,
         value: &pyo3::Bound<'py, PyAny>,
         config_instance: Option<&pyo3::Bound<'py, PyAny>>,
-        config_metadata: Option<&RuntimeConfig>,
     ) -> Result<pyo3::Bound<'py, PyAny>, BridgeError> {
         let path = if let Ok(store_dict) = value.cast::<PyDict>() {
             let path = store_dict
@@ -399,73 +391,51 @@ impl Bridge {
         let data_store_module = PyModule::import(py, "r2x_core.store")?;
         let data_store_class = data_store_module.getattr("DataStore")?;
 
+        let store = data_store_class.call1((path,)).map_err(|error| {
+            BridgeError::Python(format_python_error(
+                py,
+                error,
+                "Failed to instantiate DataStore",
+            ))
+        })?;
+
         if let Some(config) = config_instance {
-            let store_path = path.clone();
-            let from_config = data_store_class
-                .getattr("from_plugin_config")
-                .map_err(|e| {
-                    BridgeError::Python(format!("DataStore missing from_plugin_config: {}", e))
-                })?;
-            // path is keyword-only in from_plugin_config(plugin_config, *, path)
             let kwargs = PyDict::new(py);
-            kwargs.set_item("path", &path)?;
-            match from_config.call((config,), Some(&kwargs)) {
-                Ok(store) => Ok(store),
-                Err(err) => {
-                    logger::debug(
-                        "DataStore.from_plugin_config failed; attempting targeted diagnostics",
-                    );
-                    logger::debug_lazy(|| {
-                        format!("Config metadata present: {}", config_metadata.is_some())
-                    });
-                    if let Some(class_obj) = resolve_config_class(py, Some(config), config_metadata)
-                    {
-                        if let Some(missing) =
-                            detect_missing_data_file_from_mapping(&class_obj, &store_path)
-                        {
-                            return Err(BridgeError::Python(format!(
-                                "Missing required ReEDS data file: {}. \
-Verify the data folder contains all expected outputs (did you unpack the full `inputs_case` directory?).",
-                                missing
-                            )));
-                        }
-                    } else if let Some(missing) =
-                        detect_missing_data_file_from_metadata(py, config_metadata, &store_path)
-                    {
-                        return Err(BridgeError::Python(format!(
-                            "Missing required ReEDS data file: {}. \
-Verify the data folder contains all expected outputs (did you unpack the full `inputs_case` directory?).",
-                            missing
-                        )));
-                    }
-                    Err(transform_data_store_error(py, err))
-                }
-            }
-        } else {
-            let store_path = path.clone();
-            match data_store_class.call1((path,)) {
-                Ok(store) => Ok(store),
-                Err(err) => {
-                    logger::debug_lazy(|| {
-                        format!(
-                            "DataStore(path) failed; config metadata present: {}",
-                            config_metadata.is_some()
-                        )
-                    });
-                    if let Some(missing) =
-                        detect_missing_data_file_from_metadata(py, config_metadata, &store_path)
-                    {
-                        Err(BridgeError::Python(format!(
-                            "Missing required ReEDS data file: {}. \
-Verify the data folder contains all expected outputs (did you unpack the full `inputs_case` directory?).",
-                            missing
-                        )))
-                    } else {
-                        Err(transform_data_store_error(py, err))
-                    }
-                }
+            kwargs.set_item("plugin_config", config)?;
+            store
+                .call_method("configure_upgrades", (), Some(&kwargs))
+                .map_err(|error| {
+                    BridgeError::Python(format_python_error(
+                        py,
+                        error,
+                        "Failed to configure DataStore upgrades",
+                    ))
+                })?;
+
+            let mapping_path = config.getattr("fmap_path").map_err(|error| {
+                BridgeError::Python(format_python_error(
+                    py,
+                    error,
+                    "Failed to get the plugin file-mapping path",
+                ))
+            })?;
+            let mapping_exists = mapping_path.call_method0("exists")?.extract::<bool>()?;
+            if mapping_exists {
+                store
+                    .call_method1("load_file_mapping", (mapping_path,))
+                    .map_err(|error| {
+                        BridgeError::Python(format_python_error(
+                            py,
+                            error,
+                            "Failed to load the DataStore file mapping",
+                        ))
+                    })?;
+            } else {
+                logger::debug("Plugin file mapping not found; using an empty DataStore");
             }
         }
+
+        Ok(store)
     }
 }
 
@@ -644,22 +614,6 @@ class Config:
     }
 }
 
-fn transform_data_store_error(py: pyo3::Python<'_>, err: pyo3::PyErr) -> BridgeError {
-    if let Some(missing) = extract_missing_data_file(py, &err) {
-        BridgeError::Python(format!(
-            "Missing required ReEDS data file: {}. \
-Verify the data folder contains all expected outputs (did you unpack the full `inputs_case` directory?).",
-            missing
-        ))
-    } else {
-        BridgeError::Python(format_python_error(
-            py,
-            err,
-            "Failed to instantiate DataStore",
-        ))
-    }
-}
-
 fn snapshot_config_field_names(
     config_instance: &pyo3::Bound<'_, PyAny>,
 ) -> Option<HashSet<String>> {
@@ -690,94 +644,6 @@ fn snapshot_config_field_names(
     } else {
         Some(names)
     }
-}
-
-fn extract_missing_data_file(py: pyo3::Python<'_>, err: &pyo3::PyErr) -> Option<String> {
-    let mut current = err.value(py).getattr("__context__").ok();
-    let mut depth = 0;
-    loop {
-        let Some(ctx) = current else { break };
-        if ctx.is_none() {
-            break;
-        }
-        if let Ok(repr) = ctx.str() {
-            logger::debug_lazy(|| format!("Python exception context[{}]: {}", depth, repr));
-        }
-        if ctx.is_instance_of::<PyFileNotFoundError>() {
-            if let Ok(text) = ctx.str() {
-                return Some(text.to_string());
-            }
-        }
-        current = ctx.getattr("__context__").ok();
-        depth += 1;
-    }
-    None
-}
-
-fn detect_missing_data_file_from_mapping(
-    class_obj: &pyo3::Bound<'_, PyAny>,
-    folder_path: &str,
-) -> Option<String> {
-    logger::debug_lazy(|| format!("Validating ReEDS data files under {}", folder_path));
-    let loader = class_obj.getattr("load_file_mapping").ok()?;
-    let records = loader.call0().ok()?;
-    let records = records.cast::<PyList>().ok()?;
-    let base = Path::new(folder_path);
-
-    for record in records {
-        let record = record.cast::<PyDict>().ok()?;
-        let optional = record
-            .get_item("optional")
-            .ok()
-            .flatten()
-            .and_then(|val| val.extract::<bool>().ok())
-            .unwrap_or(false);
-        if optional {
-            continue;
-        }
-
-        let Some(fpath_obj) = record.get_item("fpath").ok().flatten() else {
-            continue;
-        };
-        let Ok(rel_path) = fpath_obj.extract::<String>() else {
-            continue;
-        };
-        let full_path = base.join(rel_path);
-        if !full_path.exists() {
-            logger::debug_lazy(|| {
-                format!(
-                    "Detected missing data file during ReEDS run: {}",
-                    full_path.display()
-                )
-            });
-            return Some(full_path.to_string_lossy().to_string());
-        }
-    }
-
-    None
-}
-
-fn detect_missing_data_file_from_metadata(
-    py: pyo3::Python<'_>,
-    metadata: Option<&RuntimeConfig>,
-    folder_path: &str,
-) -> Option<String> {
-    let class_obj = resolve_config_class(py, None, metadata)?;
-    detect_missing_data_file_from_mapping(&class_obj, folder_path)
-}
-
-fn resolve_config_class<'py>(
-    py: pyo3::Python<'py>,
-    config_instance: Option<&pyo3::Bound<'py, PyAny>>,
-    metadata: Option<&RuntimeConfig>,
-) -> Option<pyo3::Bound<'py, PyAny>> {
-    if let Some(instance) = config_instance {
-        return instance.getattr("__class__").ok();
-    }
-
-    let meta = metadata?;
-    let module = PyModule::import(py, meta.module.as_str()).ok()?;
-    module.getattr(meta.name.as_str()).ok()
 }
 
 impl Bridge {

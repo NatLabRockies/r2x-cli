@@ -931,7 +931,6 @@ impl Bridge {
                 py,
                 &value,
                 Some(&config_instance),
-                bindings.config.as_ref(),
             )?)
         } else {
             None
