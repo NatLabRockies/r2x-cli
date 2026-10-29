@@ -438,6 +438,44 @@ fn test_direct_plugin_json_output_creates_parent_directories(
 }
 
 #[test]
+fn test_installed_r2x_core_system_reports_missing_required_input(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(env) = real_core_harness()? else {
+        return Ok(());
+    };
+
+    let data_dir = env.home_path().join("missing-core-data");
+    fs::create_dir_all(&data_dir)?;
+    let config_dir = env.home_path().join("missing-core-config");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("file_mapping.json"),
+        r#"[{"name":"input","relative_fpath":"input.csv"}]"#,
+    )?;
+    let store_arg = format!(
+        "store={}",
+        serde_json::json!({"path": data_dir.to_string_lossy().to_string()})
+    );
+    let config_path_arg = format!(
+        "config_path_override={}",
+        serde_json::to_string(&config_dir.to_string_lossy().to_string())?
+    );
+
+    let output = env
+        .command()
+        .args(["run", "plugin", "r2x_core_integration.parser"])
+        .arg(&store_arg)
+        .arg(&config_path_arg)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "unexpected success: {stderr}");
+    assert!(stderr.contains("Missing required file"), "{stderr}");
+    assert!(stderr.contains("input.csv"), "{stderr}");
+
+    Ok(())
+}
+
+#[test]
 fn test_installed_r2x_core_system_supports_stdout_and_file_output(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(env) = real_core_harness()? else {
@@ -609,7 +647,7 @@ fn test_direct_exporter_consumes_system_without_emitting_json(
         "exporter stderr: {}",
         String::from_utf8_lossy(&consumer.stderr)
     );
-    assert!(consumer.stdout.is_empty());
+    assert_eq!(consumer.stdout, Vec::<u8>::new());
 
     Ok(())
 }
@@ -644,7 +682,7 @@ fn test_direct_context_exporter_uses_plugin_context_system(
         "context exporter stderr: {}",
         String::from_utf8_lossy(&consumer.stderr)
     );
-    assert!(consumer.stdout.is_empty());
+    assert_eq!(consumer.stdout, Vec::<u8>::new());
 
     Ok(())
 }

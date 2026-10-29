@@ -50,8 +50,9 @@ use std::process::Command;
 use which::which;
 
 const FALLBACK_PYTHON_VERSION: &str = "3.12";
+// Pin the temporary DataStore API dependency to the validated feat/csv-2 commit.
 const DEFAULT_R2X_CORE_PACKAGE_SPEC: &str =
-    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@feat/csv-2";
+    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9";
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -725,10 +726,10 @@ mod tests {
     }
 
     #[test]
-    fn test_r2x_core_package_spec_defaults_to_remote_feature_branch() {
+    fn test_r2x_core_package_spec_defaults_to_pinned_remote_branch_commit() {
         assert_eq!(
             Config::default().get_r2x_core_package_spec(),
-            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@feat/csv-2"
+            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"
         );
     }
 
@@ -765,7 +766,7 @@ mod tests {
     fn test_config_default_cache_path() {
         let config = Config::default();
         let cache_path = config.get_cache_path();
-        assert!(!cache_path.is_empty());
+        assert_ne!(cache_path, "");
         assert!(cache_path.contains("r2x"));
     }
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from r2x_core import (
+    DataReader,
     DataStore,
     PluginConfig,
     PluginContext,
@@ -39,6 +40,7 @@ class CoreSystemPlugin:
             raise ValueError(f"unexpected configured store entries: {store.list_data()}")
         if store["input"].relative_fpath != Path("input.csv"):
             raise ValueError("CLI loaded an unexpected input mapping")
+        DataReader().read_data_files([store["input"]], folder_path=store.folder)
         return System(name="cli-r2x-core-integration")
 
 
