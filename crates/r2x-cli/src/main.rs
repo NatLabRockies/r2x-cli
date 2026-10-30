@@ -12,6 +12,8 @@ use r2x_logger as logger;
 use r2x_python::python_bridge::process_exit;
 use std::ffi::OsString;
 
+mod machine_query;
+
 #[derive(Parser)]
 #[command(name = "r2x")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
@@ -226,15 +228,43 @@ fn main() {
     if let Some(program) = args.first_mut() {
         *program = OsString::from("r2x");
     }
-    let cli = Cli::parse_from(normalize_run_global_args(args));
+    let machine_requested = machine_query::is_requested(args.iter().skip(1));
+    let cli = match Cli::try_parse_from(normalize_run_global_args(args)) {
+        Ok(cli) => cli,
+        Err(error) if machine_requested && error.use_stderr() => {
+            machine_query::emit_error("INVALID_ARGUMENT", &error.to_string(), &[]);
+            std::process::exit(2);
+        }
+        Err(error) => error.exit(),
+    };
+    let machine_mode = match &cli.command {
+        Commands::List { json, .. } => *json,
+        Commands::Show(cmd) => cmd.json,
+        _ => false,
+    };
 
     let mut startup_config = match config_manager::Config::load() {
         Ok(cfg) => Some(cfg),
         Err(e) => {
+            if machine_mode {
+                machine_query::emit_error("CONFIGURATION_ERROR", &e.to_string(), &[]);
+                process_exit(1);
+            }
             eprintln!("Warning: Failed to load config: {}", e);
             None
         }
     };
+    if machine_mode {
+        if let Some(config) = startup_config.as_ref() {
+            if let Err(error) = config
+                .existing_uv_path()
+                .and_then(|_| config.existing_venv_path())
+            {
+                machine_query::emit_error("ENVIRONMENT_UNAVAILABLE", &error.to_string(), &[]);
+                process_exit(1);
+            }
+        }
+    }
 
     let (saved_log_python, saved_no_stdout, saved_log_path, saved_log_max_size) =
         match startup_config.as_ref() {
@@ -258,10 +288,14 @@ fn main() {
         saved_log_path,
         saved_log_max_size,
     ) {
+        if machine_mode {
+            machine_query::emit_error("LOGGING_ERROR", &e, &[]);
+            process_exit(1);
+        }
         eprintln!("Warning: Failed to initialize logger: {}", e);
     }
 
-    if requires_python_environment(&cli.command) {
+    if requires_python_environment(&cli.command) && !machine_mode {
         if let Some(cfg) = startup_config.as_mut() {
             if let Err(e) = cfg.ensure_uv_path().and_then(|_| cfg.ensure_cache_path()) {
                 logger::warn(&format!("Failed to setup CLI: {}", e));
@@ -284,9 +318,19 @@ fn main() {
             module,
             json,
         } => {
-            exit_on_plugin_error(with_plugin_context(|ctx| {
-                plugins::list::list_plugins(&cli.global, plugin, module, json, ctx)
-            }));
+            if json {
+                let result = plugins::context::PluginContext::load_existing().and_then(|ctx| {
+                    plugins::list::list_plugins(&cli.global, plugin, module, true, &ctx)
+                });
+                if let Err(error) = result {
+                    machine_query::emit_error(error.code(), &error.to_string(), error.candidates());
+                    std::process::exit(1);
+                }
+            } else {
+                exit_on_plugin_error(with_plugin_context(|ctx| {
+                    plugins::list::list_plugins(&cli.global, plugin, module, false, ctx)
+                }));
+            }
         }
         Commands::Install {
             plugin,
@@ -358,8 +402,17 @@ fn main() {
             process_exit(0);
         }
         Commands::Show(cmd) => {
+            let json = cmd.json;
             if let Err(error) = show::handle_show(cmd) {
-                logger::error(&format!("Show command failed: {error}"));
+                if json {
+                    machine_query::emit_error(
+                        error.code(),
+                        &error.to_string(),
+                        &error.candidates(),
+                    );
+                } else {
+                    logger::error(&format!("Show command failed: {}", error));
+                }
                 process_exit(1);
             }
             process_exit(0);

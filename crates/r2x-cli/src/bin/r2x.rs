@@ -7,22 +7,42 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "../machine_query.rs"]
+mod machine_query;
+
 const PYTHON_RUNTIME_PATHS: &str =
     "import sys, sysconfig\nprint(sysconfig.get_config_var('LIBDIR') or '')\nprint(sys.base_prefix)";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartupMode {
+    Normal,
+    MachineQuery,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct EnvironmentUnavailable(String);
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to load R2X configuration: {0}")]
+struct ConfigurationUnavailable(#[source] r2x_config::ConfigError);
 
 struct Runtime {
     uv: PathBuf,
     venv: Option<PathBuf>,
     python_version: String,
+    mode: StartupMode,
 }
 
 impl Runtime {
-    fn load(requires_python_environment: bool) -> Result<Self> {
-        let mut config = Config::load().context("failed to load R2X configuration")?;
+    fn load(requires_python_environment: bool, mode: StartupMode) -> Result<Self> {
+        let mut config = Config::load().map_err(ConfigurationUnavailable)?;
         let uv = PathBuf::from(
-            config
-                .ensure_uv_path()
-                .context("failed to find the UV executable")?,
+            match mode {
+                StartupMode::Normal => config.ensure_uv_path(),
+                StartupMode::MachineQuery => config.existing_uv_path(),
+            }
+            .context("failed to find the UV executable")?,
         );
         let python_version = config
             .python_version
@@ -30,10 +50,12 @@ impl Runtime {
             .unwrap_or_else(|| default_python_version().to_string());
         let venv = requires_python_environment
             .then(|| {
-                config
-                    .reconcile_venv_path()
-                    .map(PathBuf::from)
-                    .context("failed to create the UV-managed R2X virtual environment")
+                match mode {
+                    StartupMode::Normal => config.reconcile_venv_path(),
+                    StartupMode::MachineQuery => config.existing_venv_path(),
+                }
+                .map(PathBuf::from)
+                .context("failed to access the UV-managed R2X virtual environment")
             })
             .transpose()?;
 
@@ -41,16 +63,35 @@ impl Runtime {
             uv,
             venv,
             python_version,
+            mode,
         })
     }
 }
 
 fn main() -> Result<()> {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
-    launch(&args)
+    let mode = if machine_query::is_requested(&args) {
+        StartupMode::MachineQuery
+    } else {
+        StartupMode::Normal
+    };
+    match launch(&args, mode) {
+        Err(error) if mode == StartupMode::MachineQuery => {
+            let code = if error.downcast_ref::<ConfigurationUnavailable>().is_some() {
+                "CONFIGURATION_ERROR"
+            } else if error.downcast_ref::<EnvironmentUnavailable>().is_some() {
+                "ENVIRONMENT_UNAVAILABLE"
+            } else {
+                "STARTUP_ERROR"
+            };
+            machine_query::emit_error(code, &format!("{error:#}"), &[]);
+            std::process::exit(1);
+        }
+        result => result,
+    }
 }
 
-fn launch(args: &[OsString]) -> Result<()> {
+fn launch(args: &[OsString], mode: StartupMode) -> Result<()> {
     if is_version_request(args) {
         println!("r2x {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -59,8 +100,15 @@ fn launch(args: &[OsString]) -> Result<()> {
     let payload = payload_path()?;
     // The PyO3 payload links libpython, so every launch needs its loader path.
     let use_venv = requires_python_environment(args);
-    let runtime = Runtime::load(use_venv)?;
-    let library_dir = python_library_dir(&runtime)?;
+    let runtime = Runtime::load(use_venv, mode).map_err(|error| {
+        if error.downcast_ref::<ConfigurationUnavailable>().is_some() {
+            error
+        } else {
+            anyhow::Error::new(EnvironmentUnavailable(format!("{error:#}")))
+        }
+    })?;
+    let library_dir = python_library_dir(&runtime)
+        .map_err(|error| EnvironmentUnavailable(format!("{error:#}")))?;
 
     let mut command = if use_venv {
         let mut command = uv_run_in_venv(&runtime)?;
@@ -135,7 +183,13 @@ fn uv_run_in_venv(runtime: &Runtime) -> Result<Command> {
     let mut command = Command::new(&runtime.uv);
     command
         .args(["run", "--no-config", "--no-project", "--active", "--python"])
-        .arg(python)
+        .arg(python);
+    if runtime.mode == StartupMode::MachineQuery {
+        command
+            .args(["--offline", "--no-python-downloads"])
+            .env("PYTHONDONTWRITEBYTECODE", "1");
+    }
+    command
         .arg("--")
         .env("VIRTUAL_ENV", venv)
         .env_remove("PYTHONHOME")

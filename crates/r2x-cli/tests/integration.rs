@@ -317,6 +317,15 @@ fn test_show_requires_a_choice_for_multiple_configs() -> Result<(), Box<dyn std:
             "multiple configuration directories",
         ))
         .stderr(predicate::str::contains("--config-dir"));
+    let error = query_json(&env, &["show", "r2x-reeds", "--json"], false)?;
+    assert_eq!(error["error"]["code"], "AMBIGUOUS_CONFIGURATION");
+    assert_eq!(
+        error["error"]["candidates"]
+            .as_array()
+            .ok_or("missing candidates")?
+            .len(),
+        2
+    );
     env.command()
         .args(["show", "r2x-reeds", "--config-dir"])
         .arg(&config)
@@ -327,8 +336,14 @@ fn test_show_requires_a_choice_for_multiple_configs() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn test_show_launcher_uses_the_configured_venv_python() -> Result<(), Box<dyn std::error::Error>> {
+fn test_show_launcher_recovers_uv_and_uses_venv_python() -> Result<(), Box<dyn std::error::Error>> {
     let env = PipelineHarness::new()?;
+    let saved_config = fs::read_to_string(&env.config_path)?;
+    let invalid_uv = serde_json::to_string(&env.home_path().to_string_lossy())?;
+    fs::write(
+        &env.config_path,
+        format!("{saved_config}uv_path = {invalid_uv}\n"),
+    )?;
     let alternate = env.home_path().join("alternate-venv");
     create_real_venv(&alternate)?;
     let alternate_python = r2x_config::venv_paths::resolve_python_exe(&alternate)?;
@@ -358,6 +373,11 @@ fn test_show_launcher_uses_the_configured_venv_python() -> Result<(), Box<dyn st
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8(output.stdout)?.contains("active_table"));
+    let config: r2x_config::Config = toml::from_str(&fs::read_to_string(&env.config_path)?)?;
+    assert!(config
+        .uv_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).is_file()));
     Ok(())
 }
 
@@ -378,6 +398,428 @@ fn test_installed_r2x_core_show_uses_public_config_path() -> Result<(), Box<dyn 
         .assert()
         .success()
         .stdout(predicate::str::contains("input.csv"));
+    let item = query_json(
+        &env,
+        &["show", "r2x-core-integration", "file:input", "--json"],
+        true,
+    )?;
+    assert_eq!(item["item"]["declaration"]["relative_fpath"], "input.csv");
+    Ok(())
+}
+
+fn query_json(
+    env: &PipelineHarness,
+    args: &[&str],
+    success: bool,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let output = env.command().args(args).output()?;
+    assert_eq!(
+        output.status.success(),
+        success,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let data = if success {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    if !success {
+        assert_eq!(output.stdout, Vec::<u8>::new());
+    }
+    Ok(serde_json::from_slice(data)?)
+}
+
+fn show_json(
+    env: &PipelineHarness,
+    dir: &Path,
+    item: Option<&str>,
+    success: bool,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut args = vec!["show", "r2x-reeds"];
+    if let Some(item) = item {
+        args.push(item);
+    }
+    args.extend([
+        "--json",
+        "--config-dir",
+        dir.to_str().ok_or("invalid path")?,
+    ]);
+    query_json(env, &args, success)
+}
+
+#[test]
+fn test_list_json_metadata_and_filters() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let metadata =
+        default_site_packages_path(&env.venv_path).join("r2x_reeds-0.0.1.dist-info/METADATA");
+    fs::write(
+        metadata,
+        "Metadata-Version: 2.1\nName: r2x-reeds\nVersion: 0.0.1\n\n",
+    )?;
+    let data = query_json(&env, &["list", "r2x-reeds", "--json"], true)?;
+    assert_eq!(data["schema_version"], 1);
+    assert_eq!(data["packages"][0]["version"], "0.0.1");
+    let plugins = data["packages"][0]["plugins"]
+        .as_array()
+        .ok_or("missing plugins")?;
+    assert!(plugins
+        .iter()
+        .any(|plugin| plugin["name"] == "r2x_reeds.parser"
+            && plugin["config_class"] == "ReEDSConfig"));
+    for selector in ["parser", "r2x_reeds.parser"] {
+        let data = query_json(&env, &["list", "r2x-reeds", selector, "--json"], true)?;
+        assert_eq!(
+            data["packages"][0]["plugins"][0]["name"],
+            "r2x_reeds.parser"
+        );
+    }
+    env.command()
+        .args(["list", "r2x-reeds", "r2x_reeds.parser"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("r2x_reeds.parser"));
+    let error = query_json(&env, &["list", "r2x-reeds", "missing", "--json"], false)?;
+    assert_eq!(error["error"]["code"], "PLUGIN_NOT_FOUND");
+    assert!(error["error"]["candidates"]
+        .as_array()
+        .ok_or("missing candidates")?
+        .iter()
+        .any(|name| name == "r2x_reeds.parser"));
+    let error = query_json(&env, &["list", "missing", "--json"], false)?;
+    assert_eq!(error["error"]["code"], "PACKAGE_NOT_FOUND");
+    fs::write(
+        env.home_path().join(".cache/r2x/manifest.toml"),
+        "version = \"3.0\"\ngenerated_at = \"2024-01-01T00:00:00Z\"\n",
+    )?;
+    assert_eq!(
+        query_json(&env, &["list", "--json"], true)?["packages"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        query_json(&env, &["list", "missing", "--json"], false)?["error"]["code"],
+        "PACKAGE_NOT_FOUND"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_show_json_inventory_and_declarations() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    let data = show_json(&env, &config, None, true)?;
+    assert_eq!(data["schema_version"], 1);
+    assert_eq!(data["configuration"]["origin"], "override");
+    assert_eq!(data["mappings"]["tables"]["status"], "present");
+    assert_eq!(
+        data["mappings"]["tables"]["items"][0]["selector"],
+        "table:generators"
+    );
+    let data = show_json(&env, &config, Some("table:generators"), true)?;
+    assert_eq!(data["item"]["kind"], "table");
+    assert_eq!(
+        data["item"]["declaration"]["operations"][0]["operation"],
+        "join"
+    );
+    assert_eq!(
+        data["item"]["declaration"]["operations"][1]["operation"],
+        "filter"
+    );
+    fs::write(
+        config.join("file_mapping.json"),
+        r#"[{"name":"load data:west","info":{"values":[-4,1.25,true,null],"integer":18446744073709551617}}]"#,
+    )?;
+    let data = show_json(&env, &config, None, true)?;
+    let selector = data["mappings"]["files"]["items"][0]["selector"]
+        .as_str()
+        .ok_or("missing selector")?;
+    assert_eq!(selector, "file:load data:west");
+    let data = show_json(&env, &config, Some(selector), true)?;
+    assert_eq!(
+        data["item"]["declaration"]["info"]["values"],
+        serde_json::json!([-4, 1.25, true, null])
+    );
+    assert_eq!(
+        data["item"]["declaration"]["info"]["integer"].to_string(),
+        "18446744073709551617"
+    );
+    fs::write(
+        config.join("file_mapping.json"),
+        r#"[{"name":"input","info":{"metadata":{"$serde_json::private::Number":"10"}}}]"#,
+    )?;
+    let output = env
+        .command()
+        .args(["show", "r2x-reeds", "file:input", "--json", "--config-dir"])
+        .arg(&config)
+        .output()?;
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout)?.contains(r#""$serde_json::private::Number":"10""#));
+    let empty = env.home_path().join("empty-mappings");
+    fs::create_dir_all(&empty)?;
+    fs::write(empty.join("table_mapping.json"), "[]")?;
+    let data = show_json(&env, &empty, None, true)?;
+    assert_eq!(data["mappings"]["files"]["status"], "not_provided");
+    assert_eq!(data["mappings"]["tables"]["status"], "empty");
+    Ok(())
+}
+
+#[test]
+fn test_show_json_errors_and_rule_selectors() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    fs::write(
+        config.join("file_mapping.json"),
+        r#"[{"name":"generators"}]"#,
+    )?;
+    let error = show_json(&env, &config, Some("generators"), false)?;
+    assert_eq!(error["error"]["code"], "AMBIGUOUS_MAPPING");
+    assert_eq!(
+        error["error"]["candidates"],
+        serde_json::json!(["file:generators", "table:generators"])
+    );
+    fs::write(config.join("translation_rules.json"), "{")?;
+    show_json(&env, &config, Some("table:generators"), true)?;
+    assert_eq!(
+        show_json(&env, &config, Some("generators"), false)?["error"]["code"],
+        "INVALID_JSON"
+    );
+    fs::write(
+        config.join("table_mapping.json"),
+        r#"[{"name":"t","operations":[{"column":"a","\u0063olumn":"b"}]}]"#,
+    )?;
+    let error = show_json(&env, &config, Some("table:t"), false)?;
+    assert_eq!(error["error"]["code"], "INVALID_JSON");
+    assert!(error["error"]["message"]
+        .as_str()
+        .ok_or("missing message")?
+        .contains("column"));
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"[
+        {"name":"shared","source_type":"Alpha","target_type":"First"},
+        {"name":"shared","source_type":"Beta","target_type":"Second"}
+    ]"#,
+    )?;
+    let error = show_json(&env, &config, Some("rule:shared"), false)?;
+    assert_eq!(
+        error["error"]["candidates"],
+        serde_json::json!(["rule:Alpha", "rule:Beta"])
+    );
+    let item = show_json(&env, &config, Some("rule:Beta"), true)?;
+    assert_eq!(item["item"]["declaration"]["target_type"], "Second");
+    fs::write(config.join("table_mapping.json"), "[]")?;
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"[
+        {"name":"shared","source_type":"Alpha","target_type":"First"},
+        {"name":"shared","source_type":"Alpha","target_type":"Second"}
+    ]"#,
+    )?;
+    let inventory = show_json(&env, &config, None, true)?;
+    assert!(inventory["mappings"]["rules"]["items"][0]["selector"].is_null());
+    assert!(inventory["mappings"]["rules"]["items"][1]["selector"].is_null());
+    assert_eq!(
+        show_json(&env, &config, Some("rule:shared"), false)?["error"]["candidates"],
+        serde_json::json!([])
+    );
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"[
+        {"name":"Generator","source_type":"Other","target_type":"OtherTarget"},
+        {"source_type":"Generator","target_type":"ThermalUnit"}
+    ]"#,
+    )?;
+    assert_eq!(
+        show_json(&env, &config, Some("rule:Generator"), true)?["item"]["declaration"]
+            ["target_type"],
+        "OtherTarget"
+    );
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"{"source_type":"Generator"}"#,
+    )?;
+    assert_eq!(
+        show_json(&env, &config, Some("rule:Generator"), false)?["error"]["code"],
+        "UNSUPPORTED_MAPPING"
+    );
+    fs::write(
+        config.join("table_mapping.json"),
+        r#"[{"name":"t"},{"name":"t"}]"#,
+    )?;
+    assert_eq!(
+        show_json(&env, &config, Some("table:t"), false)?["error"]["code"],
+        "INVALID_MAPPING"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_show_json_redirects_plugin_import_output() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let package = default_site_packages_path(&env.venv_path).join("r2x_reeds");
+    fs::create_dir_all(package.join("config"))?;
+    fs::write(
+        package.join("config/table_mapping.json"),
+        r#"[{"name":"input"}]"#,
+    )?;
+    let parser = package.join("parser.py");
+    let source = fs::read_to_string(&parser)?.replace(
+        "from __future__ import annotations",
+        "from __future__ import annotations\nprint('config import diagnostic')",
+    );
+    fs::write(parser, source)?;
+    let output = env
+        .command()
+        .args(["show", "r2x-reeds", "--json"])
+        .output()?;
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)?["configuration"]["origin"],
+        "package_default"
+    );
+    assert!(String::from_utf8(output.stderr)?.contains("config import diagnostic"));
+    let output = env
+        .command()
+        .args(["show", "r2x-reeds", "missing", "--json"])
+        .output()?;
+    assert!(!output.status.success());
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("config import diagnostic"));
+    let error: serde_json::Value =
+        serde_json::from_str(stderr.lines().last().ok_or("missing error")?)?;
+    assert_eq!(error["error"]["code"], "MAPPING_NOT_FOUND");
+    Ok(())
+}
+
+#[test]
+fn test_machine_queries_require_existing_environment() -> Result<(), Box<dyn std::error::Error>> {
+    let home = TempDir::new()?;
+    let config = home.path().join("config.toml");
+    let venv = home.path().join("missing-venv");
+    let uv = find_tool(&["uv"]).ok_or("uv is required")?;
+    let cases = [
+        (
+            format!(
+                "uv_path = {}\nvenv_path = {}\n",
+                serde_json::to_string(&uv)?,
+                serde_json::to_string(&venv.to_string_lossy())?
+            ),
+            "ENVIRONMENT_UNAVAILABLE",
+        ),
+        (
+            format!(
+                "uv_path = {}\nvenv_path = {}\n",
+                serde_json::to_string(&home.path().join("missing-uv").to_string_lossy())?,
+                serde_json::to_string(&venv.to_string_lossy())?
+            ),
+            "ENVIRONMENT_UNAVAILABLE",
+        ),
+        ("invalid = [".to_string(), "CONFIGURATION_ERROR"),
+    ];
+    for (contents, code) in cases {
+        fs::write(&config, &contents)?;
+        for executable in ["r2x", "r2x-runtime"] {
+            for args in [vec!["list", "--json"], vec!["show", "example", "--json"]] {
+                let output = StdCommand::new(cargo_bin(executable))
+                    .args(args)
+                    .env("HOME", home.path())
+                    .env("R2X_CONFIG", &config)
+                    .env_remove("VIRTUAL_ENV")
+                    .stdin(Stdio::null())
+                    .output()?;
+                assert!(!output.status.success(), "{executable}");
+                assert_eq!(output.stdout, Vec::<u8>::new());
+                let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
+                assert_eq!(error["error"]["code"], code, "{executable}");
+                assert!(!venv.exists(), "query created a virtual environment");
+                assert_eq!(fs::read_to_string(&config)?, contents);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_machine_queries_use_the_launcher_without_writing_bytecode(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    let site = default_site_packages_path(&env.venv_path);
+    fs::write(site.join("sitecustomize.py"), "value = 1\n")?;
+    let cache = site.join("__pycache__");
+    for executable in ["r2x", "r2x-runtime"] {
+        for args in [
+            vec!["list", "r2x-reeds", "--json"],
+            vec![
+                "show",
+                "r2x-reeds",
+                "table:generators",
+                "--json",
+                "--config-dir",
+                config.to_str().ok_or("invalid path")?,
+            ],
+        ] {
+            let output = StdCommand::new(cargo_bin(executable))
+                .args(args)
+                .env("HOME", env.home_path())
+                .env("R2X_CONFIG", &env.config_path)
+                .env_remove("PYTHONDONTWRITEBYTECODE")
+                .env_remove("VIRTUAL_ENV")
+                .env_remove("PYTHONPATH")
+                .stdin(Stdio::null())
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{executable}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&output.stdout)?["schema_version"],
+                1
+            );
+        }
+        if cache.exists() {
+            for entry in fs::read_dir(&cache)? {
+                assert!(!entry?
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("sitecustomize."));
+            }
+        }
+    }
+    assert_eq!(
+        query_json(&env, &["show", "--json"], false)?["error"]["code"],
+        "INVALID_ARGUMENT"
+    );
+    fs::write(config.join("table_mapping.json"), r#"[{"name":"--json"}]"#)?;
+    for executable in ["r2x", "r2x-runtime"] {
+        let output = StdCommand::new(cargo_bin(executable))
+            .args(["show", "r2x-reeds", "missing", "--json", "--config-dir"])
+            .arg(&config)
+            .env("HOME", env.home_path())
+            .env("R2X_CONFIG", &env.config_path)
+            .env_remove("VIRTUAL_ENV")
+            .env_remove("PYTHONPATH")
+            .output()?;
+        assert!(!output.status.success());
+        assert_eq!(output.stdout, Vec::<u8>::new());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stderr)?["error"]["code"],
+            "MAPPING_NOT_FOUND"
+        );
+        let output = StdCommand::new(cargo_bin(executable))
+            .args(["show", "r2x-reeds", "--config-dir"])
+            .arg(&config)
+            .args(["--", "--json"])
+            .env("HOME", env.home_path())
+            .env("R2X_CONFIG", &env.config_path)
+            .env_remove("VIRTUAL_ENV")
+            .env_remove("PYTHONPATH")
+            .output()?;
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout)?.contains("Table: --json"));
+    }
     Ok(())
 }
 

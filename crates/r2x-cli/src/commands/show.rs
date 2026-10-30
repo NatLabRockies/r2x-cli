@@ -3,6 +3,7 @@ use r2x_manifest::errors::ManifestError;
 use r2x_manifest::types::{Manifest, Package};
 use r2x_python::errors::BridgeError;
 use r2x_python::python_bridge::Bridge;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -20,6 +21,9 @@ pub struct ShowCommand {
     /// Show mappings from this configuration directory instead of the package default
     #[arg(long, value_name = "DIR")]
     config_dir: Option<PathBuf>,
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Error)]
@@ -41,7 +45,9 @@ pub enum ShowError {
     },
     #[error("Configuration path is not a directory: {0}")]
     NotDirectory(PathBuf),
-    #[error("Mapping '{item}' not found in '{package}'. Use `r2x show {package}` with the same configuration options to list mappings.")]
+    #[error(
+        "Mapping '{item}' not found in '{package}'. Use `r2x show {package}` with the same configuration options to list mappings."
+    )]
     ItemNotFound { package: String, item: String },
     #[error("Mapping '{item}' is ambiguous. Unique candidates: {choices:?}. Some mappings may lack a unique selector.")]
     AmbiguousItem { item: String, choices: Vec<String> },
@@ -61,13 +67,48 @@ pub enum ShowError {
     InvalidMapping { path: PathBuf, reason: String },
     #[error("Unsupported mapping {path}: {reason}")]
     UnsupportedMapping { path: PathBuf, reason: String },
+    #[error("Failed to serialize JSON output: {0}")]
+    Output(#[source] serde_json::Error),
     #[error(transparent)]
     Manifest(#[from] ManifestError),
     #[error(transparent)]
     Bridge(#[from] BridgeError),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl ShowError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::PackageNotFound(_) => "PACKAGE_NOT_FOUND",
+            Self::MissingConfig(_) | Self::ConfigDirectory { .. } | Self::NotDirectory(_) => {
+                "CONFIGURATION_UNAVAILABLE"
+            }
+            Self::MultipleConfigs { .. } => "AMBIGUOUS_CONFIGURATION",
+            Self::ItemNotFound { .. } => "MAPPING_NOT_FOUND",
+            Self::AmbiguousItem { .. } => "AMBIGUOUS_MAPPING",
+            Self::Read { .. } => "IO_ERROR",
+            Self::Json { .. } => "INVALID_JSON",
+            Self::InvalidMapping { .. } => "INVALID_MAPPING",
+            Self::UnsupportedMapping { .. } => "UNSUPPORTED_MAPPING",
+            Self::Output(_) => "OUTPUT_ERROR",
+            Self::Manifest(_) => "MANIFEST_ERROR",
+            Self::Bridge(_) => "PYTHON_ERROR",
+        }
+    }
+
+    pub fn candidates(&self) -> Vec<String> {
+        match self {
+            Self::MultipleConfigs { paths, .. } => paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+            Self::AmbiguousItem { choices, .. } => choices.clone(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum MappingKind {
     File,
     Table,
@@ -119,15 +160,84 @@ struct MappingAsset {
     records: Option<Vec<MappingRecord>>,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConfigOrigin {
+    PackageDefault,
+    Override,
+}
+
+impl ConfigOrigin {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PackageDefault => "package default",
+            Self::Override => "override",
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ConfigurationJson<'a> {
+    origin: ConfigOrigin,
+    path: &'a Path,
+}
+
+#[derive(Serialize)]
+struct MappingSummaryJson<'a> {
+    name: &'a str,
+    selector: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct AssetJson<'a> {
+    status: &'static str,
+    source: &'static str,
+    items: Vec<MappingSummaryJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct MappingsJson<'a> {
+    files: AssetJson<'a>,
+    tables: AssetJson<'a>,
+    rules: AssetJson<'a>,
+}
+
+#[derive(Serialize)]
+struct InventoryJson<'a> {
+    schema_version: u8,
+    package: &'a str,
+    configuration: ConfigurationJson<'a>,
+    mappings: MappingsJson<'a>,
+}
+
+#[derive(Serialize)]
+struct SelectedItemJson<'a> {
+    kind: MappingKind,
+    name: &'a str,
+    selector: Option<&'a str>,
+    source: &'static str,
+    declaration: &'a Value,
+}
+
+#[derive(Serialize)]
+struct ItemJson<'a> {
+    schema_version: u8,
+    package: &'a str,
+    configuration: ConfigurationJson<'a>,
+    item: SelectedItemJson<'a>,
+}
+
 pub fn handle_show(cmd: ShowCommand) -> Result<(), ShowError> {
     let manifest = Manifest::load()?;
     let package = manifest
         .get_package(&cmd.package)
         .ok_or_else(|| ShowError::PackageNotFound(cmd.package.clone()))?;
-    let has_override = cmd.config_dir.is_some();
-    let config_path = match cmd.config_dir {
-        Some(path) => path,
-        None => resolve_config_path(package)?,
+    let (config_path, config_source) = match cmd.config_dir {
+        Some(path) => (path, ConfigOrigin::Override),
+        None => (
+            resolve_config_path(package, cmd.json)?,
+            ConfigOrigin::PackageDefault,
+        ),
     };
     let metadata =
         std::fs::metadata(&config_path).map_err(|source| ShowError::ConfigDirectory {
@@ -137,24 +247,65 @@ pub fn handle_show(cmd: ShowCommand) -> Result<(), ShowError> {
     if !metadata.is_dir() {
         return Err(ShowError::NotDirectory(config_path));
     }
+    let configuration = ConfigurationJson {
+        origin: config_source,
+        path: &config_path,
+    };
     if let Some(item) = cmd.item {
         let assets = match qualified_selector(&item) {
             Some((kind, _)) => vec![load_mapping(&config_path, kind)?],
             None => Vec::from(load_all_mappings(&config_path)?),
         };
         let (kind, record) = find_item(&assets, &package.name, &item)?;
-        print_record(kind, record);
+        if cmd.json {
+            let output = ItemJson {
+                schema_version: 1,
+                package: &package.name,
+                configuration,
+                item: SelectedItemJson {
+                    kind,
+                    name: &record.name,
+                    selector: record.selector.as_deref(),
+                    source: kind.filename(),
+                    declaration: &record.value,
+                },
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&output).map_err(ShowError::Output)?
+            );
+        } else {
+            print_record(kind, record);
+        }
         return Ok(());
     }
 
     let assets = load_all_mappings(&config_path)?;
+    if cmd.json {
+        let [files, tables, rules] = &assets;
+        let output = InventoryJson {
+            schema_version: 1,
+            package: &package.name,
+            configuration,
+            mappings: MappingsJson {
+                files: asset_json(files),
+                tables: asset_json(tables),
+                rules: asset_json(rules),
+            },
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&output).map_err(ShowError::Output)?
+        );
+        return Ok(());
+    }
+
     println!("{}", package.name);
-    let source = if has_override {
-        "override"
-    } else {
-        "package default"
-    };
-    println!("  Configuration: {} ({source})", config_path.display());
+    println!(
+        "  Configuration: {} ({})",
+        config_path.display(),
+        config_source.label()
+    );
     for asset in assets {
         println!("\n{}:", asset.kind.title());
         match asset.records {
@@ -168,7 +319,7 @@ pub fn handle_show(cmd: ShowCommand) -> Result<(), ShowError> {
             }
         }
     }
-    let override_hint = if has_override {
+    let override_hint = if matches!(config_source, ConfigOrigin::Override) {
         " --config-dir <directory>"
     } else {
         ""
@@ -180,7 +331,7 @@ pub fn handle_show(cmd: ShowCommand) -> Result<(), ShowError> {
     Ok(())
 }
 
-fn resolve_config_path(package: &Package) -> Result<PathBuf, ShowError> {
+fn resolve_config_path(package: &Package, machine_query: bool) -> Result<PathBuf, ShowError> {
     let configs: BTreeSet<(&str, &str)> = package
         .plugins
         .iter()
@@ -194,7 +345,12 @@ fn resolve_config_path(package: &Package) -> Result<PathBuf, ShowError> {
     if configs.is_empty() {
         return Err(ShowError::MissingConfig(package.name.to_string()));
     }
-    let bridge = Bridge::get()?;
+
+    let bridge = if machine_query {
+        Bridge::get_existing()?
+    } else {
+        Bridge::get()?
+    };
     let mut paths = BTreeSet::new();
     for (module, class) in configs {
         paths.insert(bridge.package_config_path(module, class)?);
@@ -209,6 +365,28 @@ fn resolve_config_path(package: &Package) -> Result<PathBuf, ShowError> {
         .into_iter()
         .next()
         .ok_or_else(|| ShowError::MissingConfig(package.name.to_string()))
+}
+
+fn asset_json(asset: &MappingAsset) -> AssetJson<'_> {
+    let status = match &asset.records {
+        None => "not_provided",
+        Some(records) if records.is_empty() => "empty",
+        Some(_) => "present",
+    };
+    let items = asset
+        .records
+        .iter()
+        .flatten()
+        .map(|record| MappingSummaryJson {
+            name: &record.name,
+            selector: record.selector.as_deref(),
+        })
+        .collect();
+    AssetJson {
+        status,
+        source: asset.kind.filename(),
+        items,
+    }
 }
 
 fn qualified_selector(item: &str) -> Option<(MappingKind, &str)> {
@@ -389,7 +567,7 @@ fn load_mapping(directory: &Path, kind: MappingKind) -> Result<MappingAsset, Sho
             return Err(ShowError::InvalidMapping {
                 path,
                 reason: "expected an array of named records".to_string(),
-            })
+            });
         }
     };
     if kind != MappingKind::Rule {
