@@ -22,7 +22,7 @@ const pages = ['README', 'getting-started', 'plugin-management', 'cli-reference'
 export default defineConfig({
   site: 'https://natlabrockies.github.io',
   base: '/r2x-cli/',
-  markdown: { processor: unified(), remarkPlugins: [siteLinks] },
+  markdown: { processor: unified({ remarkPlugins: [siteLinks] }) },
   redirects: Object.fromEntries(pages.map(page => [`/${page}.md`, `/r2x-cli/${page === 'README' ? '' : page + '/'}`])),
   integrations: [mermaid({ enableLog: false, mermaidConfig: { theme: "base", fontFamily: "system-ui, sans-serif" } }), starlight({
     title: 'r2x-cli',
