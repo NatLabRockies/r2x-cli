@@ -16,6 +16,7 @@ relevant plugin or workflow documentation for those details.
 | Initialize a workspace file | `r2x init` |
 | Install a plugin | `r2x install <package>` |
 | List installed plugins | `r2x list` |
+| Show declared mappings | `r2x show <package>` |
 | Run a target | `r2x run <target>` |
 | Inspect a system | `r2x read <file>` |
 | Update a standalone installation | `r2x self update` |
@@ -34,8 +35,34 @@ r2x sync --upgrade
 r2x clean --yes
 ```
 
+`r2x list <package>` describes its discovered plugin entry points.
+Use `r2x show <package>` for its mapping declarations.
+
 See [Plugin management](plugin-management.md) for package sources and plugin
 lifecycle guidance.
+
+## Show
+
+`r2x show` lists declared file mappings, table mappings, and translation rules for an installed package.
+Use a package name from `r2x list`:
+
+```bash
+r2x show <package>
+r2x show <package> <item>
+r2x show <package> table:<item>
+r2x show <package> --config-dir <directory>
+```
+
+Use the inventory selectors with `file:`, `table:`, or `rule:` to distinguish items, and quote selectors containing spaces.
+A qualified item reads only its corresponding mapping file.
+An unqualified item requires all three mapping files to be readable or absent, so the name can be disambiguated.
+Missing files and empty mapping collections are reported separately.
+Items without a unique selector cannot be shown individually.
+The command rejects duplicate JSON keys but does not validate complete mapping schemas or compute data.
+
+By default, the command imports discovered configuration classes and uses their public package-default configuration path.
+Python module initialization may have side effects, but the command does not invoke the plugin or run a pipeline.
+Use `--config-dir` to inspect another directory without importing those classes or to choose between multiple configuration directories.
 
 ## Run
 

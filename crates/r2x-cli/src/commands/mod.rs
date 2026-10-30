@@ -6,4 +6,5 @@ pub mod plugins;
 pub mod read;
 pub mod run;
 pub mod self_update;
+pub mod show;
 pub mod venv;
