@@ -16,6 +16,7 @@ relevant plugin or workflow documentation for those details.
 | Initialize a workspace file | `r2x init` |
 | Install a plugin | `r2x install <package>` |
 | List installed plugins | `r2x list` |
+| Show declared mappings | `r2x show <package>` |
 | Run a target | `r2x run <target>` |
 | Inspect a system | `r2x read <file>` |
 | Update a standalone installation | `r2x self update` |
@@ -34,8 +35,68 @@ r2x sync --upgrade
 r2x clean --yes
 ```
 
+`r2x list <package>` describes its discovered plugin entry points.
+Add a full plugin name or its final name component to select matching entry points.
+Use `r2x show <package>` for the package's mapping declarations.
+
 See [Plugin management](plugin-management.md) for package sources and plugin
 lifecycle guidance.
+
+## Show
+
+`r2x show` lists declared file mappings, table mappings, and translation rules for an installed package.
+Use a name from `r2x list` as the package argument:
+
+```bash
+r2x show <package>
+r2x show <package> <item>
+r2x show <package> table:<item>
+r2x show <package> --config-dir <directory>
+```
+
+The inventory shows a qualified selector for each item when one is available.
+Use `file:`, `table:`, or `rule:` to distinguish items with the same name, and quote selectors containing spaces.
+A qualified item reads only its corresponding mapping file.
+An unqualified item requires all three mapping files to be readable or absent, so the name can be disambiguated.
+File and table mappings must be arrays of records with nonempty `name` fields.
+Translation rules must be arrays of records with names or source and target types, or an empty object.
+The output describes the selected JSON files, not computed data or application-owned transformations.
+It rejects duplicate JSON keys but does not validate the complete mapping schemas.
+Missing mapping files and empty mapping collections are reported separately.
+An item without a unique selector cannot be shown individually, so read its source mapping file to distinguish it.
+
+By default, the command imports discovered configuration classes and uses their public package-default configuration path.
+Python module initialization may have side effects, but the command does not invoke the plugin or run a pipeline.
+Use `--config-dir` to inspect a different configuration directory without importing those classes, or to choose between multiple configuration directories.
+
+## Machine-readable output
+
+Use `--json` with either command to return versioned JSON:
+
+```bash
+r2x list --json
+r2x list <package> --json
+r2x show <package> --json
+r2x show <package> table:<item> --json
+```
+
+On success, the CLI writes one JSON object to stdout with `schema_version` set to `1`.
+`list` returns a `packages` array containing package and plugin metadata.
+`show` returns the configuration origin and path, plus either a mapping inventory or a selected `item` and its declaration.
+Inventory assets use `present`, `empty`, or `not_provided` status.
+Each inventory item includes a qualified `selector` for the next `show` call, or `null` if the declarations do not provide a unique selector.
+
+On failure, the CLI exits nonzero and emits a JSON error object to stderr with `schema_version`, `error.code`, `error.message`, and `error.candidates`.
+Common codes include `PACKAGE_NOT_FOUND`, `PLUGIN_NOT_FOUND`, `MAPPING_NOT_FOUND`, `AMBIGUOUS_MAPPING`, `AMBIGUOUS_CONFIGURATION`, `INVALID_JSON`, and `ENVIRONMENT_UNAVAILABLE`.
+Candidates contain usable plugin names, mapping selectors, or configuration paths when available.
+Plugin import and verbose diagnostics may also appear on stderr.
+Python-level stdout from configuration class imports is redirected to stderr.
+Python startup customization runs before that redirection and can cause startup errors or corrupt the JSON stream.
+Native stdout writes from plugin initialization can also corrupt the JSON stream.
+The `--json` mode requires an existing `uv` executable and compatible virtual environment.
+It does not prompt, download dependencies, or create or repair the environment.
+Default `show` discovery still imports plugin configuration classes, whose initialization can have side effects.
+Treat mapping declarations, paths, and plugin metadata in the output as potentially sensitive.
 
 ## Run
 

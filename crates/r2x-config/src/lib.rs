@@ -357,6 +357,42 @@ impl Config {
         }
     }
 
+    /// Find the configured uv executable without prompting or modifying configuration.
+    pub fn existing_uv_path(&self) -> Result<String, ConfigError> {
+        if let Some(path) = self.uv_path.as_deref() {
+            if std::path::Path::new(path).is_file() {
+                return Ok(path.to_string());
+            }
+            return Err(ConfigError::UvNotFound(format!(
+                "configured uv executable does not exist: {path}"
+            )));
+        }
+        let path = which("uv")
+            .map_err(|error| ConfigError::UvNotFound(format!("uv is not available: {error}")))?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    /// Validate the configured virtual environment without creating or migrating it.
+    pub fn existing_venv_path(&self) -> Result<String, ConfigError> {
+        let venv_path = self.get_venv_path();
+        if !std::path::Path::new(&venv_path).is_dir() {
+            return Err(ConfigError::VenvCreation(format!(
+                "No existing virtual environment at {venv_path}. Run `r2x venv create --yes`."
+            )));
+        }
+        let python_version = self.runtime_python_version()?;
+        let existing_abi = r2x_config_venv_abi(&venv_path)?;
+        if existing_abi != python_version.abi() {
+            return Err(ConfigError::VenvCreation(format!(
+                "Existing venv at {} uses Python ABI {}, but this r2x binary requires {}. Recreate it with `r2x venv create --yes`.",
+                venv_path,
+                existing_abi,
+                python_version.abi(),
+            )));
+        }
+        Ok(venv_path)
+    }
+
     pub fn ensure_uv_path(&mut self) -> Result<String, ConfigError> {
         // Check if the stored path exists
         if let Some(ref path) = self.uv_path {
