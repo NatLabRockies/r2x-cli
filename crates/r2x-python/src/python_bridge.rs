@@ -58,6 +58,41 @@ impl Bridge {
         }
     }
 
+    /// Resolve the package-default asset directory through a plugin's public config API.
+    pub fn package_config_path(
+        &self,
+        module_name: &str,
+        class_name: &str,
+    ) -> Result<PathBuf, BridgeError> {
+        Python::attach(|py| {
+            let _stdout = crate::plugin_regular::StdoutGuard::redirect_to_stderr(py)?;
+            let module = PyModule::import(py, module_name).map_err(|error| {
+                BridgeError::Python(crate::plugin_regular::format_python_error(
+                    py,
+                    error,
+                    &format!("Failed to import config module '{module_name}'"),
+                ))
+            })?;
+            let config = module.getattr(class_name).map_err(|error| {
+                BridgeError::Python(crate::plugin_regular::format_python_error(
+                    py,
+                    error,
+                    &format!("Failed to find config class '{class_name}'"),
+                ))
+            })?;
+            config
+                .call_method0("package_config_path")
+                .and_then(|path| path.extract::<PathBuf>())
+                .map_err(|error| {
+                    BridgeError::Python(crate::plugin_regular::format_python_error(
+                        py,
+                        error,
+                        &format!("Failed to resolve package config path for '{class_name}'"),
+                    ))
+                })
+        })
+    }
+
     /// Initialize Python interpreter and configure environment
     ///
     /// This performs:

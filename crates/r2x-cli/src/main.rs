@@ -4,7 +4,7 @@ use r2x::commands::{
     config::{self, ConfigAction, PythonAction},
     init,
     log::{self, LogAction},
-    plugins, read, run, self_update, venv,
+    plugins, read, run, self_update, show, venv,
 };
 use r2x::common::GlobalOpts;
 use r2x_config as config_manager;
@@ -119,6 +119,8 @@ enum Commands {
 
     /// Run pipelines or plugins
     Run(run::RunCommand),
+    /// Show an installed package's declared mappings
+    Show(show::ShowCommand),
     /// Read a system from JSON (stdin or file) and open an interactive IPython session
     Read(read::ReadCommand),
     /// Manage the r2x executable
@@ -207,6 +209,7 @@ fn requires_python_environment(command: &Commands) -> bool {
             | Commands::Sync { .. }
             | Commands::Clean { .. }
             | Commands::Run(_)
+            | Commands::Show(_)
             | Commands::Read(_)
     )
 }
@@ -352,6 +355,13 @@ fn main() {
             // Re-acquire the GIL on the main thread before exit so that
             // PyO3's atexit handler can call PyEval_SaveThread() without
             // crashing. See python_bridge::process_exit for details.
+            process_exit(0);
+        }
+        Commands::Show(cmd) => {
+            if let Err(error) = show::handle_show(cmd) {
+                logger::error(&format!("Show command failed: {error}"));
+                process_exit(1);
+            }
             process_exit(0);
         }
         Commands::Read(cmd) => {

@@ -93,7 +93,7 @@ fn requires_python_environment(args: &[OsString]) -> bool {
 
     matches!(
         command.as_ref(),
-        "list" | "install" | "remove" | "sync" | "clean" | "run" | "read"
+        "list" | "install" | "remove" | "sync" | "clean" | "run" | "show" | "read"
     )
 }
 
@@ -130,9 +130,13 @@ fn uv_run_in_venv(runtime: &Runtime) -> Result<Command> {
         .venv
         .as_ref()
         .context("R2X virtual environment was not initialized")?;
+    let python = r2x_config::venv_paths::resolve_python_exe(venv)
+        .context("failed to find the R2X virtual environment's Python")?;
     let mut command = Command::new(&runtime.uv);
     command
-        .args(["run", "--no-config", "--no-project", "--active", "--"])
+        .args(["run", "--no-config", "--no-project", "--active", "--python"])
+        .arg(python)
+        .arg("--")
         .env("VIRTUAL_ENV", venv)
         .env_remove("PYTHONHOME")
         .env_remove("PYTHONPATH");

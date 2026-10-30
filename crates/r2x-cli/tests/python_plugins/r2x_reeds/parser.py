@@ -23,6 +23,10 @@ class ReEDSConfig:
         self.solve_year = solve_year
         self.extra = kwargs
 
+    @classmethod
+    def package_config_path(cls) -> Path:
+        return Path(__file__).parent / "config"
+
     @property
     def fmap_path(self) -> Path:
         return Path(__file__).parent / "config" / "file_mapping.json"

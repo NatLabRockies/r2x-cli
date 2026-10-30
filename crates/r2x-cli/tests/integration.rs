@@ -82,6 +82,305 @@ fn test_list_plugins_no_plugins() {
     r2x_cmd().arg("list").assert().success();
 }
 
+fn write_show_mappings(env: &PipelineHarness) -> io::Result<PathBuf> {
+    let config_dir = env.home_path().join("mapping-config");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("file_mapping.json"),
+        r#"[{"name":"capacity","relative_fpath":"capacity.csv"}]"#,
+    )?;
+    fs::write(
+        config_dir.join("table_mapping.json"),
+        r#"[{"name":"generators","source":"capacity","operations":[
+            {"operation":"join","source":"costs","on":["year"]},
+            {"operation":"filter","column":"value","comparison":"greater_than","value":0}
+        ],"columns":{"rating":"value"}}]"#,
+    )?;
+    fs::write(
+        config_dir.join("translation_rules.json"),
+        r#"[{"source_type":"Generator","target_type":"Unit","version":1,"field_map":{"rating":"capacity"}}]"#,
+    )?;
+    Ok(config_dir)
+}
+
+#[test]
+fn test_show_lists_and_describes_mappings() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    env.command()
+        .current_dir(env.home_path())
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("capacity  [file:capacity]"))
+        .stdout(predicate::str::contains("generators  [table:generators]"))
+        .stdout(predicate::str::contains("Generator -> Unit (v1)"));
+
+    let output = env
+        .command()
+        .args(["show", "r2x-reeds", "table:generators", "--config-dir"])
+        .arg(&config)
+        .output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("source: capacity"));
+    assert!(stdout.contains("rating: value"));
+    let join = stdout.find("1. join").ok_or("missing join")?;
+    let filter = stdout.find("2. filter").ok_or("missing filter")?;
+    assert!(join < filter);
+    env.command()
+        .args(["show", "r2x-reeds", "rule:Generator", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rating: capacity"));
+    fs::write(
+        config.join("file_mapping.json"),
+        r#"[{"name":"load data:west","limit":18446744073709551617}]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "file:load data:west", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("18446744073709551617"));
+    env.command()
+        .args(["list", "r2x-reeds"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("r2x show r2x-reeds"));
+    Ok(())
+}
+
+#[test]
+fn test_show_resolves_package_default_and_reports_missing_assets(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = default_site_packages_path(&env.venv_path).join("r2x_reeds/config");
+    fs::create_dir_all(&config)?;
+    fs::write(config.join("table_mapping.json"), "[]")?;
+    env.command()
+        .current_dir(env.home_path())
+        .args(["show", "r2x-reeds"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("package default"))
+        .stdout(predicate::str::contains("Files:\n  (not provided)"))
+        .stdout(predicate::str::contains("Tables:\n  (empty)"));
+    Ok(())
+}
+
+#[test]
+fn test_show_reports_ambiguity_and_invalid_mappings() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    fs::write(
+        config.join("file_mapping.json"),
+        r#"[{"name":"generators","relative_fpath":"input.csv"}]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "generators", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file:generators"))
+        .stderr(predicate::str::contains("table:generators"));
+    for selector in ["file:generators", "table:generators"] {
+        env.command()
+            .args(["show", "r2x-reeds", selector, "--config-dir"])
+            .arg(&config)
+            .assert()
+            .success();
+    }
+    fs::write(config.join("translation_rules.json"), "{")?;
+    env.command()
+        .args(["show", "r2x-reeds", "table:generators", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success();
+    env.command()
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("translation_rules.json"));
+    fs::write(
+        config.join("table_mapping.json"),
+        r#"[{"name":"t","operations":[{"column":"a","\u0063olumn":"b"}]}]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "table:t", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Duplicate JSON key 'column'"));
+    fs::write(
+        config.join("table_mapping.json"),
+        r#"[{"name":"t"},{"name":"t"}]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "table:t", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("duplicate name 't'"));
+    fs::write(config.join("table_mapping.json"), "[]")?;
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"{"source_type":"Generator"}"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unsupported translation rules object",
+        ));
+    env.command()
+        .args(["show", "r2x-reeds", "file:missing", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("same configuration options"));
+    Ok(())
+}
+
+#[test]
+fn test_show_offers_only_unique_rule_selectors() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"[
+        {"name":"shared","source_type":"Alpha","target_type":"First","version":1},
+        {"name":"shared","source_type":"Beta","target_type":"Second","version":1}
+    ]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shared  [rule:Alpha]"))
+        .stdout(predicate::str::contains("shared  [rule:Beta]"));
+    env.command()
+        .args(["show", "r2x-reeds", "rule:shared", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("rule:Alpha"))
+        .stderr(predicate::str::contains("rule:Beta"));
+    env.command()
+        .args(["show", "r2x-reeds", "rule:Beta", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Second"));
+    fs::write(
+        config.join("translation_rules.json"),
+        r#"[
+        {"name":"shared","source_type":"Alpha","target_type":"First","version":1},
+        {"name":"shared","source_type":"Alpha","target_type":"Second","version":1}
+    ]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shared  [no unique selector]"));
+    Ok(())
+}
+
+#[test]
+fn test_show_requires_a_choice_for_multiple_configs() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    let parser = default_site_packages_path(&env.venv_path).join("r2x_reeds/parser.py");
+    let mut source = fs::read_to_string(&parser)?;
+    source.push_str("\nclass AlternativeConfig:\n    @classmethod\n    def package_config_path(cls):\n        return Path(__file__).parent / 'alternative'\n");
+    fs::write(parser, source)?;
+    let manifest = stub_manifest_toml().replace(
+        "function_name = \"no_stdin_function\"",
+        "function_name = \"no_stdin_function\"\nconfig_class = \"AlternativeConfig\"\nconfig_module = \"r2x_reeds.parser\"",
+    );
+    fs::write(env.home_path().join(".cache/r2x/manifest.toml"), manifest)?;
+    env.command()
+        .args(["show", "r2x-reeds"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "multiple configuration directories",
+        ))
+        .stderr(predicate::str::contains("--config-dir"));
+    env.command()
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("generators"));
+    Ok(())
+}
+
+#[test]
+fn test_show_launcher_uses_the_configured_venv_python() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let alternate = env.home_path().join("alternate-venv");
+    create_real_venv(&alternate)?;
+    let alternate_python = r2x_config::venv_paths::resolve_python_exe(&alternate)?;
+    let config = env.venv_path.join("mapping-assets");
+    fs::create_dir_all(&config)?;
+    fs::write(
+        config.join("table_mapping.json"),
+        r#"[{"name":"active_table"}]"#,
+    )?;
+    let parser = default_site_packages_path(&env.venv_path).join("r2x_reeds/parser.py");
+    let source = fs::read_to_string(&parser)?;
+    let original = "return Path(__file__).parent / \"config\"";
+    assert!(source.contains(original));
+    fs::write(parser, source.replace(original,
+        "return Path(__import__('subprocess').check_output(['python', '-I', '-c', 'import sys; print(sys.prefix)'], text=True).strip()) / 'mapping-assets'"))?;
+    let output = StdCommand::new(cargo_bin("r2x"))
+        .args(["show", "r2x-reeds"])
+        .env("HOME", env.home_path())
+        .env("R2X_CONFIG", &env.config_path)
+        .env("UV_PYTHON", alternate_python)
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("PYTHONPATH")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8(output.stdout)?.contains("active_table"));
+    Ok(())
+}
+
+#[test]
+fn test_installed_r2x_core_show_uses_public_config_path() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(env) = real_core_harness()? else {
+        return Ok(());
+    };
+    let config = default_site_packages_path(&env.venv_path).join("r2x_core_integration/config");
+    fs::create_dir_all(&config)?;
+    fs::write(
+        config.join("file_mapping.json"),
+        r#"[{"name":"input","relative_fpath":"input.csv"}]"#,
+    )?;
+    env.command()
+        .args(["show", "r2x-core-integration", "file:input"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("input.csv"));
+    Ok(())
+}
+
 #[test]
 fn test_list_plugins_setup_failure_exits_nonzero() {
     let Ok(temp_dir) = TempDir::new() else {
