@@ -23,6 +23,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[derive(Clone, Copy)]
+enum VenvMode {
+    Ensure,
+    Existing,
+}
+
 /// The Python bridge for plugin execution
 pub struct Bridge {
     /// Placeholder field for future extension
@@ -52,7 +58,16 @@ impl Bridge {
 
     /// Get or initialize the bridge singleton
     pub fn get() -> Result<&'static Bridge, BridgeError> {
-        match BRIDGE_INSTANCE.get_or_init(Bridge::initialize) {
+        Self::get_with_mode(VenvMode::Ensure)
+    }
+
+    /// Initialize the bridge only if a compatible virtual environment already exists.
+    pub fn get_existing() -> Result<&'static Bridge, BridgeError> {
+        Self::get_with_mode(VenvMode::Existing)
+    }
+
+    fn get_with_mode(mode: VenvMode) -> Result<&'static Bridge, BridgeError> {
+        match BRIDGE_INSTANCE.get_or_init(|| Bridge::initialize(mode)) {
             Ok(bridge) => Ok(bridge),
             Err(e) => Err(BridgeError::Initialization(format!("{}", e))),
         }
@@ -100,14 +115,20 @@ impl Bridge {
     /// 2. Resolve PYTHONHOME from venv's pyvenv.cfg
     /// 3. Set PYTHONHOME and initialize PyO3
     /// 4. Configure site-packages
-    fn initialize() -> Result<Bridge, BridgeError> {
+    fn initialize(mode: VenvMode) -> Result<Bridge, BridgeError> {
         let start_time = std::time::Instant::now();
 
         let mut config = Config::load()
             .map_err(|e| BridgeError::Initialization(format!("Failed to load config: {}", e)))?;
 
-        // Ensure venv exists
-        let venv_path = ensure_configured_venv(&mut config)?;
+        let venv_path = match mode {
+            VenvMode::Ensure => ensure_configured_venv(&mut config)?,
+            VenvMode::Existing => PathBuf::from(config.existing_venv_path().map_err(|error| {
+                BridgeError::Initialization(format!(
+                    "Python virtual environment unavailable: {error}"
+                ))
+            })?),
+        };
 
         // Resolve PYTHONHOME from venv's pyvenv.cfg
         let python_home = resolve_python_home(&venv_path)?;
@@ -120,25 +141,37 @@ impl Bridge {
         // Add site-packages to PYTHONPATH
         Self::configure_python_path(&site_packages);
 
+        // Set this before initialization so startup imports do not write bytecode.
+        if matches!(mode, VenvMode::Existing) {
+            env::set_var("PYTHONDONTWRITEBYTECODE", "1");
+        }
+
         // Initialize PyO3
         logger::debug("Initializing PyO3...");
         let pyo3_start = std::time::Instant::now();
         pyo3::Python::initialize();
         logger::debug_lazy(|| format!("pyo3::Python::initialize took: {:?}", pyo3_start.elapsed()));
 
-        // Enable bytecode generation
+        // Inspecting declarations must not create Python bytecode in installed packages.
         pyo3::Python::attach(|py| {
             let sys = PyModule::import(py, "sys")
                 .map_err(|e| BridgeError::Python(format!("Failed to import sys module: {}", e)))?;
-            sys.setattr("dont_write_bytecode", false).map_err(|e| {
-                BridgeError::Python(format!("Failed to enable bytecode generation: {}", e))
-            })?;
+            let disable_bytecode = matches!(mode, VenvMode::Existing);
+            sys.setattr("dont_write_bytecode", disable_bytecode)
+                .map_err(|e| {
+                    BridgeError::Python(format!("Failed to configure bytecode generation: {}", e))
+                })?;
             Ok::<(), BridgeError>(())
         })?;
-        logger::debug("Enabled Python bytecode generation");
 
         // Add venv site-packages to sys.path
         pyo3::Python::attach(|py| {
+            let _stdout = match mode {
+                VenvMode::Ensure => None,
+                VenvMode::Existing => {
+                    Some(crate::plugin_regular::StdoutGuard::redirect_to_stderr(py)?)
+                }
+            };
             let site = PyModule::import(py, "site")
                 .map_err(|e| BridgeError::Python(format!("Failed to import site module: {}", e)))?;
             site.call_method1("addsitedir", (site_packages.to_string_lossy().as_ref(),))
@@ -146,15 +179,15 @@ impl Bridge {
             Ok::<(), BridgeError>(())
         })?;
 
-        // Configure cache path
-        let cache_path = config.ensure_cache_path().map_err(|e| {
-            BridgeError::Initialization(format!("Failed to ensure cache path: {}", e))
-        })?;
-        Self::configure_python_cache(&cache_path)?;
+        if matches!(mode, VenvMode::Ensure) {
+            let cache_path = config.ensure_cache_path().map_err(|e| {
+                BridgeError::Initialization(format!("Failed to ensure cache path: {}", e))
+            })?;
+            Self::configure_python_cache(&cache_path)?;
 
-        // Configure Python logging
-        if let Err(e) = Self::configure_python_logging() {
-            logger::warn(&format!("Python logging configuration failed: {}", e));
+            if let Err(e) = Self::configure_python_logging() {
+                logger::warn(&format!("Python logging configuration failed: {}", e));
+            }
         }
 
         logger::debug_lazy(|| {
