@@ -336,8 +336,14 @@ fn test_show_requires_a_choice_for_multiple_configs() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn test_show_launcher_uses_the_configured_venv_python() -> Result<(), Box<dyn std::error::Error>> {
+fn test_show_launcher_recovers_uv_and_uses_venv_python() -> Result<(), Box<dyn std::error::Error>> {
     let env = PipelineHarness::new()?;
+    let saved_config = fs::read_to_string(&env.config_path)?;
+    let invalid_uv = serde_json::to_string(&env.home_path().to_string_lossy())?;
+    fs::write(
+        &env.config_path,
+        format!("{saved_config}uv_path = {invalid_uv}\n"),
+    )?;
     let alternate = env.home_path().join("alternate-venv");
     create_real_venv(&alternate)?;
     let alternate_python = r2x_config::venv_paths::resolve_python_exe(&alternate)?;
@@ -367,6 +373,11 @@ fn test_show_launcher_uses_the_configured_venv_python() -> Result<(), Box<dyn st
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8(output.stdout)?.contains("active_table"));
+    let config: r2x_config::Config = toml::from_str(&fs::read_to_string(&env.config_path)?)?;
+    assert!(config
+        .uv_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).is_file()));
     Ok(())
 }
 
@@ -707,7 +718,7 @@ fn test_machine_queries_require_existing_environment() -> Result<(), Box<dyn std
         ("invalid = [".to_string(), "CONFIGURATION_ERROR"),
     ];
     for (contents, code) in cases {
-        fs::write(&config, contents)?;
+        fs::write(&config, &contents)?;
         for executable in ["r2x", "r2x-runtime"] {
             for args in [vec!["list", "--json"], vec!["show", "example", "--json"]] {
                 let output = StdCommand::new(cargo_bin(executable))
@@ -722,6 +733,7 @@ fn test_machine_queries_require_existing_environment() -> Result<(), Box<dyn std
                 let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
                 assert_eq!(error["error"]["code"], code, "{executable}");
                 assert!(!venv.exists(), "query created a virtual environment");
+                assert_eq!(fs::read_to_string(&config)?, contents);
             }
         }
     }

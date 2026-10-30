@@ -364,7 +364,7 @@ impl Config {
                 return Ok(path.to_string());
             }
             return Err(ConfigError::UvNotFound(format!(
-                "configured uv executable does not exist: {path}"
+                "configured uv executable is not a file: {path}"
             )));
         }
         let path = which("uv")
@@ -381,34 +381,23 @@ impl Config {
             )));
         }
         let python_version = self.runtime_python_version()?;
-        let existing_abi = r2x_config_venv_abi(&venv_path)?;
-        if existing_abi != python_version.abi() {
-            return Err(ConfigError::VenvCreation(format!(
-                "Existing venv at {} uses Python ABI {}, but this r2x binary requires {}. Recreate it with `r2x venv create --yes`.",
-                venv_path,
-                existing_abi,
-                python_version.abi(),
-            )));
-        }
+        validate_venv_abi(&venv_path, &python_version)?;
         Ok(venv_path)
     }
 
     pub fn ensure_uv_path(&mut self) -> Result<String, ConfigError> {
-        // Check if the stored path exists
         if let Some(ref path) = self.uv_path {
-            if std::path::Path::new(path).exists() {
-                return Ok(path.clone());
+            if let Ok(path) = self.existing_uv_path() {
+                return Ok(path);
             }
-            // Path was in config but doesn't exist, clear it
-            eprintln!("Stored uv path no longer exists: {}", path);
+            eprintln!("Stored uv path no longer points to a file: {}", path);
             self.uv_path = None;
         }
 
-        if let Ok(path) = which("uv") {
-            let path_str = path.to_string_lossy().trim().to_string();
-            self.uv_path = Some(path_str.clone());
+        if let Ok(path) = self.existing_uv_path() {
+            self.uv_path = Some(path.clone());
             self.save()?;
-            return Ok(path_str);
+            return Ok(path);
         }
 
         // Auto-install uv if not found — prompt for confirmation first
@@ -537,15 +526,7 @@ impl Config {
         let python_version = self.runtime_python_version()?;
 
         if std::path::Path::new(&venv_path).exists() {
-            let existing_abi = r2x_config_venv_abi(&venv_path)?;
-            if existing_abi != python_version.abi() {
-                return Err(ConfigError::VenvCreation(format!(
-                    "Existing venv at {} uses Python ABI {}, but this r2x binary requires {}. Recreate it with `r2x venv create --yes`.",
-                    venv_path,
-                    existing_abi,
-                    python_version.abi(),
-                )));
-            }
+            validate_venv_abi(&venv_path, &python_version)?;
             return Ok(venv_path);
         }
 
@@ -579,9 +560,21 @@ impl Config {
     }
 }
 
-fn r2x_config_venv_abi(venv_path: &str) -> Result<String, ConfigError> {
-    venv_paths::resolve_python_abi(std::path::Path::new(venv_path))
-        .map_err(|error| ConfigError::VenvCreation(error.to_string()))
+fn validate_venv_abi(
+    venv_path: &str,
+    python_version: &PythonRuntimeVersion,
+) -> Result<(), ConfigError> {
+    let existing_abi = venv_paths::resolve_python_abi(std::path::Path::new(venv_path))
+        .map_err(|error| ConfigError::VenvCreation(error.to_string()))?;
+    if existing_abi != python_version.abi() {
+        return Err(ConfigError::VenvCreation(format!(
+            "Existing venv at {} uses Python ABI {}, but this r2x binary requires {}. Recreate it with `r2x venv create --yes`.",
+            venv_path,
+            existing_abi,
+            python_version.abi(),
+        )));
+    }
+    Ok(())
 }
 
 impl Config {
@@ -1062,12 +1055,22 @@ mod tests {
             ..Config::default()
         };
 
+        let existing_uv = config.existing_uv_path().ok();
+        assert_eq!(
+            existing_uv.as_deref(),
+            Some(uv_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(config.ensure_uv_path().ok(), existing_uv);
+        let existing_venv = config.existing_venv_path().ok();
         let result = config.reconcile_venv_path();
 
+        assert_eq!(result.as_ref().ok(), existing_venv.as_ref());
         assert!(
             matches!(result.as_deref(), Ok(path) if path == venv_path.to_string_lossy()),
             "existing compatible venv was not reused: {result:?}"
         );
+        config.uv_path = Some(temp_dir.path().to_string_lossy().to_string());
+        assert!(config.existing_uv_path().is_err());
     }
 
     #[test]
@@ -1099,6 +1102,9 @@ mod tests {
             ..Config::default()
         };
 
+        assert!(config.existing_venv_path().is_err());
+        assert!(!venv_path.exists());
+        assert!(!calls_path.exists());
         let result = reconcile_venv_path_with_retry(&mut config);
         let calls = fs::read_to_string(&calls_path).unwrap_or_default();
         assert!(
@@ -1145,6 +1151,13 @@ mod tests {
         .is_ok());
 
         let result = config.reconcile_venv_path();
+        assert_eq!(
+            config
+                .existing_venv_path()
+                .err()
+                .map(|error| error.to_string()),
+            result.as_ref().err().map(ToString::to_string)
+        );
 
         assert!(matches!(
             result,
