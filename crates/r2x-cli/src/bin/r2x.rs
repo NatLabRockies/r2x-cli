@@ -267,6 +267,8 @@ fn configure_python_loader(
     Ok(())
 }
 
+// Windows builds its search path separately, so this helper is test-only there.
+#[cfg(any(not(target_os = "windows"), test))]
 fn prepend_path(prefix: &Path, existing: Option<OsString>) -> Result<OsString> {
     let mut paths = vec![prefix.to_path_buf()];
     if let Some(existing) = existing {
