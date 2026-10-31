@@ -161,9 +161,11 @@ jobs:
           python-version: "3.12"
       - name: Install pinned r2x-core
         run: |
-          uv pip install --python "${PYO3_PYTHON}" \
+          core_venv="${RUNNER_TEMP}/r2x-core-venv"
+          uv venv --no-config --python "${PYO3_PYTHON}" "${core_venv}"
+          uv pip install --python "${core_venv}/bin/python" \
             "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"
-          site_packages="$("${PYO3_PYTHON}" -c 'import site; print(site.getsitepackages()[0])')"
+          site_packages="$("${core_venv}/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
           echo "R2X_CORE_SITE_PACKAGES=${site_packages}" >> "${GITHUB_ENV}"
       - name: Test installed-core integration
         env:
