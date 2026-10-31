@@ -1,3 +1,7 @@
+---
+title: r2x-cli Plugin Management
+---
+
 # r2x-cli Plugin Management
 
 `r2x-cli` installs Python plugins into its managed virtual environment and records

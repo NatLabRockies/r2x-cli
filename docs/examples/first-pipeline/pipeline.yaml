@@ -1,0 +1,9 @@
+pipelines:
+  double-values:
+    - create
+    - scale
+config:
+  create:
+    name: cli-tutorial
+  scale:
+    factor: 2
