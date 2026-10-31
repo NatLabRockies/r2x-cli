@@ -115,6 +115,9 @@ fn launch(args: &[OsString], mode: StartupMode) -> Result<()> {
     if let Some(venv) = runtime.venv.as_deref() {
         configure_venv_environment(&mut command, venv)?;
     }
+    if mode == StartupMode::MachineQuery {
+        command.env("PYTHONDONTWRITEBYTECODE", "1");
+    }
     command.args(args);
     configure_python_loader(&mut command, &library_dir, runtime.venv.as_deref())?;
 
