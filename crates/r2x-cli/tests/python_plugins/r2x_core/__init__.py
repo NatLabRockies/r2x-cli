@@ -16,3 +16,12 @@ class PluginContext:
         self.config = config
         self.store = store
         self.system = system
+
+
+def run_upgrade_step(
+    data: Any, *, step: Any, upgrader_context: Any | None = None
+) -> Any:
+    """Expose the current r2x-core upgrader call contract."""
+    from .upgrader_utils import run_upgrade_step as run_step
+
+    return run_step(data, step=step, upgrader_context=upgrader_context)

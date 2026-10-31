@@ -143,6 +143,79 @@ jobs:
             ${{ runner.temp }}/r2x-plugin-benchmark-delta.md
           if-no-files-found: error
 
+  core-integration:
+    name: Installed r2x-core integration (Python 3.12)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - name: Setup uv & Python
+        id: python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
+      - name: Install pinned r2x-core
+        run: |
+          uv pip install --python "${PYO3_PYTHON}" \
+            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"
+          site_packages="$("${PYO3_PYTHON}" -c 'import site; print(site.getsitepackages()[0])')"
+          echo "R2X_CORE_SITE_PACKAGES=${site_packages}" >> "${GITHUB_ENV}"
+      - name: Test installed-core integration
+        env:
+          PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
+        run: bash scripts/ci_run_with_python_lib_path.sh "${PYTHON_PREFIX}" cargo test -p r2x --test integration test_installed_r2x_core -- --nocapture
+
+  macos-launcher:
+    name: macOS launcher integration (Python 3.12)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - name: Setup uv & Python
+        id: python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
+      - name: Test launcher integration
+        env:
+          PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: bash ${{ github.workspace }}/scripts/ci_run_with_python_lib_path.sh ${{ steps.python.outputs.python-prefix }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER: bash ${{ github.workspace }}/scripts/ci_run_with_python_lib_path.sh ${{ steps.python.outputs.python-prefix }}
+        run: bash scripts/ci_run_with_python_lib_path.sh "${PYTHON_PREFIX}" cargo test -p r2x --test integration launcher -- --nocapture
+
+  macos-launcher:
+    name: macOS launcher integration (Python 3.12)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - name: Setup uv & Python
+        id: python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
+      - name: Test launcher integration
+        env:
+          PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: bash ${{ github.workspace }}/scripts/ci_run_with_python_lib_path.sh ${{ steps.python.outputs.python-prefix }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER: bash ${{ github.workspace }}/scripts/ci_run_with_python_lib_path.sh ${{ steps.python.outputs.python-prefix }}
+        run: bash scripts/ci_run_with_python_lib_path.sh "${PYTHON_PREFIX}" cargo test -p r2x --test integration launcher -- --nocapture
+
   release-readiness:
     name: Release readiness (publish dry-run)
     runs-on: ubuntu-24.04

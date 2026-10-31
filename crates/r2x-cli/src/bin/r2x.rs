@@ -1,6 +1,7 @@
-//! Launch the PyO3 runtime through R2X's UV-managed virtual environment.
+//! Launch the PyO3 runtime with R2X's UV-managed virtual environment.
 
 use anyhow::{bail, ensure, Context, Result};
+use r2x_config::venv_paths::PYTHON_BIN_DIR;
 use r2x_config::{default_python_version, Config};
 use std::env;
 use std::ffi::OsString;
@@ -110,15 +111,12 @@ fn launch(args: &[OsString], mode: StartupMode) -> Result<()> {
     let library_dir = python_library_dir(&runtime)
         .map_err(|error| EnvironmentUnavailable(format!("{error:#}")))?;
 
-    let mut command = if use_venv {
-        let mut command = uv_run_in_venv(&runtime)?;
-        command.arg(&payload);
-        command
-    } else {
-        Command::new(&payload)
-    };
+    let mut command = Command::new(&payload);
+    if let Some(venv) = runtime.venv.as_deref() {
+        configure_venv_environment(&mut command, venv)?;
+    }
     command.args(args);
-    configure_python_loader(&mut command, &library_dir)?;
+    configure_python_loader(&mut command, &library_dir, runtime.venv.as_deref())?;
 
     let status = command.status().context("failed to start R2X runtime")?;
     match status.code() {
@@ -267,7 +265,26 @@ fn python_library_dir(runtime: &Runtime) -> Result<PathBuf> {
     Ok(library_dir)
 }
 
-fn configure_python_loader(command: &mut Command, library_dir: &Path) -> Result<()> {
+fn configure_venv_environment(command: &mut Command, venv: &Path) -> Result<()> {
+    command
+        .env("VIRTUAL_ENV", venv)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH");
+
+    #[cfg(not(target_os = "windows"))]
+    command.env(
+        "PATH",
+        prepend_path(&venv.join(PYTHON_BIN_DIR), env::var_os("PATH"))?,
+    );
+
+    Ok(())
+}
+
+fn configure_python_loader(
+    command: &mut Command,
+    library_dir: &Path,
+    venv: Option<&Path>,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
     command.env(
         "DYLD_LIBRARY_PATH",
@@ -281,10 +298,25 @@ fn configure_python_loader(command: &mut Command, library_dir: &Path) -> Result<
     );
 
     #[cfg(target_os = "windows")]
-    command.env("PATH", prepend_path(library_dir, env::var_os("PATH"))?);
+    {
+        let mut paths = vec![library_dir.to_path_buf()];
+        if let Some(venv) = venv {
+            paths.push(venv.join(PYTHON_BIN_DIR));
+        }
+        if let Some(existing) = env::var_os("PATH") {
+            paths.extend(env::split_paths(&existing));
+        }
+        command.env(
+            "PATH",
+            env::join_paths(paths).context("could not construct a process search path")?,
+        );
+    }
 
     #[cfg(not(any(unix, target_os = "windows")))]
     bail!("R2X supports macOS, Linux, and Windows only");
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = venv;
 
     Ok(())
 }
@@ -322,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_python_commands_through_uv_bootstrap() {
+    fn routes_python_commands_through_the_managed_venv() {
         let args = [OsString::from("run"), OsString::from("plugin")];
         assert!(requires_python_environment(&args));
 

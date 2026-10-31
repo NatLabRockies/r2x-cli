@@ -24,6 +24,6 @@ class Result:
         return self._error
 
 
-def run_upgrade_step(step, data, upgrader_context=None):
+def run_upgrade_step(data, *, step, upgrader_context=None):
     """Return an ok result with the provided data."""
     return Result(value=data)
