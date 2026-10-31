@@ -488,6 +488,31 @@ fn test_plugins_help() {
 }
 
 #[test]
+fn test_incompatible_r2x_core_reports_upgrade_instructions(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    fs::write(
+        env.site_packages.join("r2x_core/store.py"),
+        "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
+    )?;
+
+    let output = env
+        .command()
+        .args(["run", "r2x_reeds.noisy_json"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "unexpected success: {stderr}");
+    assert!(
+        stderr.contains("r2x-core package is incompatible"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("r2x read"), "{stderr}");
+    Ok(())
+}
+
+#[test]
 fn test_pdb_rejects_noninteractive_invocation() {
     let Ok(env) = PipelineHarness::new() else {
         return;
@@ -1818,6 +1843,7 @@ struct PipelineHarness {
     _home: TempDir,
     config_path: PathBuf,
     venv_path: PathBuf,
+    site_packages: PathBuf,
     reeds_pipeline: PathBuf,
     s2p_pipeline: PathBuf,
     python_path: OsString,
@@ -1937,6 +1963,7 @@ impl PipelineHarness {
             _home: home,
             config_path,
             venv_path,
+            site_packages,
             reeds_pipeline,
             s2p_pipeline,
             python_path,
