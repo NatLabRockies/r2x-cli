@@ -41,10 +41,14 @@ r2x --version
 Use the guide that matches your task:
 
 - [Getting started](docs/getting-started.md): install, initialize, and run a pipeline.
+- [Inspect artifacts](docs/inspect-artifacts.md): save, reload, and verify JSON bundles or ZIP archives.
 - [CLI reference](docs/cli-reference.md): commands, flags, runtime behavior, and help.
 - [Plugin management](docs/plugin-management.md): install, inspect, upgrade, and remove plugins.
 - [Architecture](docs/architecture.md): Rust crates, runtime boundaries, discovery, and artifacts.
 - [Development](docs/development.md): source builds, checks, Python ABIs, and troubleshooting.
+
+- [Troubleshooting](docs/troubleshooting.md): diagnose runtime, discovery, and pipeline failures.
+- [Changelog and versions](docs/changelog.md): canonical releases and tagged source docs.
 
 See the [documentation index](docs/README.md) for the complete guide map.
 

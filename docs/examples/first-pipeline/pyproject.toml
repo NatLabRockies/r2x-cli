@@ -1,0 +1,15 @@
+[build-system]
+requires = ["uv_build>=0.8.22,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name = "r2x-tutorial"
+version = "0.1.0"
+requires-python = ">=3.11,<3.15"
+dependencies = ["r2x-core>=0.9.0,<1.0.0"]
+
+[project.entry-points."r2x.parsers"]
+create = "r2x_tutorial.plugin:CreateDemo"
+
+[project.entry-points."r2x.transforms"]
+scale = "r2x_tutorial.plugin:scale_values"

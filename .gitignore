@@ -21,3 +21,7 @@ Thumbs.db
 # Bundled interpreter shims
 python-shim/
 *.pyc
+# Documentation build output
+docs/node_modules/
+docs/.astro/
+docs/dist/

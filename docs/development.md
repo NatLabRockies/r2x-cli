@@ -1,3 +1,7 @@
+---
+title: r2x-cli Development
+---
+
 # r2x-cli Development
 
 This page covers building `r2x-cli` from source and running the repository checks.
