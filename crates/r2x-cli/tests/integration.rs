@@ -171,6 +171,39 @@ fn test_show_resolves_package_default_and_reports_missing_assets(
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn test_show_repairs_incompatible_core_using_release_pin() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    let config_dir = default_site_packages_path(&env.venv_path).join("r2x_reeds/config");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(config_dir.join("table_mapping.json"), "[]")?;
+    fs::write(
+        env.site_packages.join("r2x_core/store.py"),
+        "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
+    )?;
+    let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
+
+    let output = env
+        .command_with_fake_core_installer(&args_log)
+        .args(["show", "r2x-reeds"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("package default"));
+
+    let install_args = fs::read_to_string(args_log)?;
+    assert!(
+        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        "{install_args}"
+    );
+    assert!(!install_args.contains("0.5.1"), "{install_args}");
+    Ok(())
+}
+
 #[test]
 fn test_show_reports_ambiguity_and_invalid_mappings() -> Result<(), Box<dyn std::error::Error>> {
     let env = PipelineHarness::new()?;

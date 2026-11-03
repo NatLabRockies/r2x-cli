@@ -63,6 +63,8 @@ pub enum ShowError {
     UnsupportedMapping { path: PathBuf, reason: String },
     #[error(transparent)]
     Manifest(#[from] ManifestError),
+    #[error("r2x-core setup failed: {0}")]
+    Core(String),
     #[error(transparent)]
     Bridge(#[from] BridgeError),
 }
@@ -194,6 +196,8 @@ fn resolve_config_path(package: &Package) -> Result<PathBuf, ShowError> {
     if configs.is_empty() {
         return Err(ShowError::MissingConfig(package.name.to_string()));
     }
+    crate::commands::core::ensure_r2x_core_installed_for_cli()
+        .map_err(|error| ShowError::Core(error.to_string()))?;
     let bridge = Bridge::get()?;
     let mut paths = BTreeSet::new();
     for (module, class) in configs {

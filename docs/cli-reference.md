@@ -146,7 +146,7 @@ Use `--no-banner` to suppress the interactive startup banner.
 
 Runtime commands manage the Python interpreter and virtual environment used
 by plugins.
-Python-backed `run` and `read` commands ensure the `r2x-core` package
+Python-backed `run`, `read`, and `show` commands ensure the `r2x-core` package
 pinned by this r2x-cli release before using it.
 `r2x core repair` checks that same release pin and installs it when missing or
 incompatible, without requiring a system artifact.
