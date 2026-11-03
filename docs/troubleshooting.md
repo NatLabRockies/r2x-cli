@@ -55,6 +55,23 @@ r2x run scale --help
 
 Confirm that `create` and `scale` are available before retrying the tutorial pipeline.
 
+## `r2x` reports an incompatible `r2x-core` package
+
+Run the dedicated repair command.
+It uses the configured package source and does not need a system input file:
+
+```bash
+r2x core repair
+```
+
+If the configured package still lacks the required API after reinstalling, check `r2x config show` and select a compatible release.
+Replace `<compatible-version>` below with that release before running the commands:
+
+```bash
+r2x config set r2x-core-version <compatible-version>
+r2x core repair
+```
+
 <a id="the-tutorial-plugin-is-not-found"></a>
 
 ## “Plugin '…' not found in manifest” or `r2x list` omits the tutorial plugins

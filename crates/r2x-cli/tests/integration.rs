@@ -488,8 +488,35 @@ fn test_plugins_help() {
 }
 
 #[test]
-fn test_incompatible_r2x_core_reports_upgrade_instructions(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_core_repair_help() {
+    r2x_cmd()
+        .args(["core", "repair", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Reinstall the configured r2x-core package",
+        ));
+}
+
+#[test]
+fn test_core_repair_runs_without_system_input() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+
+    let output = env.command().args(["core", "repair"]).output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("r2x-core package is compatible"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_incompatible_r2x_core_reports_repair_instructions() -> Result<(), Box<dyn std::error::Error>>
+{
     let Ok(env) = PipelineHarness::new() else {
         return Ok(());
     };
@@ -508,7 +535,7 @@ fn test_incompatible_r2x_core_reports_upgrade_instructions(
         stderr.contains("r2x-core package is incompatible"),
         "{stderr}"
     );
-    assert!(stderr.contains("r2x read"), "{stderr}");
+    assert!(stderr.contains("r2x core repair"), "{stderr}");
     Ok(())
 }
 
