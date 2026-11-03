@@ -196,7 +196,68 @@ fn test_core_repair_help() {
         .success()
         .stdout(predicate::str::contains(
             "Reinstall the configured r2x-core package",
-        ));
+        ))
+        .stdout(predicate::str::contains("--use-default"));
+}
+
+#[test]
+fn test_core_repair_rejects_an_incompatible_exact_version_without_reinstalling(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    fs::write(
+        env.site_packages.join("r2x_core/store.py"),
+        "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
+    )?;
+
+    let uv_path = env.home_path().join("not-uv");
+    fs::write(&uv_path, "not an executable")?;
+    let mut config = toml::from_str::<toml::Value>(&fs::read_to_string(&env.config_path)?)?;
+    let table = config
+        .as_table_mut()
+        .ok_or("test config is not a TOML table")?;
+    table.insert(
+        "r2x_core_version".to_string(),
+        toml::Value::String("0.5.1".to_string()),
+    );
+    table.insert(
+        "uv_path".to_string(),
+        toml::Value::String(uv_path.to_string_lossy().to_string()),
+    );
+    fs::write(&env.config_path, toml::to_string(&config)?)?;
+
+    let output = env.command().args(["core", "repair"]).output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("0.5.1"), "{stderr}");
+    assert!(stderr.contains("r2x core repair --use-default"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn test_core_repair_can_use_default_package_source() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    let mut config = toml::from_str::<toml::Value>(&fs::read_to_string(&env.config_path)?)?;
+    let table = config
+        .as_table_mut()
+        .ok_or("test config is not a TOML table")?;
+    table.insert(
+        "r2x_core_version".to_string(),
+        toml::Value::String("0.5.1".to_string()),
+    );
+    fs::write(&env.config_path, toml::to_string(&config)?)?;
+
+    let output = env
+        .command()
+        .args(["core", "repair", "--use-default"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!fs::read_to_string(&env.config_path)?.contains("r2x_core_version"));
+    Ok(())
 }
 
 #[test]
