@@ -71,6 +71,8 @@ pub enum ShowError {
     Output(#[source] serde_json::Error),
     #[error(transparent)]
     Manifest(#[from] ManifestError),
+    #[error("r2x-core setup failed: {0}")]
+    Core(String),
     #[error(transparent)]
     Bridge(#[from] BridgeError),
 }
@@ -91,6 +93,7 @@ impl ShowError {
             Self::UnsupportedMapping { .. } => "UNSUPPORTED_MAPPING",
             Self::Output(_) => "OUTPUT_ERROR",
             Self::Manifest(_) => "MANIFEST_ERROR",
+            Self::Core(_) => "CORE_SETUP_ERROR",
             Self::Bridge(_) => "PYTHON_ERROR",
         }
     }
@@ -345,10 +348,11 @@ fn resolve_config_path(package: &Package, machine_query: bool) -> Result<PathBuf
     if configs.is_empty() {
         return Err(ShowError::MissingConfig(package.name.to_string()));
     }
-
     let bridge = if machine_query {
         Bridge::get_existing()?
     } else {
+        crate::commands::core::ensure_r2x_core_installed_for_cli()
+            .map_err(|error| ShowError::Core(error.to_string()))?;
         Bridge::get()?
     };
     let mut paths = BTreeSet::new();

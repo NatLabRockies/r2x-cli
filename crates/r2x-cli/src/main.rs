@@ -45,7 +45,7 @@ enum Commands {
         #[command(subcommand)]
         action: PythonAction,
     },
-    /// Repair the configured r2x-core package
+    /// Repair the release-pinned r2x-core package
     Core {
         #[command(subcommand)]
         command: core::CoreCommand,
@@ -317,9 +317,9 @@ fn main() {
             config::handle_python(action, cli.global);
         }
         Commands::Core {
-            command: core::CoreCommand::Repair { use_default },
+            command: core::CoreCommand::Repair,
         } => {
-            if let Err(error) = core::handle_repair(use_default) {
+            if let Err(error) = core::handle_repair() {
                 logger::error(&format!("Core repair failed: {}", error));
                 std::process::exit(1);
             }
