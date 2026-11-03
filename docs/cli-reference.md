@@ -148,9 +148,12 @@ Runtime commands manage the Python interpreter and virtual environment used
 by plugins.
 `r2x core repair` checks the configured package and reinstalls it when missing
 or incompatible, without requiring a system artifact.
+Use `--use-default` to clear a configured `r2x-core-version` and select the
+CLI's validated default package source.
 
 ```bash
 r2x core repair
+r2x core repair --use-default
 r2x python show
 r2x python install
 r2x python install <version>

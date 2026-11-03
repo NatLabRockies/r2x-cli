@@ -64,8 +64,15 @@ It uses the configured package source and does not need a system input file:
 r2x core repair
 ```
 
-If the configured package still lacks the required API after reinstalling, check `r2x config show` and select a compatible release.
-Replace `<compatible-version>` below with that release before running the commands:
+If `r2x config show` shows a pinned `r2x-core-version` and repair reports that version as incompatible, repair will not reinstall it again.
+Use the CLI's validated default package source with:
+
+```bash
+r2x core repair --use-default
+```
+
+This clears the configured `r2x-core-version` and persists the default package source.
+If the default source is also incompatible, select a compatible release and retry:
 
 ```bash
 r2x config set r2x-core-version <compatible-version>
