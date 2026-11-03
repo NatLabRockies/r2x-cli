@@ -317,9 +317,9 @@ fn main() {
             config::handle_python(action, cli.global);
         }
         Commands::Core {
-            command: core::CoreCommand::Repair,
+            command: core::CoreCommand::Repair { use_default },
         } => {
-            if let Err(error) = core::handle_repair() {
+            if let Err(error) = core::handle_repair(use_default) {
                 logger::error(&format!("Core repair failed: {}", error));
                 std::process::exit(1);
             }
