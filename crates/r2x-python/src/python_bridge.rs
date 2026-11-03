@@ -116,9 +116,11 @@ static POST_IMPORT_LOG_MODULES_ENABLED: Lazy<Mutex<HashSet<String>>> =
 /// Terminate the process safely when Python may be initialized.
 pub fn process_exit(code: i32) -> ! {
     if BRIDGE_INSTANCE.get().is_some() {
-        // Give the main thread a thread state so Py_Finalize()'s
-        // PyEval_SaveThread() call can succeed.
-        Python::attach(|_py| -> ! { std::process::exit(code) });
+        // Keep the main thread attached during shutdown when Python is active.
+        // Bridge initialization can fail before Python starts, so use try_attach.
+        let _ = Python::try_attach(|_py| {
+            std::process::exit(code);
+        });
     }
     std::process::exit(code)
 }
