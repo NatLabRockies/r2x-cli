@@ -23,7 +23,7 @@ relevant plugin or workflow documentation for those details.
 | Show declared mappings | `r2x show <package>` |
 | Run a target | `r2x run <target>` |
 | Inspect a system | `r2x read <file>` |
-| Repair the configured r2x-core package | `r2x core repair` |
+| Repair the release-pinned r2x-core package | `r2x core repair` |
 | Update a standalone installation | `r2x self update` |
 
 ## Plugins
@@ -146,14 +146,13 @@ Use `--no-banner` to suppress the interactive startup banner.
 
 Runtime commands manage the Python interpreter and virtual environment used
 by plugins.
-`r2x core repair` checks the configured package and reinstalls it when missing
-or incompatible, without requiring a system artifact.
-Use `--use-default` to clear a configured `r2x-core-version` and select the
-CLI's validated default package source.
+Python-backed `run` and `read` commands ensure the `r2x-core` package
+pinned by this r2x-cli release before using it.
+`r2x core repair` checks that same release pin and installs it when missing or
+incompatible, without requiring a system artifact.
 
 ```bash
 r2x core repair
-r2x core repair --use-default
 r2x python show
 r2x python install
 r2x python install <version>
