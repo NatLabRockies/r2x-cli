@@ -930,6 +930,28 @@ fn test_plugins_help() {
 }
 
 #[test]
+fn test_show_with_incompatible_r2x_core_exits_without_panicking(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    fs::write(
+        env.site_packages.join("r2x_core/store.py"),
+        "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
+    )?;
+
+    let output = env.command().args(["show", "r2x-reeds"]).output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("r2x-core package is incompatible"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked at"), "{stderr}");
+    Ok(())
+}
+
+#[test]
 fn test_incompatible_r2x_core_reports_upgrade_instructions(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Ok(env) = PipelineHarness::new() else {
