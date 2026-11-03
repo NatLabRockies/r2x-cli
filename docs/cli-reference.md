@@ -22,6 +22,7 @@ relevant plugin or workflow documentation for those details.
 | List installed plugins | `r2x list` |
 | Run a target | `r2x run <target>` |
 | Inspect a system | `r2x read <file>` |
+| Repair the configured r2x-core package | `r2x core repair` |
 | Update a standalone installation | `r2x self update` |
 
 ## Plugins
@@ -116,10 +117,13 @@ Use `--no-banner` to suppress the interactive startup banner.
 
 ## Runtime commands
 
-The runtime commands manage the Python interpreter and virtual environment
-used by plugins:
+Runtime commands manage the Python interpreter and virtual environment used
+by plugins.
+`r2x core repair` checks the configured package and reinstalls it when missing
+or incompatible, without requiring a system artifact.
 
 ```bash
+r2x core repair
 r2x python show
 r2x python install
 r2x python install <version>

@@ -1,3 +1,4 @@
+use crate::commands::core::{ensure_r2x_core_installed, install_package, module_spec_exists};
 use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
@@ -6,7 +7,6 @@ use r2x_artifacts::artifact_handoff::{
 };
 use r2x_config::Config;
 use r2x_logger as logger;
-use r2x_python::python_bridge::{is_r2x_core_api_compatible, R2X_CORE_API_INCOMPATIBLE};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -1554,31 +1554,6 @@ fn ensure_prerequisites(
     Ok(())
 }
 
-fn ensure_r2x_core_installed(
-    config: &mut Config,
-    python_exe: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let package_spec = config.get_r2x_core_package_spec();
-    let installed = module_spec_exists(python_exe, "r2x_core.system");
-    if installed && is_r2x_core_api_compatible(Path::new(python_exe))? {
-        logger::debug("r2x-core API is compatible with this r2x-cli version");
-        return Ok(());
-    }
-
-    if installed {
-        logger::info("Installed r2x-core is incompatible; reinstalling configured package via uv");
-    } else {
-        logger::info("r2x-core not found in venv; installing via uv pip install");
-    }
-
-    install_package(config, python_exe, &package_spec, "r2x-core", installed)?;
-    if !is_r2x_core_api_compatible(Path::new(python_exe))? {
-        return Err(R2X_CORE_API_INCOMPATIBLE.into());
-    }
-
-    Ok(())
-}
-
 #[cfg(unix)]
 fn acquire_tty_stdio() -> (bool, Stdio, Stdio, Stdio) {
     let (stdin_attached, stdin) = match std::fs::File::open("/dev/tty") {
@@ -1647,53 +1622,6 @@ fn ensure_module_installed(
     ));
 
     install_package(config, python_exe, package_spec, display_name, false)?;
-    Ok(())
-}
-
-// The bootstrap imports these modules for real, so only probe their specs here.
-fn module_spec_exists(python_exe: &str, module_name: &str) -> bool {
-    Command::new(python_exe)
-        .arg("-c")
-        .arg("import importlib.util, sys; sys.exit(importlib.util.find_spec(sys.argv[1]) is None)")
-        .arg(module_name)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn install_package(
-    config: &mut Config,
-    python_exe: &str,
-    package_spec: &str,
-    display_name: &str,
-    reinstall: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let uv_path = config.ensure_uv_path()?;
-    let mut install_args = vec!["pip".to_string(), "install".to_string()];
-    if reinstall {
-        install_args.extend(["--reinstall-package".to_string(), display_name.to_string()]);
-    }
-    install_args.extend([
-        "--python".to_string(),
-        python_exe.to_string(),
-        package_spec.to_string(),
-    ]);
-
-    crate::uv::run(
-        &uv_path,
-        "Installing runtime dependency",
-        display_name,
-        install_args,
-    )?;
-
-    let action = if reinstall {
-        "Reinstalled"
-    } else {
-        "Installed"
-    };
-    logger::success(&format!("{action} {display_name} into venv"));
     Ok(())
 }
 
