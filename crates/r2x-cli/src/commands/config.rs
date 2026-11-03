@@ -94,7 +94,6 @@ pub fn handle_config(action: Option<ConfigAction>, json: bool, opts: GlobalOpts)
                         "venv_path": config.venv_path,
                         "cache_path": config.cache_path,
                         "uv_path": config.uv_path,
-                        "r2x_core_version": config.r2x_core_version,
                         "log_python": config.log_python,
                         "no_stdout": config.no_stdout,
                         "log_path": config.log_path,
@@ -163,9 +162,6 @@ pub fn handle_config(action: Option<ConfigAction>, json: bool, opts: GlobalOpts)
                 if let Some(ref uv) = config.uv_path {
                     println!("  {}: {}", "uv-path".cyan(), uv);
                 }
-                if let Some(ref core_ver) = config.r2x_core_version {
-                    println!("  {}: {}", "r2x-core-version".cyan(), core_ver);
-                }
                 if let Some(log_python) = config.log_python {
                     println!("  {}: {}", "log-python".cyan(), log_python);
                 }
@@ -186,10 +182,14 @@ pub fn handle_config(action: Option<ConfigAction>, json: bool, opts: GlobalOpts)
                     let uv_path = config.uv_path.as_deref().unwrap_or("uv");
                     match get_package_info(uv_path, &python_path, "r2x-core") {
                         Ok((Some(version), _)) => {
-                            println!("  {}: {}", "r2x-core-version".cyan(), version);
+                            println!("  {}: {}", "installed-r2x-core".cyan(), version);
                         }
                         Ok((None, _)) => {
-                            println!("  {}: {}", "r2x-core-version".cyan(), "not found".dimmed());
+                            println!(
+                                "  {}: {}",
+                                "installed-r2x-core".cyan(),
+                                "not found".dimmed()
+                            );
                         }
                         Err(_) => {
                             logger::debug("Could not query r2x-core package info");
@@ -212,7 +212,6 @@ pub fn handle_config(action: Option<ConfigAction>, json: bool, opts: GlobalOpts)
                             | "verbosity"
                             | "python-version"
                             | "venv-path"
-                            | "r2x-core-version"
                             | "log-python"
                             | "no-stdout"
                             | "log-path"
@@ -237,9 +236,10 @@ pub fn handle_config(action: Option<ConfigAction>, json: bool, opts: GlobalOpts)
                     );
                 } else {
                     logger::error(&format!(
-                        "Unknown config key: {}. Currently supported keys: cache-path, verbosity, python-version, venv-path, r2x-core-version, log-python, no-stdout, log-path, log-max-size",
+                        "Unknown config key: {}. Currently supported keys: cache-path, verbosity, python-version, venv-path, log-python, no-stdout, log-path, log-max-size",
                         key
                     ));
+                    std::process::exit(1);
                 }
             }
             Err(e) => {

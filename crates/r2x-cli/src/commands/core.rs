@@ -5,25 +5,24 @@ use r2x_python::python_bridge::is_r2x_core_api_compatible;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+const R2X_CORE_PACKAGE_SPEC: &str =
+    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9";
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum CoreCommand {
-    /// Reinstall the configured r2x-core package when it is missing or incompatible.
-    Repair {
-        /// Clear the configured version and use r2x-cli's default package source.
-        #[arg(long)]
-        use_default: bool,
-    },
+    /// Ensure the release-pinned r2x-core package is installed and compatible.
+    Repair,
 }
 
-pub fn handle_repair(use_default: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_repair() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_r2x_core_installed_for_cli()?;
+    logger::success("Release-pinned r2x-core package is compatible");
+    Ok(())
+}
+
+pub(crate) fn ensure_r2x_core_installed_for_cli() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::load()?;
     config.ensure_venv_path()?;
-    if use_default && config.r2x_core_version.take().is_some() {
-        config.save()?;
-        logger::info(
-            "Cleared the configured r2x-core version and selected the default package source",
-        );
-    }
     let python_exe = config.get_venv_python_path();
     if !Path::new(&python_exe).exists() {
         return Err(format!(
@@ -33,65 +32,42 @@ pub fn handle_repair(use_default: bool) -> Result<(), Box<dyn std::error::Error>
         .into());
     }
 
-    ensure_r2x_core_installed(&mut config, &python_exe)?;
-    logger::success("Configured r2x-core package is compatible");
-    Ok(())
+    ensure_r2x_core_installed(&mut config, &python_exe)
 }
 
 pub(super) fn ensure_r2x_core_installed(
     config: &mut Config,
     python_exe: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let package_spec = config.get_r2x_core_package_spec();
     let installed = module_spec_exists(python_exe, "r2x_core.system");
     if installed && is_r2x_core_api_compatible(Path::new(python_exe))? {
         logger::debug("r2x-core API is compatible with this r2x-cli version");
         return Ok(());
     }
 
-    if installed
-        && config
-            .r2x_core_version
-            .as_deref()
-            .is_some_and(is_exact_r2x_core_version)
-    {
-        return Err(incompatible_core_message(config).into());
-    }
-
     if installed {
-        logger::info("Installed r2x-core is incompatible; reinstalling configured package via uv");
+        logger::info(
+            "Installed r2x-core is incompatible; reinstalling the release-pinned package via uv",
+        );
     } else {
-        logger::info("r2x-core not found in venv; installing via uv pip install");
+        logger::info("r2x-core not found in venv; installing the release-pinned package via uv");
     }
 
-    install_package(config, python_exe, &package_spec, "r2x-core", installed)?;
+    install_package(
+        config,
+        python_exe,
+        R2X_CORE_PACKAGE_SPEC,
+        "r2x-core",
+        installed,
+    )?;
     if !is_r2x_core_api_compatible(Path::new(python_exe))? {
-        return Err(incompatible_core_message(config).into());
-    }
-
-    Ok(())
-}
-
-fn is_exact_r2x_core_version(version: &str) -> bool {
-    !version.trim().is_empty()
-        && !version.contains(".*")
-        && !["<=", ">=", "~=", "!=", "<", ">", ","]
-            .iter()
-            .any(|operator| version.contains(operator))
-}
-
-fn incompatible_core_message(config: &Config) -> String {
-    if let Some(version) = config
-        .r2x_core_version
-        .as_deref()
-        .filter(|version| is_exact_r2x_core_version(version))
-    {
-        return format!(
-            "The configured r2x-core version `{version}` is incompatible with this r2x-cli version. Run `r2x core repair --use-default` to use the validated default package source, or set a compatible version with `r2x config set r2x-core-version <version>`."
+        return Err(
+            "The release-pinned r2x-core package is still incompatible with this r2x-cli release. Install a newer r2x-cli release."
+                .into(),
         );
     }
 
-    "The configured r2x-core package is still incompatible after reinstall. Set a compatible version with `r2x config set r2x-core-version <version>`.".to_string()
+    Ok(())
 }
 
 pub(super) fn module_spec_exists(python_exe: &str, module_name: &str) -> bool {

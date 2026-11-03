@@ -195,13 +195,14 @@ fn test_core_repair_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Reinstall the configured r2x-core package",
+            "Ensure the release-pinned r2x-core package is installed and compatible",
         ))
-        .stdout(predicate::str::contains("--use-default"));
+        .stdout(predicate::str::contains("--use-default").not());
 }
 
+#[cfg(unix)]
 #[test]
-fn test_core_repair_rejects_an_incompatible_exact_version_without_reinstalling(
+fn test_core_repair_uses_release_pin_despite_legacy_config_setting(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Ok(env) = PipelineHarness::new() else {
         return Ok(());
@@ -210,53 +211,47 @@ fn test_core_repair_rejects_an_incompatible_exact_version_without_reinstalling(
         env.site_packages.join("r2x_core/store.py"),
         "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
     )?;
-
-    let uv_path = env.home_path().join("not-uv");
-    fs::write(&uv_path, "not an executable")?;
-    let mut config = toml::from_str::<toml::Value>(&fs::read_to_string(&env.config_path)?)?;
-    let table = config
-        .as_table_mut()
-        .ok_or("test config is not a TOML table")?;
-    table.insert(
-        "r2x_core_version".to_string(),
-        toml::Value::String("0.5.1".to_string()),
-    );
-    table.insert(
-        "uv_path".to_string(),
-        toml::Value::String(uv_path.to_string_lossy().to_string()),
-    );
-    fs::write(&env.config_path, toml::to_string(&config)?)?;
-
-    let output = env.command().args(["core", "repair"]).output()?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("0.5.1"), "{stderr}");
-    assert!(stderr.contains("r2x core repair --use-default"), "{stderr}");
-    Ok(())
-}
-
-#[test]
-fn test_core_repair_can_use_default_package_source() -> Result<(), Box<dyn std::error::Error>> {
-    let Ok(env) = PipelineHarness::new() else {
-        return Ok(());
-    };
-    let mut config = toml::from_str::<toml::Value>(&fs::read_to_string(&env.config_path)?)?;
-    let table = config
-        .as_table_mut()
-        .ok_or("test config is not a TOML table")?;
-    table.insert(
-        "r2x_core_version".to_string(),
-        toml::Value::String("0.5.1".to_string()),
-    );
-    fs::write(&env.config_path, toml::to_string(&config)?)?;
+    let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
 
     let output = env
-        .command()
-        .args(["core", "repair", "--use-default"])
+        .command_with_fake_core_installer(&args_log)
+        .args(["core", "repair"])
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    assert!(!fs::read_to_string(&env.config_path)?.contains("r2x_core_version"));
+
+    let install_args = fs::read_to_string(args_log)?;
+    assert!(
+        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        "{install_args}"
+    );
+    assert!(!install_args.contains("0.5.1"), "{install_args}");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_run_installs_missing_core_from_release_pin() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    fs::remove_dir_all(env.site_packages.join("r2x_core"))?;
+    let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
+
+    let output = env
+        .command_with_fake_core_installer(&args_log)
+        .args(["run", "r2x_reeds.noisy_json"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains(r#"{"status": "ok"}"#));
+
+    let install_args = fs::read_to_string(args_log)?;
+    assert!(
+        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        "{install_args}"
+    );
+    assert!(!install_args.contains("0.5.1"), "{install_args}");
     Ok(())
 }
 
@@ -270,14 +265,15 @@ fn test_core_repair_runs_without_system_input() -> Result<(), Box<dyn std::error
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert!(
-        stderr.contains("r2x-core package is compatible"),
+        stderr.contains("Release-pinned r2x-core package is compatible"),
         "{stderr}"
     );
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
-fn test_incompatible_r2x_core_reports_repair_instructions() -> Result<(), Box<dyn std::error::Error>>
+fn test_run_repairs_incompatible_core_using_release_pin() -> Result<(), Box<dyn std::error::Error>>
 {
     let Ok(env) = PipelineHarness::new() else {
         return Ok(());
@@ -286,18 +282,51 @@ fn test_incompatible_r2x_core_reports_repair_instructions() -> Result<(), Box<dy
         env.site_packages.join("r2x_core/store.py"),
         "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
     )?;
+    let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
 
     let output = env
-        .command()
+        .command_with_fake_core_installer(&args_log)
         .args(["run", "r2x_reeds.noisy_json"])
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "unexpected success: {stderr}");
+    assert!(output.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains(r#"{"status": "ok"}"#));
+
+    let install_args = fs::read_to_string(args_log)?;
     assert!(
-        stderr.contains("r2x-core package is incompatible"),
-        "{stderr}"
+        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        "{install_args}"
     );
-    assert!(stderr.contains("r2x core repair"), "{stderr}");
+    assert!(!install_args.contains("0.5.1"), "{install_args}");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_pipeline_repairs_incompatible_core_using_release_pin(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(env) = PipelineHarness::new() else {
+        return Ok(());
+    };
+    fs::write(
+        env.site_packages.join("r2x_core/store.py"),
+        "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
+    )?;
+    let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
+
+    let output = env
+        .command_with_fake_core_installer(&args_log)
+        .args(["run", &env.reeds_pipeline(), "reeds-test"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+
+    let install_args = fs::read_to_string(args_log)?;
+    assert!(
+        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        "{install_args}"
+    );
+    assert!(!install_args.contains("0.5.1"), "{install_args}");
     Ok(())
 }
 
@@ -931,6 +960,37 @@ fn test_config_show() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration:"));
+}
+
+#[test]
+fn test_config_show_ignores_legacy_core_pin() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(&config_path, r#"r2x_core_version = "0.5.1""#)?;
+
+    let output = r2x_cmd_with_config(&config_path)
+        .args(["config", "--json", "show"])
+        .output()?;
+    assert!(output.status.success());
+    let config: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert!(config.get("r2x_core_version").is_none());
+    Ok(())
+}
+
+#[test]
+fn test_config_set_rejects_removed_core_pin_setting() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("config.toml");
+
+    r2x_cmd_with_config(&config_path)
+        .args(["config", "set", "r2x-core-version", "0.5.1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Unknown config key: r2x-core-version",
+        ));
+
+    Ok(())
 }
 
 #[test]
@@ -1771,6 +1831,16 @@ impl PipelineHarness {
         cmd
     }
 
+    #[cfg(unix)]
+    fn command_with_fake_core_installer(&self, args_log: &Path) -> Command {
+        let mut command = self.command();
+        command
+            .env("R2X_TEST_SITE_PACKAGES", &self.site_packages)
+            .env("R2X_TEST_CORE_STUB_SOURCE", core_stub_source())
+            .env("R2X_TEST_UV_ARGS_LOG", args_log);
+        command
+    }
+
     fn std_command(&self) -> StdCommand {
         let mut cmd = StdCommand::new(cargo_bin("r2x-runtime"));
         cmd.env("HOME", self.home_path());
@@ -1794,6 +1864,46 @@ impl PipelineHarness {
     fn s2p_pipeline(&self) -> String {
         self.s2p_pipeline.to_string_lossy().to_string()
     }
+}
+
+#[cfg(unix)]
+fn core_stub_source() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("python_plugins")
+        .join("r2x_core")
+}
+
+#[cfg(unix)]
+fn configure_fake_uv_with_legacy_core_pin(
+    env: &PipelineHarness,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let uv_path = env.home_path().join("fake-uv");
+    fs::write(
+        &uv_path,
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$R2X_TEST_UV_ARGS_LOG\"\nmkdir -p \"$R2X_TEST_SITE_PACKAGES/r2x_core\"\ncp -R \"$R2X_TEST_CORE_STUB_SOURCE\"/. \"$R2X_TEST_SITE_PACKAGES/r2x_core/\"\n",
+    )?;
+    let mut permissions = fs::metadata(&uv_path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&uv_path, permissions)?;
+
+    let mut config = toml::from_str::<toml::Value>(&fs::read_to_string(&env.config_path)?)?;
+    let table = config
+        .as_table_mut()
+        .ok_or("test config is not a TOML table")?;
+    table.insert(
+        "r2x_core_version".to_string(),
+        toml::Value::String("0.5.1".to_string()),
+    );
+    table.insert(
+        "uv_path".to_string(),
+        toml::Value::String(uv_path.to_string_lossy().to_string()),
+    );
+    fs::write(&env.config_path, toml::to_string(&config)?)?;
+
+    Ok(env.home_path().join("uv-args.log"))
 }
 
 fn real_core_harness() -> io::Result<Option<PipelineHarness>> {

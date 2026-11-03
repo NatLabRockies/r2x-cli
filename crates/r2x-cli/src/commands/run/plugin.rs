@@ -135,6 +135,8 @@ fn run_plugin(
     let runtime_bindings = build_runtime_bindings(plugin);
     let target = build_call_target(&runtime_bindings)?;
 
+    crate::commands::core::ensure_r2x_core_installed_for_cli()
+        .map_err(|error| RunError::Core(error.to_string()))?;
     let input = read_plugin_input(input_file.as_deref())?;
     let bridge = Bridge::get()?;
     logger::debug(&format!("Invoking plugin with target: {}", target));

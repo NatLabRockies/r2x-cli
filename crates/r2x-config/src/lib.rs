@@ -50,9 +50,6 @@ use std::process::Command;
 use which::which;
 
 const FALLBACK_PYTHON_VERSION: &str = "3.12";
-// Pin the temporary DataStore API dependency to the validated feat/csv-2 commit.
-const DEFAULT_R2X_CORE_PACKAGE_SPEC: &str =
-    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9";
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -64,8 +61,6 @@ pub struct Config {
     pub python_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub venv_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r2x_core_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_python: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,7 +138,6 @@ impl Config {
             "uv-path" => self.uv_path.clone(),
             "python-version" => self.python_version.clone(),
             "venv-path" => self.venv_path.clone(),
-            "r2x-core-version" => self.r2x_core_version.clone(),
             "log-python" => self.log_python.map(|v| v.to_string()),
             "no-stdout" => self.no_stdout.map(|v| v.to_string()),
             "log-path" => self.log_path.clone(),
@@ -162,7 +156,6 @@ impl Config {
                 self.python_version = Some(version.requested().to_string());
             }
             "venv-path" => self.venv_path = Some(value),
-            "r2x-core-version" => self.r2x_core_version = Some(value),
             "log-python" => {
                 self.log_python =
                     Some(
@@ -208,7 +201,6 @@ impl Config {
             && self.uv_path.is_none()
             && self.python_version.is_none()
             && self.venv_path.is_none()
-            && self.r2x_core_version.is_none()
             && self.log_python.is_none()
             && self.no_stdout.is_none()
             && self.log_path.is_none()
@@ -334,26 +326,6 @@ impl Config {
         #[cfg(target_os = "windows")]
         {
             format!("{}\\Scripts\\python.exe", venv_path)
-        }
-    }
-
-    pub fn get_r2x_core_package_spec(&self) -> String {
-        let Some(version) = self.r2x_core_version.as_deref() else {
-            return DEFAULT_R2X_CORE_PACKAGE_SPEC.to_string();
-        };
-        // If version contains operators (>=, <=, ~=, !=, ==, <, >), use it as-is
-        // Otherwise, prefix with == for exact version matching
-        if version.contains(">=")
-            || version.contains("<=")
-            || version.contains("~=")
-            || version.contains("!=")
-            || version.contains("==")
-            || version.contains('>')
-            || version.contains('<')
-        {
-            format!("r2x-core{}", version)
-        } else {
-            format!("r2x-core=={}", version)
         }
     }
 
@@ -723,14 +695,6 @@ mod tests {
     fn test_config_new() {
         let config = Config::default();
         assert!(config.is_empty());
-    }
-
-    #[test]
-    fn test_r2x_core_package_spec_defaults_to_pinned_remote_branch_commit() {
-        assert_eq!(
-            Config::default().get_r2x_core_package_spec(),
-            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"
-        );
     }
 
     #[test]
