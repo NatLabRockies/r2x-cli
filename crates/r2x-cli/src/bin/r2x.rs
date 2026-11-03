@@ -142,7 +142,7 @@ fn requires_python_environment(args: &[OsString]) -> bool {
 
     matches!(
         command.as_ref(),
-        "list" | "install" | "remove" | "sync" | "clean" | "run" | "show" | "read"
+        "list" | "install" | "remove" | "sync" | "clean" | "run" | "show" | "read" | "core"
     )
 }
 
@@ -364,6 +364,9 @@ mod tests {
         assert!(requires_python_environment(&args));
 
         let args = [OsString::from("read")];
+        assert!(requires_python_environment(&args));
+
+        let args = [OsString::from("core"), OsString::from("repair")];
         assert!(requires_python_environment(&args));
     }
 

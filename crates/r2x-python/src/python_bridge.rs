@@ -73,7 +73,7 @@ if (
     sys.exit(1)
 "#;
 
-pub const R2X_CORE_API_INCOMPATIBLE: &str = "The installed r2x-core package is incompatible with this r2x-cli version. Run `r2x read` to reinstall the configured r2x-core package.";
+pub const R2X_CORE_API_INCOMPATIBLE: &str = "The installed r2x-core package is incompatible with this r2x-cli version. Run `r2x core repair` to reinstall the configured package.";
 
 /// Check whether the selected interpreter provides the public r2x-core API used by r2x-cli.
 pub fn is_r2x_core_api_compatible(python_exe: &Path) -> Result<bool, BridgeError> {
