@@ -226,7 +226,7 @@ fn execute_pipeline(
     logger::debug("All pipeline configs validated");
 
     crate::commands::core::ensure_r2x_core_installed_for_cli()
-        .map_err(|error| RunError::Core(error.to_string()))?;
+        .map_err(|error| RunError::Runtime(error.to_string()))?;
 
     let pipeline_start = Instant::now();
     eprintln!("{}", format!("Running: {}", pipeline_name).cyan().bold());
