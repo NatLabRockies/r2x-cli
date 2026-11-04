@@ -822,6 +822,15 @@ fn test_machine_queries_use_the_launcher_without_writing_bytecode(
     let config = write_show_mappings(&env)?;
     let site = default_site_packages_path(&env.venv_path);
     fs::write(site.join("sitecustomize.py"), "value = 1\n")?;
+    let package_config = site.join("r2x_reeds/config");
+    fs::create_dir_all(&package_config)?;
+    for mapping in [
+        "file_mapping.json",
+        "table_mapping.json",
+        "translation_rules.json",
+    ] {
+        fs::copy(config.join(mapping), package_config.join(mapping))?;
+    }
     let cache = site.join("__pycache__");
     for executable in ["r2x", "r2x-runtime"] {
         for args in [
@@ -861,6 +870,32 @@ fn test_machine_queries_use_the_launcher_without_writing_bytecode(
                     .to_string_lossy()
                     .starts_with("sitecustomize."));
             }
+        }
+    }
+    let output = StdCommand::new(cargo_bin("r2x"))
+        .args(["show", "r2x-reeds", "--json"])
+        .env("HOME", env.home_path())
+        .env("R2X_CONFIG", &env.config_path)
+        .env_remove("PYTHONDONTWRITEBYTECODE")
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("PYTHONPATH")
+        .stdin(Stdio::null())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "r2x launcher: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)?["schema_version"],
+        1
+    );
+    if cache.exists() {
+        for entry in fs::read_dir(&cache)? {
+            assert!(!entry?
+                .file_name()
+                .to_string_lossy()
+                .starts_with("sitecustomize."));
         }
     }
     assert_eq!(
