@@ -571,7 +571,7 @@ fn test_show_json_does_not_repair_incompatible_core() -> Result<(), Box<dyn std:
         .args(["show", "r2x-reeds", "--json"])
         .output()?;
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr)?;
     assert_eq!(error["error"]["code"], "PYTHON_ERROR");
     assert!(!args_log.exists());
