@@ -283,6 +283,24 @@ fn test_show_reports_ambiguity_and_invalid_mappings() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn test_show_json_rejects_excessively_nested_mappings() -> Result<(), Box<dyn std::error::Error>> {
+    let env = PipelineHarness::new()?;
+    let config = write_show_mappings(&env)?;
+    let nested = format!("{}0{}", "[".repeat(129), "]".repeat(129));
+    fs::write(config.join("table_mapping.json"), nested)?;
+
+    let output = env
+        .command()
+        .args(["show", "r2x-reeds", "--config-dir"])
+        .arg(&config)
+        .output()?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("maximum depth"));
+    Ok(())
+}
+
+#[test]
 fn test_show_offers_only_unique_rule_selectors() -> Result<(), Box<dyn std::error::Error>> {
     let env = PipelineHarness::new()?;
     let config = write_show_mappings(&env)?;
