@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use r2x::commands::{
     cache,
     config::{self, ConfigAction, PythonAction},
-    core, init,
+    init,
     log::{self, LogAction},
     plugins, read, run, self_update, show, venv,
 };
@@ -42,11 +42,6 @@ enum Commands {
     Python {
         #[command(subcommand)]
         action: PythonAction,
-    },
-    /// Repair the release-pinned r2x-core package
-    Core {
-        #[command(subcommand)]
-        command: core::CoreCommand,
     },
     /// Logging configuration
     #[command(subcommand_required = false, arg_required_else_help = false)]
@@ -216,7 +211,6 @@ fn requires_python_environment(command: &Commands) -> bool {
             | Commands::Run(_)
             | Commands::Show(_)
             | Commands::Read(_)
-            | Commands::Core { .. }
     )
 }
 
@@ -281,14 +275,6 @@ fn main() {
         }
         Commands::Python { action } => {
             config::handle_python(action, cli.global);
-        }
-        Commands::Core {
-            command: core::CoreCommand::Repair,
-        } => {
-            if let Err(error) = core::handle_repair() {
-                logger::error(&format!("Core repair failed: {}", error));
-                std::process::exit(1);
-            }
         }
         Commands::Log { json, action } => {
             log::handle_log(action, json);

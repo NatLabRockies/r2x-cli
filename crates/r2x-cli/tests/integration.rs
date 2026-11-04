@@ -521,44 +521,8 @@ fn test_plugins_help() {
 }
 
 #[test]
-fn test_core_repair_help() {
-    r2x_cmd()
-        .args(["core", "repair", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "Ensure the release-pinned r2x-core package is installed and compatible",
-        ))
-        .stdout(predicate::str::contains("--use-default").not());
-}
-
-#[cfg(unix)]
-#[test]
-fn test_core_repair_uses_release_pin_despite_legacy_config_setting(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let Ok(env) = PipelineHarness::new() else {
-        return Ok(());
-    };
-    fs::write(
-        env.site_packages.join("r2x_core/store.py"),
-        "class DataStore:\n    def __init__(self, path):\n        self.path = path\n",
-    )?;
-    let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
-
-    let output = env
-        .command_with_fake_core_installer(&args_log)
-        .args(["core", "repair"])
-        .output()?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
-
-    let install_args = fs::read_to_string(args_log)?;
-    assert!(
-        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
-        "{install_args}"
-    );
-    assert!(!install_args.contains("0.5.1"), "{install_args}");
-    Ok(())
+fn test_core_repair_is_not_a_public_command() {
+    r2x_cmd().args(["core", "repair"]).assert().failure();
 }
 
 #[cfg(unix)]
@@ -584,22 +548,6 @@ fn test_run_installs_missing_core_from_release_pin() -> Result<(), Box<dyn std::
         "{install_args}"
     );
     assert!(!install_args.contains("0.5.1"), "{install_args}");
-    Ok(())
-}
-
-#[test]
-fn test_core_repair_runs_without_system_input() -> Result<(), Box<dyn std::error::Error>> {
-    let Ok(env) = PipelineHarness::new() else {
-        return Ok(());
-    };
-
-    let output = env.command().args(["core", "repair"]).output()?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("Release-pinned r2x-core package is compatible"),
-        "{stderr}"
-    );
     Ok(())
 }
 

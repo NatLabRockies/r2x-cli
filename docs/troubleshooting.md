@@ -55,17 +55,11 @@ r2x run scale --help
 
 Confirm that `create` and `scale` are available before retrying the tutorial pipeline.
 
-## `r2x` reports an incompatible `r2x-core` package
+## Python runtime setup fails
 
-Python-backed commands automatically ensure the `r2x-core` version pinned by this r2x-cli release.
-To check or repair the managed environment without running a pipeline or opening a system file, use:
-
-```bash
-r2x core repair
-```
-
-The CLI ignores any old `r2x_core_version` setting and always uses its release pin.
-If that pinned package remains incompatible after reinstall, update or reinstall r2x-cli because the release pin may be invalid.
+Commands that need Python prepare the managed runtime automatically.
+If setup fails because the network is unavailable, restore access and retry the original command.
+If the CLI reports that its runtime is incompatible, update or reinstall r2x-cli with the package manager used to install it, then retry.
 
 <a id="the-tutorial-plugin-is-not-found"></a>
 
