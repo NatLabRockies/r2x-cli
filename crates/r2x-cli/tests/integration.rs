@@ -195,11 +195,18 @@ fn test_core_repair_is_not_a_public_command() {
 
 #[cfg(unix)]
 #[test]
-fn test_run_installs_missing_core_from_release_pin() -> Result<(), Box<dyn std::error::Error>> {
+fn test_run_recovers_missing_runtime_module_despite_distribution_metadata(
+) -> Result<(), Box<dyn std::error::Error>> {
     let Ok(env) = PipelineHarness::new() else {
         return Ok(());
     };
     fs::remove_dir_all(env.site_packages.join("r2x_core"))?;
+    let dist_info = env.site_packages.join("r2x_core-0.9.0.dist-info");
+    fs::create_dir_all(&dist_info)?;
+    fs::write(
+        dist_info.join("METADATA"),
+        "Name: r2x-core\nVersion: 0.9.0\n",
+    )?;
     let args_log = configure_fake_uv_with_legacy_core_pin(&env)?;
 
     let output = env
@@ -213,6 +220,10 @@ fn test_run_installs_missing_core_from_release_pin() -> Result<(), Box<dyn std::
     let install_args = fs::read_to_string(args_log)?;
     assert!(
         install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        "{install_args}"
+    );
+    assert!(
+        install_args.contains("--reinstall-package"),
         "{install_args}"
     );
     assert!(!install_args.contains("0.5.1"), "{install_args}");
