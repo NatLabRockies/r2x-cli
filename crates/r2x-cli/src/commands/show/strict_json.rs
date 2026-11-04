@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_json_beyond_the_maximum_depth() {
+    fn rejects_json_beyond_the_maximum_depth() -> Result<(), String> {
         let arrays = format!(
             "{}0{}",
             "[".repeat(MAX_JSON_DEPTH + 1),
@@ -97,8 +97,12 @@ mod tests {
         );
 
         for json in [arrays, objects] {
-            let error = parse(&json).expect_err("excessive nesting should fail");
+            let error = match parse(&json) {
+                Ok(_) => return Err("excessive nesting should fail".to_string()),
+                Err(error) => error,
+            };
             assert!(error.to_string().contains("maximum depth"));
         }
+        Ok(())
     }
 }
