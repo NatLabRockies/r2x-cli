@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 const R2X_CORE_PACKAGE_SPEC: &str =
-    "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9";
+    "r2x-core @ https://github.com/NatLabRockies/r2x-core/archive/f43c3931c7094e1ec18fc05ac3832b886bdfc9b9.zip";
 
 pub(crate) fn ensure_r2x_core_installed_for_cli() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::load()?;
@@ -38,13 +38,7 @@ pub(super) fn ensure_r2x_core_installed(
         logger::info("A required Python runtime component is missing; installing it automatically");
     }
 
-    install_package(
-        config,
-        python_exe,
-        R2X_CORE_PACKAGE_SPEC,
-        "r2x-core",
-        installed,
-    )?;
+    install_package(config, python_exe, R2X_CORE_PACKAGE_SPEC, "r2x-core", true)?;
     if !is_r2x_core_api_compatible(Path::new(python_exe))? {
         return Err(
             "This r2x-cli release could not prepare a compatible Python runtime. Update or reinstall r2x-cli, then retry."
