@@ -1,4 +1,3 @@
-use clap::Subcommand;
 use r2x_config::Config;
 use r2x_logger as logger;
 use r2x_python::python_bridge::is_r2x_core_api_compatible;
@@ -7,18 +6,6 @@ use std::process::{Command, Stdio};
 
 const R2X_CORE_PACKAGE_SPEC: &str =
     "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@f43c3931c7094e1ec18fc05ac3832b886bdfc9b9";
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum CoreCommand {
-    /// Ensure the release-pinned r2x-core package is installed and compatible.
-    Repair,
-}
-
-pub fn handle_repair() -> Result<(), Box<dyn std::error::Error>> {
-    ensure_r2x_core_installed_for_cli()?;
-    logger::success("Release-pinned r2x-core package is compatible");
-    Ok(())
-}
 
 pub(crate) fn ensure_r2x_core_installed_for_cli() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::load()?;
@@ -41,16 +28,14 @@ pub(super) fn ensure_r2x_core_installed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let installed = module_spec_exists(python_exe, "r2x_core.system");
     if installed && is_r2x_core_api_compatible(Path::new(python_exe))? {
-        logger::debug("r2x-core API is compatible with this r2x-cli version");
+        logger::debug("Python runtime is compatible with this r2x-cli version");
         return Ok(());
     }
 
     if installed {
-        logger::info(
-            "Installed r2x-core is incompatible; reinstalling the release-pinned package via uv",
-        );
+        logger::info("Python runtime is incompatible; repairing it automatically");
     } else {
-        logger::info("r2x-core not found in venv; installing the release-pinned package via uv");
+        logger::info("A required Python runtime component is missing; installing it automatically");
     }
 
     install_package(
@@ -62,7 +47,7 @@ pub(super) fn ensure_r2x_core_installed(
     )?;
     if !is_r2x_core_api_compatible(Path::new(python_exe))? {
         return Err(
-            "The release-pinned r2x-core package is still incompatible with this r2x-cli release. Install a newer r2x-cli release."
+            "This r2x-cli release could not prepare a compatible Python runtime. Update or reinstall r2x-cli, then retry."
                 .into(),
         );
     }
