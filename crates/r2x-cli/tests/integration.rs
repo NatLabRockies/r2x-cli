@@ -197,7 +197,7 @@ fn test_show_repairs_incompatible_core_using_release_pin() -> Result<(), Box<dyn
 
     let install_args = fs::read_to_string(args_log)?;
     assert!(
-        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        install_args.contains("8a3240dc051f4632121e89dcab8fdeead665b7f3"),
         "{install_args}"
     );
     assert!(!install_args.contains("0.5.1"), "{install_args}");
