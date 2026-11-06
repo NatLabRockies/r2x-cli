@@ -1,6 +1,8 @@
-//! Launch the PyO3 runtime through R2X's UV-managed virtual environment.
+//! Launch the PyO3 runtime with R2X's UV-managed virtual environment.
 
 use anyhow::{bail, ensure, Context, Result};
+#[cfg(not(target_os = "windows"))]
+use r2x_config::venv_paths::PYTHON_BIN_DIR;
 use r2x_config::{default_python_version, Config};
 use std::env;
 use std::ffi::OsString;
@@ -62,15 +64,12 @@ fn launch(args: &[OsString]) -> Result<()> {
     let runtime = Runtime::load(use_venv)?;
     let library_dir = python_library_dir(&runtime)?;
 
-    let mut command = if use_venv {
-        let mut command = uv_run_in_venv(&runtime)?;
-        command.arg(&payload);
-        command
-    } else {
-        Command::new(&payload)
-    };
+    let mut command = Command::new(&payload);
+    if let Some(venv) = runtime.venv.as_deref() {
+        configure_venv_environment(&mut command, venv)?;
+    }
     command.args(args);
-    configure_python_loader(&mut command, &library_dir)?;
+    configure_python_loader(&mut command, &library_dir, runtime.venv.as_deref())?;
 
     let status = command.status().context("failed to start R2X runtime")?;
     match status.code() {
@@ -93,7 +92,7 @@ fn requires_python_environment(args: &[OsString]) -> bool {
 
     matches!(
         command.as_ref(),
-        "list" | "install" | "remove" | "sync" | "clean" | "run" | "read"
+        "list" | "install" | "remove" | "sync" | "clean" | "run" | "show" | "read"
     )
 }
 
@@ -130,9 +129,13 @@ fn uv_run_in_venv(runtime: &Runtime) -> Result<Command> {
         .venv
         .as_ref()
         .context("R2X virtual environment was not initialized")?;
+    let python = r2x_config::venv_paths::resolve_python_exe(venv)
+        .context("failed to find the R2X virtual environment's Python")?;
     let mut command = Command::new(&runtime.uv);
     command
-        .args(["run", "--no-config", "--no-project", "--active", "--"])
+        .args(["run", "--no-config", "--no-project", "--active", "--python"])
+        .arg(python)
+        .arg("--")
         .env("VIRTUAL_ENV", venv)
         .env_remove("PYTHONHOME")
         .env_remove("PYTHONPATH");
@@ -209,7 +212,26 @@ fn python_library_dir(runtime: &Runtime) -> Result<PathBuf> {
     Ok(library_dir)
 }
 
-fn configure_python_loader(command: &mut Command, library_dir: &Path) -> Result<()> {
+fn configure_venv_environment(command: &mut Command, venv: &Path) -> Result<()> {
+    command
+        .env("VIRTUAL_ENV", venv)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH");
+
+    #[cfg(not(target_os = "windows"))]
+    command.env(
+        "PATH",
+        prepend_path(&venv.join(PYTHON_BIN_DIR), env::var_os("PATH"))?,
+    );
+
+    Ok(())
+}
+
+fn configure_python_loader(
+    command: &mut Command,
+    library_dir: &Path,
+    venv: Option<&Path>,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
     command.env(
         "DYLD_LIBRARY_PATH",
@@ -223,14 +245,39 @@ fn configure_python_loader(command: &mut Command, library_dir: &Path) -> Result<
     );
 
     #[cfg(target_os = "windows")]
-    command.env("PATH", prepend_path(library_dir, env::var_os("PATH"))?);
+    command.env(
+        "PATH",
+        windows_search_path(library_dir, venv, env::var_os("PATH"))?,
+    );
 
     #[cfg(not(any(unix, target_os = "windows")))]
     bail!("R2X supports macOS, Linux, and Windows only");
 
+    #[cfg(not(target_os = "windows"))]
+    let _ = venv;
+
     Ok(())
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn windows_search_path(
+    library_dir: &Path,
+    venv: Option<&Path>,
+    existing: Option<OsString>,
+) -> Result<OsString> {
+    let mut paths = Vec::new();
+    if let Some(venv) = venv {
+        paths.push(venv.join("Scripts"));
+    }
+    paths.push(library_dir.to_path_buf());
+    if let Some(existing) = existing {
+        paths.extend(env::split_paths(&existing));
+    }
+    env::join_paths(paths).context("could not construct a process search path")
+}
+
+// Windows builds its search path separately, so this helper is test-only there.
+#[cfg(any(not(target_os = "windows"), test))]
 fn prepend_path(prefix: &Path, existing: Option<OsString>) -> Result<OsString> {
     let mut paths = vec![prefix.to_path_buf()];
     if let Some(existing) = existing {
@@ -241,7 +288,10 @@ fn prepend_path(prefix: &Path, existing: Option<OsString>) -> Result<OsString> {
 
 #[cfg(test)]
 mod tests {
-    use super::{payload_name, payload_path_next_to, prepend_path, requires_python_environment};
+    use super::{
+        payload_name, payload_path_next_to, prepend_path, requires_python_environment,
+        windows_search_path,
+    };
     use anyhow::Result;
     use std::env;
     use std::ffi::OsString;
@@ -264,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_python_commands_through_uv_bootstrap() {
+    fn routes_python_commands_through_the_managed_venv() {
         let args = [OsString::from("run"), OsString::from("plugin")];
         assert!(requires_python_environment(&args));
 
@@ -273,6 +323,26 @@ mod tests {
 
         let args = [OsString::from("core"), OsString::from("repair")];
         assert!(!requires_python_environment(&args));
+    }
+
+    #[test]
+    fn windows_search_path_prefers_the_venv_python() -> Result<()> {
+        let venv = Path::new("/runtime/venv");
+        let paths = windows_search_path(
+            Path::new("/runtime/python"),
+            Some(venv),
+            Some(env::join_paths(["/custom/bin"])?),
+        )?;
+
+        assert_eq!(
+            env::split_paths(&paths).collect::<Vec<_>>(),
+            [
+                venv.join("Scripts"),
+                PathBuf::from("/runtime/python"),
+                PathBuf::from("/custom/bin"),
+            ]
+        );
+        Ok(())
     }
 
     #[test]

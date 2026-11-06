@@ -255,6 +255,9 @@ pub fn list_plugins(
                     println!("  - {}", plugin_name);
                 }
             }
+            if !packages.is_empty() {
+                println!("\nView declared mappings: r2x show <package>");
+            }
         }
     }
 
@@ -324,6 +327,7 @@ fn show_plugin_details(
         }
         println!();
     }
+    println!("View declared mappings: r2x show {}", package.name);
 
     Ok(())
 }

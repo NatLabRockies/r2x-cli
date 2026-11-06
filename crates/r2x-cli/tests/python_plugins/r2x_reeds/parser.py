@@ -23,9 +23,17 @@ class ReEDSConfig:
         self.solve_year = solve_year
         self.extra = kwargs
 
+    @classmethod
+    def model_construct(cls) -> ReEDSConfig:
+        return cls()
+
+    @property
+    def config_path(self) -> Path:
+        return Path(__file__).parent / "config"
+
     @property
     def fmap_path(self) -> Path:
-        return Path(__file__).parent / "config" / "file_mapping.json"
+        return self.config_path / "file_mapping.json"
 
 
 class ReEDSParser:
