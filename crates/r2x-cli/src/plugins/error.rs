@@ -9,11 +9,26 @@ pub enum PluginError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    #[error("Environment unavailable: {0}")]
+    EnvironmentUnavailable(String),
+
+    #[error("Plugin package '{0}' not found")]
+    PackageNotFound(String),
+
+    #[error("No plugins found matching the filter in package '{package}'")]
+    PluginNotFound {
+        package: String,
+        candidates: Vec<String>,
+    },
+
     #[error("Manifest error: {0}")]
     Manifest(#[from] ManifestError),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 
     #[error("Package spec error: {0}")]
     PackageSpec(String),
@@ -48,6 +63,31 @@ pub enum PluginError {
 
     #[error("Invalid arguments: {0}")]
     InvalidArgs(String),
+}
+
+impl PluginError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::EnvironmentUnavailable(_) => "ENVIRONMENT_UNAVAILABLE",
+            Self::PackageNotFound(_) => "PACKAGE_NOT_FOUND",
+            Self::PluginNotFound { .. } => "PLUGIN_NOT_FOUND",
+            Self::Config(_) => "CONFIGURATION_ERROR",
+            Self::Manifest(_) => "MANIFEST_ERROR",
+            Self::InvalidArgs(_) | Self::PackageSpec(_) => "INVALID_ARGUMENT",
+            Self::Io(_) => "IO_ERROR",
+            Self::Json(_) => "JSON_ERROR",
+            Self::Discovery(_) | Self::Locator(_) => "DISCOVERY_ERROR",
+            Self::Python(_) => "PYTHON_ERROR",
+            Self::CommandFailed { .. } | Self::UvCommandFailed { .. } => "COMMAND_FAILED",
+        }
+    }
+
+    pub fn candidates(&self) -> &[String] {
+        match self {
+            Self::PluginNotFound { candidates, .. } => candidates,
+            _ => &[],
+        }
+    }
 }
 
 impl From<UvCommandError> for PluginError {

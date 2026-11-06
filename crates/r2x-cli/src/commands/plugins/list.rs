@@ -6,7 +6,10 @@ use crate::plugins::install::get_package_info;
 use crate::plugins::package_spec::is_git_url;
 use colored::Colorize;
 use r2x_manifest::package_discovery::PackageLocator;
-use r2x_manifest::types::{Manifest, Package, PackageSource, Plugin};
+use r2x_manifest::types::{
+    Manifest, Package, PackageSource, Parameter, Plugin, PluginType, SchemaFields,
+};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 fn source_kind(pkg: &Package, locator: Option<&PackageLocator>) -> PackageSource {
@@ -54,6 +57,13 @@ fn package_version(pkg: &Package, discovered_version: Option<String>) -> Option<
             Some(version.to_string())
         }
     })
+}
+
+fn displayed_package_version(pkg: &Package, ctx: &PluginContext) -> Option<String> {
+    let discovered = get_package_info(&ctx.uv_path, &ctx.python_path, &pkg.name)
+        .ok()
+        .and_then(|(version, _)| version);
+    package_version(pkg, discovered)
 }
 
 fn format_package_header(pkg: &Package, version: Option<&str>, source_display: &str) -> String {
@@ -149,19 +159,21 @@ pub fn list_plugins(
     ctx: &PluginContext,
 ) -> Result<(), PluginError> {
     let manifest = &ctx.manifest;
+    if json {
+        return list_plugins_json(
+            manifest,
+            plugin_filter.as_deref(),
+            module_filter.as_deref(),
+            ctx,
+        );
+    }
 
-    let has_plugins = !manifest.is_empty();
-
-    if !has_plugins {
-        if json {
-            println!("{{\"packages\":[]}}");
-        } else {
-            println!("There are no current plugins installed.\n");
-            println!(
-                "To install a plugin, run:\n  {} install <package>",
-                "r2x".bold().cyan()
-            );
-        }
+    if manifest.is_empty() {
+        println!("There are no current plugins installed.\n");
+        println!(
+            "To install a plugin, run:\n  {} install <package>",
+            "r2x".bold().cyan()
+        );
         return Ok(());
     }
 
@@ -187,80 +199,142 @@ pub fn list_plugins(
         packages.insert(pkg.name.to_string(), names);
     }
 
-    if has_plugins {
-        let python_path = &ctx.python_path;
-        let uv_path = &ctx.uv_path;
-
-        if json {
-            let mut json_packages: Vec<serde_json::Value> = Vec::new();
-            for (package_name, plugin_names) in &packages {
-                let pkg = match manifest
-                    .packages
-                    .iter()
-                    .find(|p| p.name.as_ref() == package_name)
-                {
-                    Some(pkg) => pkg,
-                    None => continue,
-                };
-                let version = package_version(
-                    pkg,
-                    get_package_info(uv_path, python_path, package_name)
-                        .ok()
-                        .and_then(|(v, _)| v),
-                );
-                let source_display = package_source_display(pkg, &ctx.locator);
-
-                let plugins_json: Vec<serde_json::Value> = plugin_names
-                    .iter()
-                    .map(|name| serde_json::json!({"name": name}))
-                    .collect();
-
-                json_packages.push(serde_json::json!({
-                    "name": package_name,
-                    "version": version,
-                    "source": source_display,
-                    "plugins": plugins_json,
-                }));
-            }
-            println!(
-                "{}",
-                match serde_json::to_string_pretty(&serde_json::json!({"packages": json_packages}))
-                {
-                    Ok(json_str) => json_str,
-                    Err(_) => return Ok(()),
-                }
-            );
-        } else {
-            for (package_name, plugin_names) in &packages {
-                let pkg = match manifest
-                    .packages
-                    .iter()
-                    .find(|p| p.name.as_ref() == package_name)
-                {
-                    Some(pkg) => pkg,
-                    None => continue,
-                };
-                let version = package_version(
-                    pkg,
-                    get_package_info(uv_path, python_path, package_name)
-                        .ok()
-                        .and_then(|(v, _)| v),
-                );
-                let source_display = package_source_display(pkg, &ctx.locator);
-                println!(
-                    "{}",
-                    format_package_header(pkg, version.as_deref(), &source_display)
-                );
-                for plugin_name in plugin_names {
-                    println!("  - {}", plugin_name);
-                }
-            }
-            if !packages.is_empty() {
-                println!("\nView declared mappings: r2x show <package>");
-            }
+    for (package_name, plugin_names) in &packages {
+        let pkg = match manifest
+            .packages
+            .iter()
+            .find(|p| p.name.as_ref() == package_name)
+        {
+            Some(pkg) => pkg,
+            None => continue,
+        };
+        let version = displayed_package_version(pkg, ctx);
+        let source_display = package_source_display(pkg, &ctx.locator);
+        println!(
+            "{}",
+            format_package_header(pkg, version.as_deref(), &source_display)
+        );
+        for plugin_name in plugin_names {
+            println!("  - {}", plugin_name);
         }
     }
+    if !packages.is_empty() {
+        println!("\nView declared mappings: r2x show <package>");
+    }
 
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ListJson<'a> {
+    schema_version: u8,
+    packages: Vec<PackageJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct PackageJson<'a> {
+    name: &'a str,
+    version: Option<String>,
+    source: String,
+    plugins: Vec<PluginJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct PluginJson<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    plugin_type: PluginType,
+    module: &'a str,
+    class_name: Option<&'a str>,
+    function_name: Option<&'a str>,
+    config_class: Option<&'a str>,
+    config_module: Option<&'a str>,
+    entry_point_group: Option<&'a str>,
+    description: Option<&'a str>,
+    parameters: &'a [Parameter],
+    config_schema: &'a SchemaFields,
+}
+
+fn matches_plugin_filter(plugin: &Plugin, filter: &str) -> bool {
+    plugin.name.as_ref() == filter || plugin.name.rsplit('.').next() == Some(filter)
+}
+
+fn list_plugins_json(
+    manifest: &Manifest,
+    package_filter: Option<&str>,
+    module_filter: Option<&str>,
+    ctx: &PluginContext,
+) -> Result<(), PluginError> {
+    let mut packages: Vec<&Package> = if let Some(name) = package_filter {
+        let package = manifest
+            .get_package(name)
+            .ok_or_else(|| PluginError::PackageNotFound(name.to_string()))?;
+        vec![package]
+    } else {
+        manifest
+            .packages
+            .iter()
+            .filter(|package| !package.plugins.is_empty())
+            .collect()
+    };
+    packages.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut result = Vec::new();
+    for package in packages {
+        let mut plugins: Vec<&Plugin> = package
+            .plugins
+            .iter()
+            .filter(|plugin| {
+                module_filter.map_or(true, |module| matches_plugin_filter(plugin, module))
+            })
+            .collect();
+        if package_filter.is_some() && plugins.is_empty() {
+            let mut candidates: Vec<String> = package
+                .plugins
+                .iter()
+                .map(|plugin| plugin.name.to_string())
+                .collect();
+            candidates.sort();
+            return Err(PluginError::PluginNotFound {
+                package: package.name.to_string(),
+                candidates,
+            });
+        }
+        plugins.sort_by(|left, right| left.name.cmp(&right.name));
+        let plugins = plugins
+            .into_iter()
+            .map(|plugin| PluginJson {
+                name: &plugin.name,
+                plugin_type: plugin.plugin_type,
+                module: &plugin.module,
+                class_name: plugin.class_name.as_deref(),
+                function_name: plugin.function_name.as_deref(),
+                config_class: plugin.config_class.as_deref(),
+                config_module: plugin.config_module.as_deref(),
+                entry_point_group: plugin.entry_point_group.as_deref(),
+                description: plugin.description.as_deref(),
+                parameters: &plugin.parameters,
+                config_schema: &plugin.config_schema,
+            })
+            .collect();
+        let version = displayed_package_version(package, ctx);
+        result.push(PackageJson {
+            name: &package.name,
+            version,
+            source: r2x_logger::redact_sensitive_text(&package_source_display(
+                package,
+                &ctx.locator,
+            )),
+            plugins,
+        });
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&ListJson {
+            schema_version: 1,
+            packages: result
+        })?
+    );
     Ok(())
 }
 
@@ -281,12 +355,7 @@ fn show_plugin_details(
         })?;
 
     // Build package header with version and editable info
-    let version = package_version(
-        package,
-        get_package_info(&ctx.uv_path, &ctx.python_path, package.name.as_ref())
-            .ok()
-            .and_then(|(v, _)| v),
-    );
+    let version = displayed_package_version(package, ctx);
     let source_display = package_source_display(package, &ctx.locator);
     println!(
         "{} {}",
@@ -296,21 +365,11 @@ fn show_plugin_details(
     println!();
 
     // Filter plugins by module name if provided
-    let plugins_to_show: Vec<_> = if let Some(module_name) = module_filter {
-        package
-            .plugins
-            .iter()
-            .filter(|p| {
-                // Match if the plugin name ends with the module filter
-                // e.g., "r2x_reeds.break_gens" matches module "break_gens"
-                let name_str = p.name.as_ref();
-                let parts: Vec<&str> = name_str.split('.').collect();
-                parts.last().is_some_and(|&last| last == module_name)
-            })
-            .collect()
-    } else {
-        package.plugins.iter().collect()
-    };
+    let plugins_to_show: Vec<_> = package
+        .plugins
+        .iter()
+        .filter(|plugin| module_filter.map_or(true, |module| matches_plugin_filter(plugin, module)))
+        .collect();
 
     if plugins_to_show.is_empty() {
         return Err(PluginError::InvalidArgs(format!(

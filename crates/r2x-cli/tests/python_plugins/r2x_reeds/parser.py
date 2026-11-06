@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,18 @@ class ReEDSConfig:
     @property
     def fmap_path(self) -> Path:
         return self.config_path / "file_mapping.json"
+
+
+class ActiveVenvConfig:
+    """Config fixture that requires the managed environment to be active."""
+
+    @classmethod
+    def model_construct(cls) -> ActiveVenvConfig:
+        return cls()
+
+    @property
+    def config_path(self) -> Path:
+        return Path(os.environ["VIRTUAL_ENV"]) / "mapping-assets"
 
 
 class ReEDSParser:
