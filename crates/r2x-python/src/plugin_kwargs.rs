@@ -391,49 +391,28 @@ impl Bridge {
         let data_store_module = PyModule::import(py, "r2x_core.store")?;
         let data_store_class = data_store_module.getattr("DataStore")?;
 
-        let store = data_store_class.call1((path,)).map_err(|error| {
-            BridgeError::Python(format_python_error(
-                py,
-                error,
-                "Failed to instantiate DataStore",
-            ))
-        })?;
-
-        if let Some(config) = config_instance {
+        let store = if let Some(config) = config_instance {
             let kwargs = PyDict::new(py);
             kwargs.set_item("plugin_config", config)?;
-            store
-                .call_method("configure_upgrades", (), Some(&kwargs))
+            kwargs.set_item("path", path.as_str())?;
+            data_store_class
+                .call_method("from_plugin_config", (), Some(&kwargs))
                 .map_err(|error| {
                     BridgeError::Python(format_python_error(
                         py,
                         error,
-                        "Failed to configure DataStore upgrades",
+                        "Failed to create DataStore from plugin config",
                     ))
-                })?;
-
-            let mapping_path = config.getattr("fmap_path").map_err(|error| {
+                })?
+        } else {
+            data_store_class.call1((path,)).map_err(|error| {
                 BridgeError::Python(format_python_error(
                     py,
                     error,
-                    "Failed to get the plugin file-mapping path",
+                    "Failed to instantiate DataStore",
                 ))
-            })?;
-            let mapping_exists = mapping_path.call_method0("exists")?.extract::<bool>()?;
-            if mapping_exists {
-                store
-                    .call_method1("load_file_mapping", (mapping_path,))
-                    .map_err(|error| {
-                        BridgeError::Python(format_python_error(
-                            py,
-                            error,
-                            "Failed to load the DataStore file mapping",
-                        ))
-                    })?;
-            } else {
-                logger::debug("Plugin file mapping not found; using an empty DataStore");
-            }
-        }
+            })?
+        };
 
         Ok(store)
     }

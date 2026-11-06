@@ -40,10 +40,18 @@ try:
 except ImportError:
     sys.exit(1)
 
-if not all(
-    callable(getattr(DataStore, name, None))
-    for name in ("configure_upgrades", "load_file_mapping")
-):
+factory = getattr(DataStore, "from_plugin_config", None)
+if not callable(factory):
+    sys.exit(1)
+try:
+    factory_signature = inspect.signature(factory)
+    if (
+        "plugin_config" not in factory_signature.parameters
+        or "path" not in factory_signature.parameters
+    ):
+        sys.exit(1)
+    factory_signature.bind(plugin_config=object(), path=".")
+except (TypeError, ValueError):
     sys.exit(1)
 
 try:
