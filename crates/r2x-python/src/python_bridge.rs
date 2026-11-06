@@ -179,13 +179,14 @@ impl Bridge {
                 ))
             })?;
             config
-                .call_method0("package_config_path")
+                .call_method0("model_construct")
+                .and_then(|instance| instance.getattr("config_path"))
                 .and_then(|path| path.extract::<PathBuf>())
                 .map_err(|error| {
                     BridgeError::Python(crate::plugin_regular::format_python_error(
                         py,
                         error,
-                        &format!("Failed to resolve package config path for '{class_name}'"),
+                        &format!("Failed to resolve config path for '{class_name}'"),
                     ))
                 })
         })

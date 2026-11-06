@@ -25,12 +25,16 @@ class ReEDSConfig:
         self.extra = kwargs
 
     @classmethod
-    def package_config_path(cls) -> Path:
+    def model_construct(cls) -> ReEDSConfig:
+        return cls()
+
+    @property
+    def config_path(self) -> Path:
         return Path(__file__).parent / "config"
 
     @property
     def fmap_path(self) -> Path:
-        return self.package_config_path() / "file_mapping.json"
+        return self.config_path / "file_mapping.json"
 
 
 class ActiveVenvConfig:

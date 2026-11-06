@@ -197,7 +197,7 @@ fn test_show_repairs_incompatible_core_using_release_pin() -> Result<(), Box<dyn
 
     let install_args = fs::read_to_string(args_log)?;
     assert!(
-        install_args.contains("f43c3931c7094e1ec18fc05ac3832b886bdfc9b9"),
+        install_args.contains("8a3240dc051f4632121e89dcab8fdeead665b7f3"),
         "{install_args}"
     );
     assert!(!install_args.contains("0.5.1"), "{install_args}");
@@ -353,7 +353,7 @@ fn test_show_requires_a_choice_for_multiple_configs() -> Result<(), Box<dyn std:
     let config = write_show_mappings(&env)?;
     let parser = default_site_packages_path(&env.venv_path).join("r2x_reeds/parser.py");
     let mut source = fs::read_to_string(&parser)?;
-    source.push_str("\nclass AlternativeConfig:\n    @classmethod\n    def package_config_path(cls):\n        return Path(__file__).parent / 'alternative'\n");
+    source.push_str("\nclass AlternativeConfig:\n    @classmethod\n    def model_construct(cls):\n        return cls()\n    @property\n    def config_path(self):\n        return Path(__file__).parent / 'alternative'\n");
     fs::write(parser, source)?;
     let manifest = stub_manifest_toml().replace(
         "function_name = \"no_stdin_function\"",
@@ -455,6 +455,25 @@ fn test_installed_r2x_core_show_uses_public_config_path() -> Result<(), Box<dyn 
         true,
     )?;
     assert_eq!(item["item"]["declaration"]["relative_fpath"], "input.csv");
+    Ok(())
+}
+
+#[test]
+fn test_installed_r2x_reeds_show_uses_compatible_core() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(env) = real_core_harness()? else {
+        return Ok(());
+    };
+
+    fs::remove_dir_all(env.site_packages.join("r2x_reeds"))?;
+    fs::remove_dir_all(env.site_packages.join("r2x_reeds-0.0.1.dist-info"))?;
+    fs::write(
+        env.home_path().join(".cache/r2x/manifest.toml"),
+        stub_manifest_toml(),
+    )?;
+
+    let inventory = query_json(&env, &["show", "r2x-reeds", "--json"], true)?;
+    assert_eq!(inventory["configuration"]["origin"], "package_default");
+    assert_eq!(inventory["mappings"]["files"]["status"], "present");
     Ok(())
 }
 
