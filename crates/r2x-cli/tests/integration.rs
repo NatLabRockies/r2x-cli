@@ -353,7 +353,7 @@ fn test_show_requires_a_choice_for_multiple_configs() -> Result<(), Box<dyn std:
     let config = write_show_mappings(&env)?;
     let parser = default_site_packages_path(&env.venv_path).join("r2x_reeds/parser.py");
     let mut source = fs::read_to_string(&parser)?;
-    source.push_str("\nclass AlternativeConfig:\n    @classmethod\n    def package_config_path(cls):\n        return Path(__file__).parent / 'alternative'\n");
+    source.push_str("\nclass AlternativeConfig:\n    @classmethod\n    def model_construct(cls):\n        return cls()\n    @property\n    def config_path(self):\n        return Path(__file__).parent / 'alternative'\n");
     fs::write(parser, source)?;
     let manifest = stub_manifest_toml().replace(
         "function_name = \"no_stdin_function\"",
