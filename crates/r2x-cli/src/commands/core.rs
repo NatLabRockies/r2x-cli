@@ -4,8 +4,10 @@ use r2x_python::python_bridge::is_r2x_core_api_compatible;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+// Pin the published release commit. Unreleased commits can share its version
+// while exposing a different API.
 const R2X_CORE_PACKAGE_SPEC: &str =
-    "r2x-core @ https://github.com/NatLabRockies/r2x-core/archive/f43c3931c7094e1ec18fc05ac3832b886bdfc9b9.zip";
+    "r2x-core @ https://github.com/NatLabRockies/r2x-core/archive/8a3240dc051f4632121e89dcab8fdeead665b7f3.zip";
 
 pub(crate) fn ensure_r2x_core_installed_for_cli() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::load()?;
