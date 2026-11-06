@@ -41,7 +41,11 @@ class ActiveVenvConfig:
     """Config fixture that requires the managed environment to be active."""
 
     @classmethod
-    def package_config_path(cls) -> Path:
+    def model_construct(cls) -> ActiveVenvConfig:
+        return cls()
+
+    @property
+    def config_path(self) -> Path:
         return Path(os.environ["VIRTUAL_ENV"]) / "mapping-assets"
 
 
