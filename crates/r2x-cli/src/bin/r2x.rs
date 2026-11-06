@@ -270,6 +270,9 @@ mod tests {
 
         let args = [OsString::from("read")];
         assert!(requires_python_environment(&args));
+
+        let args = [OsString::from("core"), OsString::from("repair")];
+        assert!(!requires_python_environment(&args));
     }
 
     #[test]

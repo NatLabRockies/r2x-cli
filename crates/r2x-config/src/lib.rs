@@ -62,8 +62,6 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub venv_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub r2x_core_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub log_python: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_stdout: Option<bool>,
@@ -140,7 +138,6 @@ impl Config {
             "uv-path" => self.uv_path.clone(),
             "python-version" => self.python_version.clone(),
             "venv-path" => self.venv_path.clone(),
-            "r2x-core-version" => self.r2x_core_version.clone(),
             "log-python" => self.log_python.map(|v| v.to_string()),
             "no-stdout" => self.no_stdout.map(|v| v.to_string()),
             "log-path" => self.log_path.clone(),
@@ -159,7 +156,6 @@ impl Config {
                 self.python_version = Some(version.requested().to_string());
             }
             "venv-path" => self.venv_path = Some(value),
-            "r2x-core-version" => self.r2x_core_version = Some(value),
             "log-python" => {
                 self.log_python =
                     Some(
@@ -205,7 +201,6 @@ impl Config {
             && self.uv_path.is_none()
             && self.python_version.is_none()
             && self.venv_path.is_none()
-            && self.r2x_core_version.is_none()
             && self.log_python.is_none()
             && self.no_stdout.is_none()
             && self.log_path.is_none()
@@ -331,24 +326,6 @@ impl Config {
         #[cfg(target_os = "windows")]
         {
             format!("{}\\Scripts\\python.exe", venv_path)
-        }
-    }
-
-    pub fn get_r2x_core_package_spec(&self) -> String {
-        let version = self.r2x_core_version.as_deref().unwrap_or("0.1.0rc1");
-        // If version contains operators (>=, <=, ~=, !=, ==, <, >), use it as-is
-        // Otherwise, prefix with == for exact version matching
-        if version.contains(">=")
-            || version.contains("<=")
-            || version.contains("~=")
-            || version.contains("!=")
-            || version.contains("==")
-            || version.contains('>')
-            || version.contains('<')
-        {
-            format!("r2x-core{}", version)
-        } else {
-            format!("r2x-core=={}", version)
         }
     }
 

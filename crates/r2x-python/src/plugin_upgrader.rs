@@ -130,17 +130,17 @@ impl Bridge {
         let path_buf = PathBuf::from(path_str);
         let path_handle = path_obj.clone().unbind();
 
-        let upgrader_utils = PyModule::import(py, "r2x_core.upgrader_utils").map_err(|e| {
+        let r2x_core = PyModule::import(py, "r2x_core").map_err(|e| {
             BridgeError::Import(
-                "r2x_core.upgrader_utils".to_string(),
+                "r2x_core".to_string(),
                 format_python_error(py, e, "Import failed"),
             )
         })?;
-        let run_upgrade_step = upgrader_utils.getattr("run_upgrade_step").map_err(|e| {
+        let run_upgrade_step = r2x_core.getattr("run_upgrade_step").map_err(|e| {
             BridgeError::Python(format_python_error(
                 py,
                 e,
-                "Failed to import r2x_core.upgrader_utils.run_upgrade_step",
+                "Failed to import r2x_core.run_upgrade_step",
             ))
         })?;
 
@@ -197,12 +197,13 @@ impl Bridge {
             };
 
             let kwargs = PyDict::new(py);
+            kwargs.set_item("step", &step_obj)?;
             kwargs
                 .set_item("upgrader_context", instance)
                 .map_err(|e| BridgeError::Python(format!("Failed to set context: {}", e)))?;
 
             let result = run_upgrade_step
-                .call((step_obj.clone(), data_arg), Some(&kwargs))
+                .call((data_arg,), Some(&kwargs))
                 .map_err(|e| {
                     BridgeError::Python(format_python_error(py, e, "Upgrade step execution failed"))
                 })?;

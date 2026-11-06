@@ -26,6 +26,7 @@ pub enum RunError {
     Artifact(ArtifactError),
     Pipeline(PipelineError),
     Config(String),
+    Runtime(String),
     PluginNotFound(String),
     InvalidArgs(String),
     Verification(String),
@@ -39,6 +40,7 @@ impl std::fmt::Display for RunError {
             RunError::Artifact(e) => write!(f, "Artifact error: {}", e),
             RunError::Pipeline(e) => write!(f, "Pipeline error: {}", e),
             RunError::Config(msg) => write!(f, "Configuration error: {}", msg),
+            RunError::Runtime(msg) => write!(f, "Python runtime setup failed: {}", msg),
             RunError::PluginNotFound(name) => {
                 write!(f, "Plugin '{}' not found in manifest", name)
             }

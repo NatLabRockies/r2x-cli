@@ -143,6 +143,36 @@ jobs:
             ${{ runner.temp }}/r2x-plugin-benchmark-delta.md
           if-no-files-found: error
 
+  core-integration:
+    name: Installed r2x-core integration (Python 3.12)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - name: Setup uv & Python
+        id: python
+        uses: ./.github/actions/setup-uv-python
+        with:
+          python-version: "3.12"
+      - name: Install pinned r2x-core and ReEDS
+        run: |
+          core_venv="${RUNNER_TEMP}/r2x-core-venv"
+          uv venv --no-config --python "${PYO3_PYTHON}" "${core_venv}"
+          uv pip install --python "${core_venv}/bin/python" \
+            "r2x-core @ git+https://github.com/NatLabRockies/r2x-core.git@8a3240dc051f4632121e89dcab8fdeead665b7f3" \
+            "r2x-reeds==0.9.3"
+          site_packages="$("${core_venv}/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+          echo "R2X_CORE_SITE_PACKAGES=${site_packages}" >> "${GITHUB_ENV}"
+      - name: Test installed-core and ReEDS integration
+        env:
+          PYTHON_PREFIX: ${{ steps.python.outputs.python-prefix }}
+        run: bash scripts/ci_run_with_python_lib_path.sh "${PYTHON_PREFIX}" cargo test -p r2x --test integration test_installed_r2x -- --nocapture
+
   release-readiness:
     name: Release readiness (publish dry-run)
     runs-on: ubuntu-24.04

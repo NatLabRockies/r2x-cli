@@ -600,7 +600,11 @@ impl Bridge {
                         })?;
                     PluginInvocationOutput::Persisted
                 } else {
-                    let to_json_result = result_to_serialize.call_method0("to_json")?;
+                    let to_json_result = if result_to_serialize.hasattr("to_json_bytes")? {
+                        result_to_serialize.call_method0("to_json_bytes")?
+                    } else {
+                        result_to_serialize.call_method0("to_json")?
+                    };
                     let json_str = if let Ok(json_bytes) = to_json_result.extract::<Vec<u8>>() {
                         String::from_utf8(json_bytes).map_err(|error| {
                             BridgeError::Python(format!("Invalid UTF-8 in JSON output: {error}"))
@@ -927,7 +931,6 @@ impl Bridge {
                 py,
                 &value,
                 Some(&config_instance),
-                bindings.config.as_ref(),
             )?)
         } else {
             None

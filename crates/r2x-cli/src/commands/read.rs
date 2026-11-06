@@ -1,3 +1,4 @@
+use crate::commands::core::{ensure_r2x_core_installed, install_package, module_spec_exists};
 use crate::common::GlobalOpts;
 use atty::Stream;
 use clap::Parser;
@@ -1549,14 +1550,7 @@ fn ensure_prerequisites(
     python_exe: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     ensure_module_installed(config, python_exe, "IPython", "IPython", "IPython")?;
-    let r2x_core_spec = config.get_r2x_core_package_spec();
-    ensure_module_installed(
-        config,
-        python_exe,
-        "r2x_core.system",
-        &r2x_core_spec,
-        "r2x-core",
-    )?;
+    ensure_r2x_core_installed(config, python_exe)?;
     Ok(())
 }
 
@@ -1627,46 +1621,7 @@ fn ensure_module_installed(
         display_name
     ));
 
-    install_package(config, python_exe, package_spec, display_name)?;
-    Ok(())
-}
-
-// The bootstrap imports these modules for real, so only probe their specs here.
-fn module_spec_exists(python_exe: &str, module_name: &str) -> bool {
-    Command::new(python_exe)
-        .arg("-c")
-        .arg("import importlib.util, sys; sys.exit(importlib.util.find_spec(sys.argv[1]) is None)")
-        .arg(module_name)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn install_package(
-    config: &mut Config,
-    python_exe: &str,
-    package_spec: &str,
-    display_name: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let uv_path = config.ensure_uv_path()?;
-    let install_args = vec![
-        "pip".to_string(),
-        "install".to_string(),
-        "--python".to_string(),
-        python_exe.to_string(),
-        package_spec.to_string(),
-    ];
-
-    crate::uv::run(
-        &uv_path,
-        "Installing runtime dependency",
-        display_name,
-        install_args,
-    )?;
-
-    logger::success(&format!("Installed {display_name} into venv"));
+    install_package(config, python_exe, package_spec, display_name, false)?;
     Ok(())
 }
 

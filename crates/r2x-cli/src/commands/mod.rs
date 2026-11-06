@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod config;
+pub(crate) mod core;
 pub mod init;
 pub mod log;
 pub mod plugins;

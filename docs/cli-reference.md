@@ -116,8 +116,10 @@ Use `--no-banner` to suppress the interactive startup banner.
 
 ## Runtime commands
 
-The runtime commands manage the Python interpreter and virtual environment
-used by plugins:
+Runtime commands manage the Python interpreter and virtual environment used
+by plugins.
+The CLI prepares required Python runtime dependencies automatically when a
+Python-backed command needs them.
 
 ```bash
 r2x python show

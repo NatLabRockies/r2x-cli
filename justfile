@@ -33,6 +33,10 @@ build:
 test:
 	bash scripts/ci_run_with_python_lib_path.sh "{{PYTHON_PREFIX}}" {{CARGO}} test --workspace --all-features
 
+test-core-integration:
+	@if [ -z "${R2X_CORE_SITE_PACKAGES:-}" ]; then echo "Set R2X_CORE_SITE_PACKAGES to an installed r2x_core site-packages directory." >&2; exit 1; fi
+	bash scripts/ci_run_with_python_lib_path.sh "{{PYTHON_PREFIX}}" {{CARGO}} test -p {{R2X_PKG}} --test integration test_installed_r2x_core -- --nocapture
+
 run-reeds: prepare-r2x
 	{{R2X_BIN}} run pipeline.yaml reeds-test
 

@@ -21,7 +21,88 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
+
+const R2X_CORE_API_CHECK: &str = r#"
+import inspect
+import sys
+
+try:
+    from r2x_core import run_upgrade_step
+    from r2x_core.store import DataStore
+except ImportError:
+    sys.exit(1)
+
+factory = getattr(DataStore, "from_plugin_config", None)
+if not callable(factory):
+    sys.exit(1)
+try:
+    factory_signature = inspect.signature(factory)
+    if (
+        "plugin_config" not in factory_signature.parameters
+        or "path" not in factory_signature.parameters
+    ):
+        sys.exit(1)
+    factory_signature.bind(plugin_config=object(), path=".")
+except (TypeError, ValueError):
+    sys.exit(1)
+
+try:
+    parameters = inspect.signature(run_upgrade_step).parameters
+except (TypeError, ValueError):
+    sys.exit(1)
+
+data = parameters.get("data")
+step = parameters.get("step")
+context = parameters.get("upgrader_context")
+accepts_context = context is not None or any(
+    parameter.kind is inspect.Parameter.VAR_KEYWORD
+    for parameter in parameters.values()
+)
+if (
+    not parameters
+    or next(iter(parameters)) != "data"
+    or data is None
+    or data.kind not in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    or step is None
+    or step.kind is not inspect.Parameter.KEYWORD_ONLY
+    or not accepts_context
+):
+    sys.exit(1)
+"#;
+
+const R2X_CORE_API_INCOMPATIBLE: &str = "The managed Python environment is incompatible with this r2x-cli release. Retry a Python-backed command to repair it automatically. If the problem persists, update or reinstall r2x-cli.";
+
+/// Check whether the selected interpreter provides the public r2x-core API used by r2x-cli.
+pub fn is_r2x_core_api_compatible(python_exe: &Path) -> Result<bool, BridgeError> {
+    let output = Command::new(python_exe)
+        .args(["-B", "-c", R2X_CORE_API_CHECK])
+        .env_remove("PYTHONHOME")
+        .output()
+        .map_err(|error| {
+            BridgeError::Initialization(format!(
+                "Failed to inspect the installed r2x-core API: {}",
+                error
+            ))
+        })?;
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(code) => Err(BridgeError::Initialization(format!(
+            "Failed to inspect the installed r2x-core API (exit code {}): {}",
+            code,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))),
+        None => Err(BridgeError::Initialization(
+            "Python exited without a status while checking the r2x-core API".to_string(),
+        )),
+    }
+}
 
 /// The Python bridge for plugin execution
 pub struct Bridge {
@@ -37,9 +118,11 @@ static POST_IMPORT_LOG_MODULES_ENABLED: Lazy<Mutex<HashSet<String>>> =
 /// Terminate the process safely when Python may be initialized.
 pub fn process_exit(code: i32) -> ! {
     if BRIDGE_INSTANCE.get().is_some() {
-        // Give the main thread a thread state so Py_Finalize()'s
-        // PyEval_SaveThread() call can succeed.
-        Python::attach(|_py| -> ! { std::process::exit(code) });
+        // Keep the main thread attached during shutdown when Python is active.
+        // Bridge initialization can fail before Python starts, so use try_attach.
+        let _ = Python::try_attach(|_py| {
+            std::process::exit(code);
+        });
     }
     std::process::exit(code)
 }
@@ -73,6 +156,12 @@ impl Bridge {
 
         // Ensure venv exists
         let venv_path = ensure_configured_venv(&mut config)?;
+        let python_exe = resolve_python_path(&venv_path)?;
+        if !is_r2x_core_api_compatible(&python_exe)? {
+            return Err(BridgeError::Initialization(
+                R2X_CORE_API_INCOMPATIBLE.to_string(),
+            ));
+        }
 
         // Resolve PYTHONHOME from venv's pyvenv.cfg
         let python_home = resolve_python_home(&venv_path)?;

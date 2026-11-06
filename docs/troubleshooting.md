@@ -55,6 +55,12 @@ r2x run scale --help
 
 Confirm that `create` and `scale` are available before retrying the tutorial pipeline.
 
+## Python runtime setup fails
+
+Commands that need Python prepare the managed runtime automatically.
+If setup fails because the network is unavailable, restore access and retry the original command.
+If the CLI reports that its runtime is incompatible, update or reinstall r2x-cli with the package manager used to install it, then retry.
+
 <a id="the-tutorial-plugin-is-not-found"></a>
 
 ## “Plugin '…' not found in manifest” or `r2x list` omits the tutorial plugins
